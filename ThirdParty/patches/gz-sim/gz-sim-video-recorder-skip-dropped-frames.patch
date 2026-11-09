@@ -1,0 +1,58 @@
+diff --git a/src/systems/camera_video_recorder/CameraVideoRecorder.cc b/src/systems/camera_video_recorder/CameraVideoRecorder.cc
+index c91bfd59d..d55186743 100644
+--- a/src/systems/camera_video_recorder/CameraVideoRecorder.cc
++++ b/src/systems/camera_video_recorder/CameraVideoRecorder.cc
+@@ -20,6 +20,7 @@
+ #include <gz/msgs/time.pb.h>
+ #include <gz/msgs/video_record.pb.h>
+ 
++#include <optional>
+ #include <regex>
+ #include <set>
+ #include <string>
+@@ -140,6 +141,9 @@ class gz::sim::systems::CameraVideoRecorderPrivate
+   /// \brief Recording frames per second.
+   public: unsigned int fps = 25;
+ 
++  /// \brief Timestamp of the last frame given to the encoder, if any.
++  public: std::optional<std::chrono::steady_clock::time_point> lastFrameTime;
++
+   /// \brief Marker manager
+   public: MarkerManager markerManager;
+ };
+@@ -336,18 +340,26 @@ void CameraVideoRecorderPrivate::OnPostRender()
+     // Video recorder is on. Add more frames to it
+     if (this->videoEncoder.IsEncoding())
+     {
+-      this->camera->Copy(this->cameraImage);
+       std::chrono::steady_clock::time_point t;
+       if (this->recordVideoUseSimTime)
+         t = std::chrono::steady_clock::time_point(this->simTime);
+       else
+         t = std::chrono::steady_clock::now();
+ 
++      // PostRender fires every sim step while a render event has listeners.
++      // The encoder drops frames closer than 1/fps anyway, so skip the GPU
++      // readback for those (same rule as VideoEncoder::AddFrame).
++      if (this->lastFrameTime && t - *this->lastFrameTime <
++          std::chrono::duration<double>(1.0 / this->fps))
++        return;
++
++      this->camera->Copy(this->cameraImage);
+       bool frameAdded = this->videoEncoder.AddFrame(
+           this->cameraImage.Data<unsigned char>(), width, height, t);
+ 
+       if (frameAdded)
+       {
++        this->lastFrameTime = t;
+         // publish recorder stats
+         if (this->recordStartTime ==
+             std::chrono::steady_clock::time_point(
+@@ -381,6 +393,7 @@ void CameraVideoRecorderPrivate::OnPostRender()
+       this->videoEncoder.Start(this->recordVideoFormat,
+           this->tmpVideoFilename, width, height, this->fps,
+           this->recordVideoBitrate);
++      this->lastFrameTime.reset();
+ 
+       this->recordStartTime = std::chrono::steady_clock::time_point(
+             std::chrono::duration(std::chrono::seconds(0)));

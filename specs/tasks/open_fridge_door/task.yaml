@@ -1,0 +1,109 @@
+# Open the fridge's top door: PartNet-Mobility 11211 (glass door, hinge on the east side, bar handle)
+# in the PartNet kitchen. Ported from the earlier pipeline's task config + validator
+# and its simulator thresholds (checks, live_gates, closed_loop) and
+# phases.py.
+name: open_fridge_door
+robot: mobile_panda
+scene: kitchen_partnet
+prompt: open the fridge door        # language instruction: bag custom_data lerobot.operator_prompt
+card:                               # hub card fields
+  object: the top door of PartNet-Mobility fridge 11211 (glass door, bar handle)
+  open: the door stayed 60 deg or more open
+
+object:
+  name: fridge
+  gz_model: assets/generated_partnet/fridge
+  # Fridge model frame in the world: x, y, z [m], yaw [rad]; checked against the scene's <include>.
+  # AutoMoMa's planner frame is this frame (z dropped).
+  world_pose: [-1.5, 2.68, 0.0, -1.5707963267948966]
+  # gz joint, axis +z in the model frame (hinge at model (0.281, 0.297), the handle at y -0.287),
+  # 0 closed, opens positive: the free edge swings out to +x (world east and south)
+  joint: top_door_hinge
+  handle: top_door_handle           # 12 x 14 x 250 mm bar box on link top_door; its centre is the handle frame
+  joint_topic: /fridge/joint_states
+  goal: 1.27                        # rad (72.8 deg), so a replay can hold >= 60 deg
+  hold: {grip_part: handle, part: door, unit: deg}   # validator.py HOLD
+  grasp_half_width_axes: [1]        # half the bar's width across the fingers: size[1] / 2
+
+# AutoMoMa planner inputs, unchanged from the plugin (see its comments for the derivations)
+planner:
+  grasp:
+    # TCP heights in the model frame along the bar (z 0.90..1.15); the TCP stays in 0.949..1.101
+    z: [0.965, 0.995, 1.025, 1.055, 1.085]
+    depth: 0.0                      # TCP behind the handle centre, towards the door [m]
+    roll_deg: 0.0
+  # Spheres on the moving door: a grid in the model frame at the closed door (8 x 22 spheres; grid +
+  # handle row <= 216 spheres, cuRobo's self-collision kernel limit)
+  door_spheres: {radius: 0.025, x: 0.305, y: [-0.205, 0.22], z: [0.37, 1.70], step: 0.065}
+  base_yaw_window: [0.0, 6.283185307179586]
+  base_retract: [1.0, 0.0, 3.141592653589793]   # x, y, yaw in the object frame (IK regulariser)
+
+# Replay of a plan in gz: spawn standoff_m back along the hand axis, settle, base in, grasp, pull, hold,
+# release, base back out retreat_m. Pull duration = max(pull_min_s, pull_slowdown x the plan's hint).
+replay:
+  standoff_m: 0.12
+  settle_s: 1.0
+  approach_s: 2.5
+  spawn_clearance_min_m: 0.0        # below: spawn_in_collision, rejected before gz
+  retreat_m: 0.15
+  retreat_s: 2.0
+  hold_check: door_open             # gz EpisodeSystem check over the hold
+  pull_slowdown: 3.0
+  pull_min_s: 8.0
+# sim time by which the replay's last check must have ended (7 s + a pull of up to 23 s)
+budget_s: 30.0
+
+# Phase boundaries (phases.py), causal on the commanded actions. Plan runs: a target "changes" when it
+# moves by more than change_tol. Policy runs (PolicyBoundaries, hold_check windows): grasp starts when the
+# gripper target closes to <= grip_closed_max_m, open starts grasp_settle_s later or when the joint moved
+# joint_moved_eps (object.hold.unit) from its grasp-start value, release when the target opens again.
+boundaries:
+  change_tol: 1.0e-9
+  # The fridge plugin had no closed_loop_success block on master: open_drawer's values, joint_moved_eps
+  # 0.5 deg (about the drawer's 0.5 cm at the handle, 0.58 m from the hinge). An assumption.
+  policy: {grip_closed_max_m: 0.0035, grasp_settle_s: 1.0, joint_moved_eps: 0.5}
+
+# Ordered; each phase saves its start state. Thresholds: the live phase gates; `offline:` = the expert
+# replay verdict's (stricter) value where it differs. hold_s: at every sample of the last hold_s.
+phases:
+  - name: approach                  # t 0 -> the gripper close command
+    end: gripper_close
+    pass:
+      all:
+        - {metric: tcp_position_error_m, le: 0.015}
+        - {metric: tcp_rotation_error_deg, le: 7.5}
+        - {metric: spawn_clearance_m, ge: 0.0, only: offline}
+  - name: grasp                     # the close command -> the first base/arm motion after it (the pull)
+    end: arm_motion
+    pass:
+      all:
+        - {metric: grasp_width_error_m, le: 0.008, offline: 0.006}
+        - {metric: finger_contacts, eq: 2, window_s: 0.5}
+  - name: open                      # the pull start -> the gripper open command (pull + hold)
+    end: gripper_open
+    pass:
+      all:
+        - {metric: joint_deg, joint: top_door_hinge, ge: 60.0, hold_s: 1.0}
+        - {metric: handle_slip_m, le: 0.013, offline: 0.01}
+        - {metric: finger_contacts, eq: 2, window_s: 1.0}
+        - {metric: targets_static_s, ge: 1.0, only: plan}
+  - name: release                   # the open command -> the end of the stream: the sanity checks only
+    end: stream_end
+    pass: {all: []}
+
+# Every phase: a timed check fails the phase that holds its first violation; an untimed one fails the
+# episode as "global" (no regeneration).
+sanity:
+  timed:
+    - {metric: peak_body_speed_mps, lt: 5.0}
+    - {metric: penetration_m, lt: 0.01}
+    - {metric: other_robot_contacts, eq: 0}
+  untimed:
+    - {metric: non_finite_commands, eq: 0}
+    - {metric: gz_log_problem_lines, eq: 0}
+
+# Policy rollouts (closed loop): sim time from the first action, wait before it, run-on after a success
+rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0}
+
+# Live validator settings: contact stamps lag the sim; restore check of a saved phase state
+live: {contact_wait_s: 0.05, restore_pos_max_m: 0.001, restore_rot_max_deg: 0.1}

@@ -1,0 +1,19 @@
+# Mini loop on the fridge: ~10 demos, ~2k train steps, 4 probe + 4 held-out seeds.
+# Run: ./revolve run specs/experiments/fridge_mini.yaml
+name: fridge_mini
+task: open_fridge_door
+max_turns: 3                       # turn = generate/recover -> train -> eval; the only cap
+                                   # 3: two recovery turns, ~40 min a turn (smoke-run timings)
+seeds: {train: [0, 9], probe: [200, 203], heldout: [100, 103]}   # inclusive ranges, disjoint (checked)
+datagen: {episodes_per_seed: 1, workers: 2}
+recovery: {episodes_per_failure: 3, phases: [approach, grasp, open]}
+training:
+  policy: smolvla
+  base: lerobot/smolvla_base
+  mode: finetune_last              # finetune_last (default) | from_base | finetune_recovery_only
+  steps: 2000
+  batch_size: 16                   # GPU machine (RTX 6000 Ada): 0.21 s/step, 5.9 GB; 2000 steps ~7 min, ~6 epochs
+  backend: gpu_machine             # local | gpu_machine | modal
+  backends: {gpu_machine: {scratch: ~/revolve_scratch}, modal: {gpu: L4}}   # gpu_machine host: $REVOLVE_GPU_MACHINE_HOST
+eval: {rollouts_per_seed: 1, retries: 0}
+stall_timeout_s: 900

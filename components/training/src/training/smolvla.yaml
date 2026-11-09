@@ -1,0 +1,18 @@
+# SmolVLA with LeRobot 0.6.1's lerobot-train: the earlier pipeline's train_args unchanged
+# (see its comment for why policy.type + policy.pretrained_path and the last 4 keys), except batch_size and
+# steps (the experiment yaml's training block) and save_freq (only the final checkpoint: weights carry over
+# between turns, never --resume). policy.pretrained_path is the base or the previous turn's checkpoint.
+name: smolvla
+entrypoint: lerobot-train
+train_args:
+  policy.type: smolvla
+  policy.push_to_hub: false
+  wandb.enable: false
+  policy.load_vlm_weights: true
+  policy.prefix_length: 0
+  policy.pad_language_to: max_length
+  policy.num_expert_layers: 0
+python: "3.12.12"
+lerobot: {version: 0.6.1, commit: 7e241bd630a3719a56157a497ce5d08f244784f1}
+# serve: Rosetta's policy server; the fps is the robot contract's (specs robot mobile_panda, 30 Hz)
+serve: {module: lerobot_rosetta.policy_server, device: cuda, port: 8080}

@@ -1,0 +1,18 @@
+# Mini loop on the drawer: ~10 demos, ~2k train steps, 4 probe + 4 held-out seeds.
+# Run: ./revolve run specs/experiments/drawer_mini.yaml
+name: drawer_mini
+task: open_drawer
+max_turns: 5                       # turn = generate/recover -> train -> eval; the only cap
+seeds: {train: [0, 9], probe: [200, 203], heldout: [100, 103]}   # inclusive ranges, disjoint (checked)
+datagen: {episodes_per_seed: 1, workers: 2}
+recovery: {episodes_per_failure: 3, phases: [approach, grasp, open]}
+training:
+  policy: smolvla
+  base: lerobot/smolvla_base
+  mode: finetune_last              # finetune_last (default) | from_base | finetune_recovery_only
+  steps: 2000
+  batch_size: 8
+  backend: gpu_machine             # local | gpu_machine | modal
+  backends: {gpu_machine: {scratch: ~/revolve_scratch}, modal: {gpu: L4}}   # gpu_machine host: $REVOLVE_GPU_MACHINE_HOST
+eval: {rollouts_per_seed: 1, retries: 0}
+stall_timeout_s: 900

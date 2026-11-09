@@ -1,0 +1,31 @@
+# PartNet-Mobility storage furniture 46452 (dataset/46452/mobility.urdf): top drawer
+# (prismatic) over a hinged door. Scaled x0.664 to 0.90 m. Model frame: front = +x, floor z = 0.
+# Gets the role names the scene, skills and episodes look for (kitchen_counter,
+# drawer2_top, middle_slide_top).
+name: kitchen_counter
+description: PartNet-Mobility 46452 cabinet (scaled to 0.90 m), live top drawer, door locked. Non-commercial licence, local use only.
+scale: 0.664
+fix_to_world: true
+mesh_parts: merge
+visual_mode: copy
+collision_mode: hull          # every part is a box (8 vertices) or a quad; hull -> box primitives
+rename:
+  links: {link_1: body, link_2: drawer2_top, link_0: door}
+  joints: {joint_2: middle_slide_top, joint_0: door_hinge}
+joint_origin_overrides:
+  joint_1: {rpy: [1.5707963267948966, 0, 1.5707963267948966]}   # source: front = -x; here +x
+joints:
+  # source travel 0.9 x 0.664 = 0.598 m of a 0.61 m deep drawer: limit it to 0.35 m
+  middle_slide_top: {lower: 0.0, upper: 0.35, damping: 10.0, friction: 2.0}
+  door_hinge: {mode: fixed}
+links:
+  body: {mass: 30.0}
+  door: {mass: 3.0}
+  drawer2_top:
+    mass: 3.0
+    collision_rules:
+      - {match: [original-38.obj], mode: drop}       # bar, replaced by the handle box below
+    # Bar (mesh: x 0.383-0.396, 14 mm high, 29 mm gap to the drawer front at 0.354);
+    # standoffs at y -0.287 / 0.279 stay as hull boxes. Model frame, drawer closed.
+    handles:
+      - {name: handle_bar, frame: model, xyz: [0.3895, -0.004, 0.841], size: [0.013, 0.624, 0.014]}

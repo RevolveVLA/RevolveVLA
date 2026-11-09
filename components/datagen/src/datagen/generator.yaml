@@ -1,0 +1,80 @@
+# AutoMoMa's plan step (CuroboPlanner: IK, clustering, AKR trajopt, FK filter, 12-D .pt)
+# in the revolve-datagen image. plan.py (here) runs it; settings sized for 6 GB VRAM.
+# Ported from the earlier pipeline's planner config (values unchanged, `image` dropped), plus `tasks:`
+# (its per-task data-round blocks that the plan and the replay read).
+kind: generator
+name: automoma
+attempts: 50              # N: trajopt start-goal problems per run, split evenly over
+                          # the grasps that have start and goal IK
+seed: 0                   # torch, numpy and cuRobo ik_seed (1531 + seed)
+fk_check_trajectories: 10
+# Running pose cost of cuRobo's gradient_trajopt_fixbase.yml on the AKR end link: rotation,
+# position, and its two activation values (cuRobo default [2000, 50000, 30, 50]). plan.py writes the
+# config with these into the run's assets/. On the PartNet door the default rotation weight turned
+# the end link by 2-5 deg (7-26 mm at the TCP) on all 38 trajopt successes of 50 (B4), and the
+# 0.025 rad filter below rejected every one.
+trajopt_pose_weight: [20000, 50000.0, 30, 50]
+planner:                  # AutoMoMa configs/plan.yaml `planner:` block
+  collision_checker_type: VOXEL
+  # Centred on the fridge origin (floor level), so z covers 0..2.4 m. dims/2 must be an exact
+  # multiple of voxel_size: cuRobo sizes the grid with int(), and 4.6 m gave 229 z cells at
+  # 0.0202 m that its voxel query read misaligned (every IK pose came out in collision).
+  voxel_dims: [4.0, 4.0, 4.8]
+  voxel_size: 0.02
+  # AutoMoMa clears the object's box (+ these margins) from the scene ESDF because its
+  # scenes contain the object. Ours keeps the fridge body in the scene and leaves only the
+  # moving door out, so nothing is cleared (dimensions are also 0 in metadata.json).
+  expanded_dims: [0.0, 0.0, 0.0]
+  enable_collision: true
+  ik_seeds: 5000
+  clustering: {kmeans_clusters: 500, ap_fallback_clusters: 30, ap_clusters_upperbound: 80,
+               ap_clusters_lowerbound: 10}
+  traj: {batch_size: 10, fixed_base: true, num_trajopt_seeds: 12, num_graph_seeds: 12,
+         interpolation_dt: 0.05, trajopt_tsteps: 32}
+  # AutoMoMa's waypoint FK filter on the AKR end link (an anchor <= 0.4 m from the grasp):
+  # 0.025 rad there is ~1 cm at the handle (AutoMoMa default 0.05).
+  filter: {position_tolerance: 0.01, rotation_tolerance: 0.025}
+  output: {gripper_open: 0.04, gripper_closed: 0.0, prepend_grasp_steps: 4, lift_joint_offset: 0.0}
+# Regeneration of a failed phase (recovery, plan_from_state.py): the rest of the task
+# planned from a saved phase start state, in planner runs of `attempts` trajopt problems with the
+# seeds seed0, seed0 + 1, ... The first candidate that passes in gz ends the search.
+regenerate:
+  runs: 3
+  attempts: 10
+  seed0: 100
+  # The base spheres above (3 x 3 columns, r 0.12 at +-0.15 m) miss the 0.50 x 0.50 m chassis
+  # corners by 2.1 cm (drawer r1_a0 drove a corner into the west wall). Regeneration adds a column
+  # of spheres at each corner: r 0.07 at (+-0.205, +-0.205), 6.4 cm from the corner, bottom 5 cm up
+  # (lower ones touch the floor voxels: no IK at all). They sit on their own link and collide with
+  # the world only: as base_link spheres they push the AKR past cuRobo's self-collision kernel limit
+  # (CUDA "invalid configuration argument"). Against the task object (door / drawer, self-collision
+  # in the AKR) base_link's spheres get base_self_collision_buffer instead.
+  base_corner_spheres: {radius: 0.07, xy: 0.205, z: [0.12, 0.24, 0.36, 0.48]}
+  base_self_collision_buffer: 0.03
+  # Open restarts: goal IK solutions nearest to the saved start, at least this far apart [rad, joint L2]
+  goal_spacing: 0.05
+  # Precheck before gz (regenerate.py): the gz collision shapes against the scene boxes over every
+  # planned row (the task object at its planned joint value; hand and fingers not against the
+  # task object while they hold it). base_link keeps this margin, the arm must not touch.
+  # The base gate drops to the restored start's own base clearance - start_slack_m when the source
+  # left the chassis closer (drawer r2_a37 starts 17.5 mm from the cabinet).
+  clearance_min_m: {base_link: 0.02, arm: 0.0}
+  start_slack_m: 0.002
+  # Reach (approach / grasp restarts): cuRobo MotionGen in the whole-body cspace from the saved
+  # state to the staging pose of a new grasp, its time steps x reach_slowdown in gz.
+  reach_slowdown: 2.0
+  reach_max_attempts: 4
+# Per task: the earlier pipeline's v2 data-round blocks, passed to
+# the plan job as ROUND_STARTS (clustered starts, start_design.py) and to the simulator's replay as
+# ROUND_TIMING / ROUND_PULL (replay.py). Their recovery (seeded noise) and mint blocks are not used:
+# datagen keeps the first accepted attempts of each seed's plan run.
+tasks:
+  open_fridge_door:
+    starts: {clusters: 10, per_cluster: 10, box_m: 0.40, yaw_half_deg: 30, offset_m: 0.03, offset_deg: 3,
+             nominal_arm: ready}
+    timing: {settle_s: 0.0, close_s: 1.0, grip_settle_s: 0.0, pull_start_s: 0.77, hold_s: 1.7}
+  open_drawer:
+    starts: {clusters: 10, per_cluster: 10, box_m: 0.40, yaw_half_deg: 30, offset_m: 0.03, offset_deg: 3,
+             nominal_arm: ready}
+    timing: {settle_s: 0.0, close_s: 1.0, grip_settle_s: 0.0, pull_start_s: 0.84, hold_s: 1.7}
+    pull: {repeat_tol: 1.0e-5}

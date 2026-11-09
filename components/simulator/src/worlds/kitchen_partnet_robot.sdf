@@ -1,0 +1,142 @@
+<?xml version="1.0"?>
+<!--
+  Mobile Panda smoke-test world (PartNet-Mobility asset set): the scene of
+  worlds/kitchen_partnet.sdf (layout described there) plus the mobile Panda
+  (models/mobile_panda) at the room centre facing east.
+  scripts/mobile_panda_smoke_system.py runs the robot smoke test ($KITCHEN_ASSETS=partnet).
+  The scene camera sits in the open south-east corner.
+-->
+<sdf version="1.11" xmlns:experimental="http://sdformat.org/schemas/experimental">
+  <world name="kitchen">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+      <engine><filename>gz-physics-mujoco-plugin</filename></engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-contact-system" name="gz::sim::systems::Contact"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+    <!-- Robot smoke test (controller + checks), every 1 ms step -->
+    <plugin filename="gz-sim-python-system-loader-system"
+            name="gz::sim::systems::PythonSystemLoader">
+      <module_name>mobile_panda_smoke_system</module_name>
+    </plugin>
+
+    <gravity>0 0 -9.81</gravity>
+    <scene>
+      <ambient>0.45 0.45 0.45 1</ambient>
+      <background>0.75 0.8 0.85 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <direction>0.3 -0.4 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- Room: wall collisions as before + visual-only shell, decor and fill lights
+         (asset_pipeline/make_room.py, built before each kitchen run) -->
+    <include>
+      <name>walls</name>
+      <uri>model://kitchen_room_partnet</uri>
+    </include>
+
+    <include>
+      <name>kitchen_counter</name>
+      <uri>model://kitchen_counter</uri>
+      <pose>-2.625 0.29 0 0 0 0</pose>
+    </include>
+
+    <include>
+      <name>fridge</name>
+      <uri>model://fridge</uri>
+      <pose>-1.5 2.68 0 0 0 -1.5707963267948966</pose>
+    </include>
+
+    <include>
+      <name>table_01</name>
+      <uri>model://table_01</uri>
+      <pose>1.5 -0.5 0.002 0 0 0</pose>
+      <!-- contact sensor for the penetration check (scripts/kitchen_test_system.py) -->
+      <experimental:params>
+        <sensor element_id="table_01" name="contact" type="contact" action="add">
+          <update_rate>100</update_rate>
+          <contact>
+            <collision>table_01_collision_0</collision>
+            <collision>table_01_collision_1</collision>
+            <collision>table_01_collision_2</collision>
+            <collision>table_01_collision_3</collision>
+            <collision>table_01_collision_4</collision>
+            <collision>table_01_collision_5</collision>
+          </contact>
+        </sensor>
+      </experimental:params>
+    </include>
+
+    <!-- Fridge model frame (0.12, 0, 1.1765) = on the upper wire rack whose top is at 1.1745 -->
+    <include>
+      <name>cup</name>
+      <uri>model://cup</uri>
+      <pose>-1.5 2.56 1.1765 0 0 0</pose>
+      <experimental:params>
+        <sensor element_id="cup" name="contact" type="contact" action="add">
+          <update_rate>1000</update_rate>
+          <contact>
+            <collision>cup_collision_0</collision>
+            <collision>cup_collision_1</collision>
+          </contact>
+        </sensor>
+      </experimental:params>
+    </include>
+
+    <!-- Mobile Panda: base joints (base_x, base_y, base_yaw) are world x, y, yaw -->
+    <include>
+      <name>mobile_panda</name>
+      <uri>model://mobile_panda</uri>
+      <pose>0 0 0 0 0 0</pose>
+    </include>
+
+    <!-- Fixed scene camera, rendered on the GPU; records the MP4 -->
+    <model name="scene_camera">
+      <static>true</static>
+      <pose>2.75 -2.75 2.6 0 0.42 2.40</pose>
+      <link name="link">
+        <sensor name="cam" type="camera">
+          <update_rate>30</update_rate>
+          <always_on>true</always_on>
+          <topic>kitchen_cam/image</topic>
+          <camera>
+            <horizontal_fov>1.25</horizontal_fov>
+            <image><width>1280</width><height>720</height><anti_aliasing>2</anti_aliasing></image>
+            <clip><near>0.05</near><far>20</far></clip>
+          </camera>
+          <plugin filename="gz-sim-camera-video-recorder-system"
+                  name="gz::sim::systems::CameraVideoRecorder">
+            <service>/kitchen_cam/record_video</service>
+            <use_sim_time>true</use_sim_time>
+            <fps>30</fps>
+            <bitrate>8000000</bitrate>
+          </plugin>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>

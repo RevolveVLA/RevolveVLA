@@ -1,0 +1,9 @@
+# The manager image: revolve_common's deps + the docker SDK + httpx (pins = the host .venv's); numpy for the
+# components' host-side code the steps run (generate.py, starts.py, recover.py).
+pydantic==2.14.3
+PyYAML==6.0.3
+numpy==2.5.4
+fastapi==0.162.2
+uvicorn==0.54.0
+docker==7.2.0
+httpx==0.28.1

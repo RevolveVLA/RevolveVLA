@@ -1,0 +1,13 @@
+# The PartNet-Mobility kitchen: ported from the earlier pipeline's scene config
+# (values unchanged). Fridge 11211 and cabinet 46452 as kitchen_counter from assets/generated_partnet,
+# table_01, cup and the room from assets/generated. The planner's static collision world is read from
+# the world file at plan time (USD of cuboids). World: the simulator's copy; assets in the root
+# assets/ (licence-bound, git-ignored; components/simulator/assets_pipeline), mounted at runtime.
+name: kitchen_partnet
+world: components/simulator/src/worlds/kitchen_partnet_skills.sdf
+assets: [assets/generated_partnet, assets/generated]   # model://<name>: first dir that has it
+skip: [mobile_panda, cup]                    # the robot; the cup sits inside the fridge
+# Included models added box by box; other includes as one box (their manifest AABB). The task object
+# always goes in box by box, without its moving link (AKR spheres cover that).
+detailed: [fridge, walls]
+floor: {size: [6.2, 6.2], thickness: 0.1}   # ground_plane is infinite; the room is 6.2 m

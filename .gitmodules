@@ -1,0 +1,18 @@
+[submodule "ThirdParty/automoma"]
+	path = ThirdParty/automoma
+	url = https://github.com/fi6/automoma.git
+	shallow = true
+[submodule "ThirdParty/curobo"]
+	path = ThirdParty/curobo
+	url = https://github.com/fi6/curobo.git
+	shallow = true
+	ignore = untracked
+[submodule "ThirdParty/rosetta"]
+	path = ThirdParty/rosetta
+	url = https://github.com/iblnkn/rosetta.git
+	shallow = true
+	ignore = untracked
+[submodule "ThirdParty/franka_description"]
+	path = ThirdParty/franka_description
+	url = https://github.com/frankaemika/franka_description.git
+	shallow = true

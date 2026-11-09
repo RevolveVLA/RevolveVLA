@@ -1,0 +1,31 @@
+diff --git a/mujoco/src/EntityManagementFeatures.cc b/mujoco/src/EntityManagementFeatures.cc
+index 6d9eccd..6704432 100644
+--- a/mujoco/src/EntityManagementFeatures.cc
++++ b/mujoco/src/EntityManagementFeatures.cc
+@@ -19,6 +19,7 @@
+ 
+ #include <mujoco/mujoco.h>
+ 
++#include <cstdlib>
+ #include <limits>
+ #include <memory>
+ #include <string>
+@@ -101,6 +102,18 @@ Identity EntityManagementFeatures::ConstructEmptyWorld(
+   // The Mujoco docs recommend the implicitfast integrator
+   worldInfo->mjSpecObj->option.integrator = mjtIntegrator::mjINT_IMPLICITFAST;
+   worldInfo->mjSpecObj->compiler.degree = false;
++  // Local patch (gz_mujoco_demo): solver options are not exposed through SDF
++  // yet (gazebosim/gz-physics#1119). Allow overriding the ones that matter for
++  // grasping via environment variables.
++  if (const char *cone = std::getenv("GZ_MUJOCO_CONE"))
++  {
++    worldInfo->mjSpecObj->option.cone = std::string(cone) == "elliptic" ?
++        mjCONE_ELLIPTIC : mjCONE_PYRAMIDAL;
++  }
++  if (const char *impratio = std::getenv("GZ_MUJOCO_IMPRATIO"))
++    worldInfo->mjSpecObj->option.impratio = std::atof(impratio);
++  if (const char *noslip = std::getenv("GZ_MUJOCO_NOSLIP_ITERATIONS"))
++    worldInfo->mjSpecObj->option.noslip_iterations = std::atoi(noslip);
+   worldInfo->mjModelObj = mj_compile(spec, nullptr);
+   worldInfo->mjDataObj = mj_makeData(worldInfo->mjModelObj);
+   worldInfo->body = mjs_findBody(spec, "world");

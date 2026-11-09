@@ -1,0 +1,50 @@
+# PartNet-Mobility refrigerator 11211 (dataset/11211/mobility.urdf). One glass door hinged
+# on the viewer's right (+y), wire racks with tops at 1.175 and 0.768 m.
+# Scaled x0.924 to 1.75 m. Model frame: front = +x, floor z = 0.
+# Links/joints get the role names the kitchen code looks for (body, top_door, top_door_hinge).
+name: fridge
+description: PartNet-Mobility 11211 refrigerator (scaled to 1.75 m). Non-commercial licence, local use only.
+scale: 0.924
+fix_to_world: true
+mesh_parts: merge
+visual_mode: copy
+collision_mode: hull
+rename:
+  links: {link_1: body, link_0: top_door}
+  joints: {joint_0: top_door_hinge}
+joint_origin_overrides:
+  joint_1: {rpy: [1.5707963267948966, 0, 1.5707963267948966]}   # source: front = -x; here +x
+joints:
+  top_door_hinge: {lower: 0.0, upper: 2.0943951023931953, damping: 1.0, friction: 0.5}
+links:
+  body:
+    mass: 60.0
+    collision_rules:
+      # each wire rack: rim -> one 1 cm slab, front lip -> one box, the 53 rods dropped
+      - {match: [original-74.obj], mode: box, name: rack_upper}
+      - {match: [original-72.obj], mode: box, name: rack_upper_lip}
+      - {match: [original-70.obj], mode: box, name: rack_lower}
+      - {match: [original-15.obj], mode: box, name: rack_lower_lip}
+      - {match: ["shelf-*"], mode: drop}
+      - {match: ["foot-*", "hinge-*"], mode: box}
+      # Hollow carcass: CoACD of the frame (merged, threshold 0.05 -> 10 hulls; 0.02 -> 31) bulges
+      # 45 / 27 mm into the cavity, so it is replaced by plain walls (planes of the frame mesh).
+      - {match: ["frame-*"], mode: drop}
+    boxes:
+      - {name: wall_back, frame: model, xyz: [-0.289, 0.0035, 0.885], size: [0.01, 0.619, 1.722]}
+      - {name: wall_left, frame: model, xyz: [0.0015, -0.2865, 0.885], size: [0.571, 0.039, 1.722]}
+      - {name: wall_right, frame: model, xyz: [0.0015, 0.294, 0.885], size: [0.571, 0.038, 1.722]}
+      - {name: floor, frame: model, xyz: [-0.013, 0.004, 0.193], size: [0.542, 0.542, 0.338]}
+      - {name: kick, frame: model, xyz: [0.2725, 0.004, 0.172], size: [0.029, 0.542, 0.296]}
+      - {name: ceiling, frame: model, xyz: [-0.013, 0.004, 1.6685], size: [0.542, 0.542, 0.155]}
+  top_door:
+    mass: 8.0
+    collision_rules:
+      - {match: ["handle-*"], mode: drop}             # replaced by the boxes below
+      - {match: ["door_frame-*", "glass-*"], mode: hull, merge: true, name: door}
+    # Bar handle (mesh: bar x 0.322-0.334, standoffs at z 0.89-0.94 and 1.11-1.16, 35 mm gap
+    # behind the bar). Model frame, door closed.
+    handles:
+      - {name: handle, frame: model, xyz: [0.328, -0.287, 1.025], size: [0.012, 0.014, 0.25]}
+      - {name: handle_post_bottom, frame: model, xyz: [0.3045, -0.287, 0.914], size: [0.035, 0.014, 0.048]}
+      - {name: handle_post_top, frame: model, xyz: [0.3045, -0.287, 1.1365], size: [0.035, 0.014, 0.049]}

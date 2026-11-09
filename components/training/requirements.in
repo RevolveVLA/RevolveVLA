@@ -1,0 +1,5 @@
+# Policy server (step 2): the training set plus the async extra (grpcio, matplotlib) that LeRobot's
+# async server and Rosetta's lerobot_rosetta.policy_server import. Compiled with requirements.lock as
+# a constraint, so every package the training venv has keeps its version.
+lerobot[smolvla,dataset,async]==0.6.1
+torch==2.11.0

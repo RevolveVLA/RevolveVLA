@@ -1,0 +1,62 @@
+# Gazebo 'Kura' (all main branches), pinned 2026-11-01. gz-launch omitted (not needed).
+repositories:
+  gz-cmake:
+    type: git
+    url: https://github.com/gazebosim/gz-cmake
+    version: 30d0f63015a74bae33f14370ce56f83f2acd15c2
+  gz-common:
+    type: git
+    url: https://github.com/gazebosim/gz-common
+    version: f67c3e7fa24cc0385d3913bef5373ab741a8d75a
+  gz-fuel-tools:
+    type: git
+    url: https://github.com/gazebosim/gz-fuel-tools
+    version: 982cbc2f83e406598ffb52743a2ab85a341be543
+  gz-gui:
+    type: git
+    url: https://github.com/gazebosim/gz-gui
+    version: 28990153fd7d2e30a0b38d4e8366d92b3ac8cbee
+  gz-math:
+    type: git
+    url: https://github.com/gazebosim/gz-math
+    version: b6143e60b8752accd01f3fe67bd922f56fd53a1d
+  gz-msgs:
+    type: git
+    url: https://github.com/gazebosim/gz-msgs
+    version: 8b13f47280c6829e61c1f154e7711a7b3f35fab7
+  gz-physics:
+    type: git
+    url: https://github.com/gazebosim/gz-physics
+    version: ea3f8b83551e96c523c06fa40dc418cd142c3284
+  gz-plugin:
+    type: git
+    url: https://github.com/gazebosim/gz-plugin
+    version: f61169c092ec118e6122046c285fb947cb88bba1
+  gz-rendering:
+    type: git
+    url: https://github.com/gazebosim/gz-rendering
+    version: e4ba3e7e4051250d683d0c5ae2f72b16465e2184
+  gz-sensors:
+    type: git
+    url: https://github.com/gazebosim/gz-sensors
+    version: 8ddf4c17be8a434c51b51d5be7c866fb69aaa54f
+  gz-sim:
+    type: git
+    url: https://github.com/gazebosim/gz-sim
+    version: dad15e230aecc0c685b8a56db8a593f65e213c7c
+  gz-tools:
+    type: git
+    url: https://github.com/gazebosim/gz-tools
+    version: 144706636ebb66282036ae480c417cfc6e2beb73
+  gz-transport:
+    type: git
+    url: https://github.com/gazebosim/gz-transport
+    version: 0ed8257b81b1d29f5809dbeda57a33dd8420899b
+  gz-utils:
+    type: git
+    url: https://github.com/gazebosim/gz-utils
+    version: 00a9a79e55f705e9600c087e8dbaab4bd38f855d
+  sdformat:
+    type: git
+    url: https://github.com/gazebosim/sdformat
+    version: 110a030f0ee2ef9561b7a351f2685682242b1da2

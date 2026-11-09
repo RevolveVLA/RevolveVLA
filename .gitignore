@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+# Shared local caches: cache/hf (HF_HOME of training jobs), cache/.cache + cache/.nv (datagen HOME: warp/torch/CUDA
+# kernel caches), cache/bin/uv (makes .venv).
+/cache/
+# Third-party build outputs and fetched Kura sources, run outputs, licence-bound assets (PartNet-Mobility,
+# ReplicaCAD: mounted at runtime, never committed), the host venv.
+/ThirdParty/*/install/
+/ThirdParty/gz_kura/src/
+/ThirdParty/gz_kura/build/
+/ThirdParty/gz_kura/log/
+/ThirdParty/gz_kura/.ccache/
+/ThirdParty/gz_kura/kura_versions.txt
+/runs/
+/assets/
+/.venv/
+# Machine-local settings (e.g. REVOLVE_GPU_MACHINE_HOST), sourced by the user.
+/local.env

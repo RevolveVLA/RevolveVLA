@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""RevolveVLA command line.
+
+  ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
+  ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
+                                     training, evaluation, manager = unit + integration, integration)
+  ./revolve run <experiment>         start an experiment loop (name under specs/experiments/ or a yaml path) in
+                                     the manager container, detached; log runs/<exp>/manager.log
+  ./revolve resume <experiment>      restart the manager on runs/<exp>/state.json (re-attaches running steps)
+  ./revolve status <experiment>      seed x phase table per turn + the running step's live progress
+  ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
+  ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
+
+Python: the repo's .venv (git-ignored; see common/README.md), with the host's PYTHONPATH (ROS) dropped.
+"""
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent
+VENV_PY = REPO / ".venv" / "bin" / "python"
+COMPONENTS = ("common", "simulator", "datagen", "recovery", "dataset", "training", "evaluation", "manager", "integration")
+
+
+def reexec_in_venv():
+    if os.environ.get("PYTHONPATH") or (VENV_PY.exists() and Path(sys.prefix).resolve() != (REPO / ".venv").resolve()):
+        if not VENV_PY.exists():
+            sys.exit("revolve: no .venv; create it (common/README.md)")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        os.execve(str(VENV_PY), [str(VENV_PY), __file__, *sys.argv[1:]], env)
+
+
+def not_implemented(what):
+    print(f"revolve {what}: not implemented")
+    return 2
+
+
+def cmd_validate(a):
+    from revolve_common import specs
+    rc = 0
+    for p in a.spec:
+        try:
+            r = specs.load(p)
+        except specs.SpecError as e:
+            print(e, file=sys.stderr)
+            rc = 1
+            continue
+        if isinstance(r, specs.Resolved):
+            t = r.task
+            head = f"experiment {r.experiment.name} -> " if r.experiment else ""
+            phases = ", ".join(f"{ph.name} ({len(ph.pass_.all)})" for ph in t.phases)
+            print(f"OK {p}: {head}task {t.name} -> robot {r.robot.name}, scene {r.scene.name}; phases {phases}")
+            if r.experiment:
+                s = r.experiment.seeds
+                print(f"   seeds train {len(s.train.seeds())}, probe {len(s.probe.seeds())}, "
+                      f"heldout {len(s.heldout.seeds())} (disjoint); max_turns {r.experiment.max_turns}, "
+                      f"training {r.experiment.training.mode} on {r.experiment.training.backend}")
+        else:
+            print(f"OK {p}: {type(r).__name__.lower()} {r.name}")
+    return rc
+
+
+BUILDS = {"simulator": REPO / "components" / "simulator" / "build.sh",
+          "datagen": REPO / "components" / "datagen" / "build.sh",
+          "recovery": REPO / "components" / "recovery" / "build.sh",
+          "dataset": REPO / "components" / "dataset" / "build.sh",
+          "training": REPO / "components" / "training" / "build.sh",
+          "evaluation": REPO / "components" / "evaluation" / "build.sh",
+          "manager": REPO / "components" / "manager" / "build.sh"}
+
+
+def cmd_build(a):
+    names = [a.component] if a.component else list(BUILDS)
+    for n in names:
+        if n not in BUILDS:
+            return not_implemented(f"build {n}")
+        rc = subprocess.call(["bash", str(BUILDS[n]), *a.build_args], cwd=REPO)
+        if rc:
+            return rc
+    return 0
+
+
+def cmd_test(a):
+    tests = {"common": REPO / "common" / "tests", "simulator": REPO / "components" / "simulator" / "tests",
+             "datagen": REPO / "components" / "datagen" / "tests",
+             "recovery": REPO / "components" / "recovery" / "tests",
+             "dataset": REPO / "components" / "dataset" / "tests",
+             "training": REPO / "components" / "training" / "tests",
+             "evaluation": REPO / "components" / "evaluation" / "tests",
+             "manager": [REPO / "components" / "manager" / "tests", REPO / "tests" / "integration"],
+             "integration": REPO / "tests" / "integration"}
+    if a.component not in tests:
+        return not_implemented(f"test {a.component}")
+    extra = a.pytest_args[1:] if a.pytest_args[:1] == ["--"] else a.pytest_args
+    dirs = tests[a.component] if isinstance(tests[a.component], list) else [tests[a.component]]
+    return subprocess.call([sys.executable, "-m", "pytest", "-q", *map(str, dirs), *extra], cwd=REPO)
+
+
+def main():
+    reexec_in_venv()
+    ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("build")
+    b.add_argument("component", nargs="?")
+    b.add_argument("build_args", nargs=argparse.REMAINDER, help="passed to the build script (e.g. --clean)")
+    t = sub.add_parser("test")
+    t.add_argument("component", choices=COMPONENTS)
+    t.add_argument("pytest_args", nargs=argparse.REMAINDER)
+    for name in ("run", "resume", "status", "stop"):
+        sub.add_parser(name).add_argument("experiment")
+    v = sub.add_parser("validate")
+    v.add_argument("spec", nargs="+")
+    a = ap.parse_args()
+    if a.cmd == "validate":
+        return cmd_validate(a)
+    if a.cmd == "test":
+        return cmd_test(a)
+    if a.cmd == "build":
+        return cmd_build(a)
+    sys.path[:0] = [str(REPO / "components" / "manager" / "src")]
+    from manager import cli
+    if a.cmd in ("run", "resume"):
+        return cli.start(a.experiment, resume=a.cmd == "resume")
+    return getattr(cli, a.cmd)(a.experiment)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

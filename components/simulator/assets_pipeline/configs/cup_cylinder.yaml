@@ -1,0 +1,4 @@
+# Primitive cup (primitives/cup_cylinder.urdf), used when the ReplicaCAD cup is
+# too wide for the Panda gripper (> 7 cm).
+name: cup
+description: Primitive cylinder cup, 6 cm diameter, 9 cm tall, 0.15 kg.

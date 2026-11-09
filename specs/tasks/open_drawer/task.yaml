@@ -1,0 +1,102 @@
+# Open the top drawer of the PartNet-Mobility cabinet 46452, `kitchen_counter` in the PartNet
+# kitchen (against the west wall, front facing east). Ported from the earlier pipeline's task config +
+# validator and its simulator thresholds (checks, live_gates,
+# closed_loop) and phases.py.
+name: open_drawer
+robot: mobile_panda
+scene: kitchen_partnet
+prompt: open the top drawer of the cabinet
+card:
+  object: the top drawer of PartNet-Mobility cabinet 46452
+  open: the drawer stayed 15 cm or more open
+
+object:
+  name: kitchen_counter
+  gz_model: assets/generated_partnet/kitchen_counter
+  world_pose: [-2.625, 0.29, 0.0, 0.0]   # cabinet model frame in the world (validated against the scene)
+  # gz joint, prismatic along +x in the model frame (out of the cabinet), 0 closed, 0..0.35 m
+  joint: middle_slide_top
+  handle: drawer2_top_handle_bar    # 13 x 624 x 14 mm bar box on link drawer2_top
+  joint_topic: /drawer/joint_states
+  goal: 0.25                        # m: the replay holds >= 15 cm; the travel limit is 0.35 m
+  hold: {grip_part: bar, part: drawer, unit: cm}     # validator.py HOLD
+  grasp_half_width_axes: [1, 2]     # half the bar's 14 mm height: min(size[1], size[2]) / 2 (hand rolled 90 deg)
+
+planner:
+  grasp:
+    # TCP positions along the bar (model y; its centre is at -0.004); the TCP stays in -0.246..0.238
+    y: [-0.204, -0.104, -0.004, 0.096, 0.196]
+    depth: 0.0
+    roll_deg: -90.0
+  # One row of spheres 2.1 cm in front of the drawer front, between the door and the bar
+  door_spheres: {radius: 0.025, x: 0.375, y: [-0.27, 0.27], z: [0.76, 0.76], step: 0.06}
+  base_yaw_window: [0.0, 6.283185307179586]
+  base_retract: [1.0, 0.0, 3.141592653589793]
+
+# Replay of a plan in gz: spawn standoff_m back along the hand axis, settle, base in, grasp, pull, hold,
+# release, base back out retreat_m. Pull duration = max(pull_min_s, pull_slowdown x the plan's hint).
+replay:
+  standoff_m: 0.12
+  settle_s: 1.0
+  approach_s: 2.5
+  spawn_clearance_min_m: 0.0        # below: spawn_in_collision, rejected before gz
+  retreat_m: 0.15
+  retreat_s: 2.0
+  hold_check: drawer_open           # gz EpisodeSystem check over the hold
+  pull_slowdown: 3.0
+  pull_min_s: 8.0
+# sim time by which the replay's last check must have ended (as open_fridge_door)
+budget_s: 30.0
+
+# Phase boundaries (phases.py), causal on the commanded actions. Plan runs: a target "changes" when it
+# moves by more than change_tol. Policy runs (PolicyBoundaries, hold_check windows): grasp starts when the
+# gripper target closes to <= grip_closed_max_m, open starts grasp_settle_s later or when the joint moved
+# joint_moved_eps (object.hold.unit) from its grasp-start value, release when the target opens again.
+boundaries:
+  change_tol: 1.0e-9
+  policy: {grip_closed_max_m: 0.0035, grasp_settle_s: 1.0, joint_moved_eps: 0.5}
+
+# Ordered; each phase saves its start state. Thresholds: the live phase gates; `offline:` = the expert
+# replay verdict's (stricter) value where it differs. hold_s: at every sample of the last hold_s.
+phases:
+  - name: approach                  # t 0 -> the gripper close command
+    end: gripper_close
+    pass:
+      all:
+        - {metric: tcp_position_error_m, le: 0.015}
+        - {metric: tcp_rotation_error_deg, le: 7.5}
+        - {metric: spawn_clearance_m, ge: 0.0, only: offline}
+  - name: grasp                     # the close command -> the first base/arm motion after it (the pull)
+    end: arm_motion
+    pass:
+      all:
+        - {metric: grasp_width_error_m, le: 0.008, offline: 0.006}
+        - {metric: finger_contacts, eq: 2, window_s: 0.5}
+  - name: open                      # the pull start -> the gripper open command (pull + hold)
+    end: gripper_open
+    pass:
+      all:
+        - {metric: joint_cm, joint: middle_slide_top, ge: 15.0, hold_s: 1.0}
+        - {metric: handle_slip_m, le: 0.013, offline: 0.01}
+        - {metric: finger_contacts, eq: 2, window_s: 1.0}
+        - {metric: targets_static_s, ge: 1.0, only: plan}
+  - name: release                   # the open command -> the end of the stream: the sanity checks only
+    end: stream_end
+    pass: {all: []}
+
+# Every phase: a timed check fails the phase that holds its first violation; an untimed one fails the
+# episode as "global" (no regeneration).
+sanity:
+  timed:
+    - {metric: peak_body_speed_mps, lt: 5.0}
+    - {metric: penetration_m, lt: 0.01}
+    - {metric: other_robot_contacts, eq: 0}
+  untimed:
+    - {metric: non_finite_commands, eq: 0}
+    - {metric: gz_log_problem_lines, eq: 0}
+
+# Policy rollouts (closed loop): sim time from the first action, wait before it, run-on after a success
+rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0}
+
+# Live validator settings: contact stamps lag the sim; restore check of a saved phase state
+live: {contact_wait_s: 0.05, restore_pos_max_m: 0.001, restore_rot_max_deg: 0.1}

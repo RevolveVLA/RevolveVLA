@@ -1,0 +1,316 @@
+<?xml version="1.0"?>
+<!--
+  Franka Panda picks up a can and places it on a plate, simulated with the
+  MuJoCo physics engine (gz-physics-mujoco-plugin, gz-physics 10 / Gazebo Kura).
+-->
+<sdf version="1.11">
+  <world name="can_on_plate">
+    <physics name="1ms" type="ignored">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics">
+      <engine><filename>gz-physics-mujoco-plugin</filename></engine>
+    </plugin>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <!-- Pick-and-place controller: scripts/pick_place_system.py, runs every step -->
+    <plugin filename="gz-sim-python-system-loader-system"
+            name="gz::sim::systems::PythonSystemLoader">
+      <module_name>pick_place_system</module_name>
+    </plugin>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <gravity>0 0 -9.81</gravity>
+    <scene>
+      <ambient>0.5 0.5 0.5 1</ambient>
+      <background>0.75 0.8 0.85 1</background>
+      <shadows>true</shadows>
+    </scene>
+
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.9 0.9 0.9 1</diffuse>
+      <specular>0.3 0.3 0.3 1</specular>
+      <direction>-0.4 0.3 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><plane><normal>0 0 1</normal><size>20 20</size></plane></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Table: top surface at z = 0.40 -->
+    <model name="table">
+      <static>true</static>
+      <pose>0.35 0 0 0 0 0</pose>
+      <link name="link">
+        <collision name="top">
+          <pose>0 0 0.38 0 0 0</pose>
+          <geometry><box><size>1.0 1.2 0.04</size></box></geometry>
+        </collision>
+        <visual name="top">
+          <pose>0 0 0.38 0 0 0</pose>
+          <geometry><box><size>1.0 1.2 0.04</size></box></geometry>
+          <material><ambient>0.55 0.38 0.22 1</ambient><diffuse>0.55 0.38 0.22 1</diffuse></material>
+        </visual>
+        <visual name="leg1"><pose>0.45 0.55 0.18 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.36</size></box></geometry>
+          <material><diffuse>0.25 0.25 0.25 1</diffuse></material></visual>
+        <visual name="leg2"><pose>-0.45 0.55 0.18 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.36</size></box></geometry>
+          <material><diffuse>0.25 0.25 0.25 1</diffuse></material></visual>
+        <visual name="leg3"><pose>0.45 -0.55 0.18 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.36</size></box></geometry>
+          <material><diffuse>0.25 0.25 0.25 1</diffuse></material></visual>
+        <visual name="leg4"><pose>-0.45 -0.55 0.18 0 0 0</pose>
+          <geometry><box><size>0.05 0.05 0.36</size></box></geometry>
+          <material><diffuse>0.25 0.25 0.25 1</diffuse></material></visual>
+      </link>
+    </model>
+
+    <include>
+      <uri>model://panda</uri>
+      <name>panda</name>
+      <pose>0 0 0.40 0 0 0</pose>
+    </include>
+
+    <!-- Can: r = 3 cm, h = 10 cm, 250 g, lying on its side (axis along x) -->
+    <model name="can">
+      <pose>0.55 -0.20 0.4305 0 1.5707963 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.25</mass>
+          <inertia><ixx>2.65e-4</ixx><iyy>2.65e-4</iyy><izz>1.125e-4</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><cylinder><radius>0.03</radius><length>0.10</length></cylinder></geometry>
+        </collision>
+        <visual name="body">
+          <geometry><cylinder><radius>0.03</radius><length>0.088</length></cylinder></geometry>
+          <material><ambient>0.75 0.05 0.05 1</ambient><diffuse>0.8 0.05 0.05 1</diffuse>
+            <specular>0.6 0.6 0.6 1</specular></material>
+        </visual>
+        <visual name="top">
+          <pose>0 0 0.047 0 0 0</pose>
+          <geometry><cylinder><radius>0.0285</radius><length>0.006</length></cylinder></geometry>
+          <material><ambient>0.7 0.7 0.72 1</ambient><diffuse>0.75 0.75 0.78 1</diffuse>
+            <specular>0.9 0.9 0.9 1</specular></material>
+        </visual>
+        <visual name="bottom">
+          <pose>0 0 -0.047 0 0 0</pose>
+          <geometry><cylinder><radius>0.0285</radius><length>0.006</length></cylinder></geometry>
+          <material><ambient>0.7 0.7 0.72 1</ambient><diffuse>0.75 0.75 0.78 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Plate: r = 11 cm, 1.5 cm thick, top surface at z = 0.415, with a 1 cm
+         rim (16 boxes) so a can lying on it can't roll off -->
+    <model name="plate">
+      <pose>0.50 0.22 0.4075 0 0 0</pose>
+      <link name="link">
+        <inertial>
+          <mass>0.5</mass>
+          <inertia><ixx>1.52e-3</ixx><iyy>1.52e-3</iyy><izz>3.0e-3</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><cylinder><radius>0.11</radius><length>0.015</length></cylinder></geometry>
+        </collision>
+        <collision name="rim0">
+          <pose>0.1020 0.0000 0.0115 0 0 0.0000</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim0_visual">
+          <pose>0.1020 0.0000 0.0115 0 0 0.0000</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim1">
+          <pose>0.0942 0.0390 0.0115 0 0 0.3927</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim1_visual">
+          <pose>0.0942 0.0390 0.0115 0 0 0.3927</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim2">
+          <pose>0.0721 0.0721 0.0115 0 0 0.7854</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim2_visual">
+          <pose>0.0721 0.0721 0.0115 0 0 0.7854</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim3">
+          <pose>0.0390 0.0942 0.0115 0 0 1.1781</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim3_visual">
+          <pose>0.0390 0.0942 0.0115 0 0 1.1781</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim4">
+          <pose>0.0000 0.1020 0.0115 0 0 1.5708</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim4_visual">
+          <pose>0.0000 0.1020 0.0115 0 0 1.5708</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim5">
+          <pose>-0.0390 0.0942 0.0115 0 0 1.9635</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim5_visual">
+          <pose>-0.0390 0.0942 0.0115 0 0 1.9635</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim6">
+          <pose>-0.0721 0.0721 0.0115 0 0 2.3562</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim6_visual">
+          <pose>-0.0721 0.0721 0.0115 0 0 2.3562</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim7">
+          <pose>-0.0942 0.0390 0.0115 0 0 2.7489</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim7_visual">
+          <pose>-0.0942 0.0390 0.0115 0 0 2.7489</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim8">
+          <pose>-0.1020 0.0000 0.0115 0 0 3.1416</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim8_visual">
+          <pose>-0.1020 0.0000 0.0115 0 0 3.1416</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim9">
+          <pose>-0.0942 -0.0390 0.0115 0 0 3.5343</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim9_visual">
+          <pose>-0.0942 -0.0390 0.0115 0 0 3.5343</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim10">
+          <pose>-0.0721 -0.0721 0.0115 0 0 3.9270</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim10_visual">
+          <pose>-0.0721 -0.0721 0.0115 0 0 3.9270</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim11">
+          <pose>-0.0390 -0.0942 0.0115 0 0 4.3197</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim11_visual">
+          <pose>-0.0390 -0.0942 0.0115 0 0 4.3197</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim12">
+          <pose>-0.0000 -0.1020 0.0115 0 0 4.7124</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim12_visual">
+          <pose>-0.0000 -0.1020 0.0115 0 0 4.7124</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim13">
+          <pose>0.0390 -0.0942 0.0115 0 0 5.1051</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim13_visual">
+          <pose>0.0390 -0.0942 0.0115 0 0 5.1051</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim14">
+          <pose>0.0721 -0.0721 0.0115 0 0 5.4978</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim14_visual">
+          <pose>0.0721 -0.0721 0.0115 0 0 5.4978</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <collision name="rim15">
+          <pose>0.0942 -0.0390 0.0115 0 0 5.8905</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+        </collision>
+        <visual name="rim15_visual">
+          <pose>0.0942 -0.0390 0.0115 0 0 5.8905</pose>
+          <geometry><box><size>0.010 0.0426 0.010</size></box></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse></material>
+        </visual>
+        <visual name="plate_visual">
+          <geometry><cylinder><radius>0.11</radius><length>0.015</length></cylinder></geometry>
+          <material><ambient>0.95 0.95 0.95 1</ambient><diffuse>0.97 0.97 0.97 1</diffuse>
+            <specular>0.5 0.5 0.5 1</specular></material>
+        </visual>
+        <visual name="rim">
+          <pose>0 0 0.0076 0 0 0</pose>
+          <geometry><cylinder><radius>0.075</radius><length>0.0005</length></cylinder></geometry>
+          <material><ambient>0.2 0.35 0.7 1</ambient><diffuse>0.2 0.35 0.7 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- Fixed scene camera, rendered on the GPU; records the MP4 -->
+    <model name="scene_camera">
+      <static>true</static>
+      <pose>1.90 -1.25 1.45 0 0.40 2.46</pose>
+      <link name="link">
+        <sensor name="cam" type="camera">
+          <update_rate>30</update_rate>
+          <always_on>true</always_on>
+          <topic>scene_cam/image</topic>
+          <camera>
+            <horizontal_fov>0.9</horizontal_fov>
+            <image><width>1280</width><height>720</height></image>
+            <clip><near>0.05</near><far>20</far></clip>
+          </camera>
+          <plugin filename="gz-sim-camera-video-recorder-system"
+                  name="gz::sim::systems::CameraVideoRecorder">
+            <service>/scene_cam/record_video</service>
+            <use_sim_time>true</use_sim_time>
+            <fps>30</fps>
+            <bitrate>8000000</bitrate>
+          </plugin>
+        </sensor>
+      </link>
+    </model>
+  </world>
+</sdf>

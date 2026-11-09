@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          pip install ruff==0.8.4 "pydantic>=2.7,<3" "PyYAML>=6.0" "numpy>=1.26"
+          pip install --no-deps ./common
+      - name: Ruff (syntax errors and undefined names)
+        run: ruff check --select E9,F63,F7,F82 --exclude ThirdParty . revolve
+      - name: Validate the experiment specs
+        run: ./revolve validate specs/experiments/*.yaml

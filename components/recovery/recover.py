@@ -227,7 +227,8 @@ class Recovery:
         try:
             self.rollout(name, *item)
         except Exception as e:         # an infrastructure error ends this rollout, not the others
-            self.update(lambda: rec.update(state="error", reason=repr(e)))
+            reason = repr(e)
+            self.update(lambda: rec.update(state="error", reason=reason))
             self.say(f"{name}: error {e!r}")
 
     def rollout(self, name, d, force_phase):

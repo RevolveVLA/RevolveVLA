@@ -7,7 +7,7 @@ An open, plug-and-play architecture for self-improving vision-language-action (V
 </p>
 
 <p align="center">
-  <a href="https://github.com/suchetanrs/roscon_in_2026_submission/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/suchetanrs/roscon_in_2026_submission/actions/workflows/ci.yml/badge.svg" height="20"></a>
+  <a href="https://github.com/RevolveVLA/RevolveVLA/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/RevolveVLA/RevolveVLA/actions/workflows/ci.yml/badge.svg" height="20"></a>
   <a href="LICENSE"><img alt="Licence: Apache-2.0" src="docs/assets/badges/licence.png" height="20"></a>
 </p>
 
@@ -18,10 +18,10 @@ An open, plug-and-play architecture for self-improving vision-language-action (V
 <p align="center"><em>The mobile Panda opens a fridge door and a drawer in Gazebo with MuJoCo physics. The wrist camera inset turns with the hand. Assets from <a href="https://arxiv.org/abs/2003.08515">PartNet-Mobility</a> and <a href="https://huggingface.co/datasets/ai-habitat/ReplicaCAD_dataset">ReplicaCAD</a>.</em></p>
 
 RevolveVLA trains self-improving VLA robot policies in simulation, over
-repeated rounds. Gazebo runs the worlds and the robots, and MuJoCo runs
+repeated turns. Gazebo runs the worlds and the robots, and MuJoCo runs
 the physics through a new gz-physics plugin. When the policy fails, a
 generator such as AutoMoMa makes recovery data from that failure point
-for the next round.
+for the next turn.
 
 ## Why
 
@@ -36,9 +36,11 @@ these experiments in simulation, on one stage or on the whole loop.
   <img alt="The loop: data generation, simulator, recording, dataset, training, evaluation, rollouts and recovery. Every stage but training runs many at once." src="docs/assets/figures/loop.png" width="860">
 </p>
 
-Data generation and the first recording run once. Each round then
-trains the policy, evaluates it, recovers its failures and records them
-for the next round. You can swap any stage, or run the whole loop.
+Turn 0 generates the demonstrations, then trains and evaluates the
+policy. Each later turn recovers its failures on probe seeds, merges
+that data, retrains the policy and evaluates it on held-out seeds it
+never trains on. The loop stops when every held-out seed passes every
+phase, or at max_turns. You can swap any stage, or run the whole loop.
 
 ## Simulation stack: Gazebo with MuJoCo physics
 
@@ -79,9 +81,10 @@ the new data starts where the policy struggles.
 </p>
 
 Recording, rollouts, live checks and recovery run as independent
-containers, one episode per container. The same loop runs on a local
-GPU or on cloud compute. The runner is a plugin too, so you can add
-other clusters or clouds ([Rounds](core/README.md#rounds)).
+containers, one job per container, and each rollout runs on its own
+isolated network. Training has selectable backends: a local GPU, a
+remote GPU over SSH, or Modal. The other stages run on the local
+machine ([Turns](components/manager/README.md)).
 
 ## Every stage is a plugin
 
@@ -89,9 +92,11 @@ other clusters or clouds ([Rounds](core/README.md#rounds)).
   <img alt="The pipeline as plugins: robot, scene, task, generator, simulator, dataset and policy, each with its default plugin and room for your own" src="docs/assets/figures/plugins.png" width="860">
 </p>
 
-Each stage comes with a default plugin, and you can plug in your own
-robot, scene, task, generator, simulator, dataset or policy. The rest
-of the loop stays the same.
+Each stage comes with a default plugin, and you can plug in your own.
+The robot, scene and task are spec folders, in `specs/robots`,
+`specs/scenes` and `specs/tasks`. The generator, simulator, dataset and
+policy are components, each in `components/<name>/` with its own Docker
+image. The rest of the loop stays the same.
 
 ## Quickstart
 

@@ -169,8 +169,8 @@ class Generation:
         try:
             self.seed(s)
         except Exception as e:         # an infrastructure error ends this seed, not the others
-            rec = self.man.seed(s)
-            self.update(lambda: rec.update(state="error", reason=repr(e)))
+            rec, reason = self.man.seed(s), repr(e)
+            self.update(lambda: rec.update(state="error", reason=reason))
             self.say(f"seed {s}: error {e!r}")
 
     def seed(self, s):

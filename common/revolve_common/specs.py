@@ -1,16 +1,18 @@
 """Spec schemas (pydantic v2) and the loader.
 
-specs/ layout: experiments/<exp>.yaml -> tasks/<task>/task.yaml -> robots/<robot>/robot.yaml and
-scenes/<scene>/scene.yaml. Unknown keys are errors everywhere except the blocks ported unchanged from
-the old plugin.yaml files (planner, card, the robot's planner/camera fields), which are typed loosely.
+specs/ layout: experiments/<exp>.yaml -> robots/<robot>/robot.yaml + tasks/<task>/task.yaml (robot-free, with
+optional per-robot settings) -> scenes/<scene>/scene.yaml. Unknown keys are errors everywhere except the
+blocks ported unchanged from the old plugin.yaml files (planner, card, the robot's planner/camera fields),
+which are typed loosely.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
 from . import metrics
 
@@ -138,9 +140,15 @@ class Live(Strict):
     restore_rot_max_deg: float = Field(gt=0)
 
 
+class TaskRobot(Strict):
+    """A task's settings for one robot (task.yaml `robots: {<robot>: ...}`): merged over the task's own
+    planner block (key by key) and replay block when the task is resolved for that robot."""
+    planner: dict[str, Any] = {}
+    replay: dict[str, float | str] = {}
+
+
 class Task(Strict):
     name: str
-    robot: str
     scene: str
     prompt: str
     card: dict[str, str] = {}
@@ -153,6 +161,7 @@ class Task(Strict):
     sanity: Sanity
     rollout: Rollout
     live: Live
+    robots: dict[str, TaskRobot] = {}       # per-robot settings (reach-dependent numbers), optional
 
     @model_validator(mode="after")
     def _phases(self):
@@ -168,12 +177,32 @@ class Task(Strict):
     def phase(self, name):
         return next(p for p in self.phases if p.name == name)
 
+    def for_robot(self, robot):
+        """This task with its `robots.<robot>` settings merged in (the task as that robot runs it)."""
+        o = self.robots.get(robot)
+        if o is None:
+            return self
+        return self.model_copy(update=dict(planner={**self.planner, **o.planner},
+                                           replay=self.replay.model_copy(update=o.replay)))
+
 
 # ------------------------------------------------------------------ robot, scene
 class Joints(Strict):
-    state: list[str] = Field(min_length=1)    # order of the state log's robot_joint_* columns / observation.state
-    action: list[str] = Field(min_length=1)   # order of the whole-body action (bag.py ACTION_NAMES)
+    base: list[str] = Field(min_length=3, max_length=3)   # the shared base chain: x, y [m] (world), yaw [rad]
     arm: list[str] = Field(min_length=1)
+    gripper: list[str] = Field(min_length=1)               # actuated gripper joints, raw values in the state
+
+    @computed_field
+    @property
+    def state(self) -> list[str]:
+        """Order of the state log's robot_joint_* columns / observation.state: base, arm, gripper joints."""
+        return [*self.base, *self.arm, *self.gripper]
+
+    @computed_field
+    @property
+    def action(self) -> list[str]:
+        """Order of the whole-body action: base, arm, `gripper` = the opening per contact link [m]."""
+        return [*self.base, *self.arm, "gripper"]
 
 
 class Camera(Strict):
@@ -187,19 +216,98 @@ class Camera(Strict):
     clip: list[float] = Field(min_length=2, max_length=2)
 
 
+class Links(Strict):
+    root: str                        # the arm's first link, fixed on the chassis (base_link) at `mount`
+    hand: str                        # TCP = hand origin + tcp.hand_offset_z * hand z, hand orientation
+    on_chassis: list[str]            # links mounted on the chassis (no clearance check against it)
+
+
+class Tcp(Strict):
+    link: str                        # the TCP frame in the model and the planner robot
+    hand_offset_z: float
+
+
+class Mount(Strict):
+    xyz: list[float] = Field(min_length=3, max_length=3)   # links.root in base_link [m]
+
+
+class Chassis(Strict):
+    size_xy: list[float] = Field(min_length=2, max_length=2)   # box [m], from z 0.005 up to the mount
+    mass: float = Field(gt=0)
+
+
+class Base(Strict):
+    """The base joints' control (P + damping feed-forward, clamped) and SDF values; v_max / w_max: the
+    planning limits (peak of a min-jerk drive); limits: +- joint ranges [m, m, rad]."""
+    kp: list[float] = Field(min_length=3, max_length=3)
+    damping: list[float] = Field(min_length=3, max_length=3)    # SDF <damping> [N s/m, N m s/rad]
+    f_max: list[float] = Field(min_length=3, max_length=3)
+    v_max: float = Field(gt=0)
+    w_max: float = Field(gt=0)
+    limits: list[float] = Field(min_length=3, max_length=3)
+
+
+class Arm(Strict):
+    ready: list[float]               # the rest / IK-preference configuration [rad]
+    kp: list[float]
+    damping: list[float]             # SDF <damping> [N m s/rad], fed forward by the controller
+    tau_max: list[float]
+    # rotor inertia stand-in [kg m^2] added to each arm joint's child link (the gz MuJoCo plugin drops
+    # <armature>); unset: the implementation's own
+    armature: list[float] | None = None
+
+
+class GripperSpec(Strict):
+    contact_links: list[str] = Field(min_length=2, max_length=2)   # their handle contacts = finger_contacts
+    hand_links: list[str]            # the links that may touch the grasped object
+    open_m: float                    # opening per contact link [m] (gap / 2)
+    closed_m: float
+    force_n: float = Field(gt=0)     # max squeeze [N]
+    # gripper joint position gain and SDF <damping>; unset: the implementation's own values
+    kp: float | None = Field(None, gt=0)
+    damping: float | None = Field(None, gt=0)
+    armature: float | None = Field(None, ge=0)   # as arm.armature, for the gripper joint's link
+
+
+class Reach(Strict):
+    d_m: float = Field(gt=0)         # base_for_reach default distance from the robot's reach origin
+    bearing_rad: float = 0.0
+
+
 class Robot(Strict):
-    name: str
-    model: str                       # gz model name (joint scope prefix, bag.py)
+    name: str                        # spec name (specs/robots/<name>/)
+    # simulator code folder robots/<implementation>/ (default: the spec name): robots that share one
+    # implementation and differ only in their spec data
+    implementation: str | None = None
+    # uniform size factor the implementation applies to the description and to its own built-in geometry
+    # (lengths x s, masses x s^3, inertias x s^5); the values in this file are absolute (not scaled)
+    scale: float = Field(1.0, gt=0)
+    model: str                       # gz model name (joint scope prefix "<model>::")
+    description: str                 # the robot's model source (dir or URDF), repo-relative
     joints: Joints
+    links: Links
+    tcp: Tcp
+    mount: Mount
+    chassis: Chassis
+    base: Base
+    arm: Arm
+    gripper: GripperSpec
+    reach: Reach
     contract: str                    # Rosetta contract, relative to the robot spec dir
     camera_model: str
-    gz_scripts: str
-    franka_description: str
     gz_sdf: str
-    gz_base_limits: list[float] = Field(min_length=3, max_length=3)
-    ee_link: str
     cameras: list[Camera] = Field(min_length=1)
-    planner: dict[str, Any]          # ported cuRobo fields (lock_joints, spheres, weights, limits)
+    planner: dict[str, Any]          # ported cuRobo fields (spheres, weights, limits)
+
+    @model_validator(mode="after")
+    def _sizes(self):
+        if self.implementation is None:
+            self.implementation = self.name
+        n = len(self.joints.arm)
+        for k in ("ready", "kp", "damping", "tau_max", "armature"):
+            if getattr(self.arm, k) is not None and len(getattr(self.arm, k)) != n:
+                raise ValueError(f"arm.{k}: {len(getattr(self.arm, k))} values for {n} arm joints")
+        return self
 
 
 class Scene(Strict):
@@ -283,6 +391,7 @@ class Eval(Strict):
 
 class Experiment(Strict):
     name: str
+    robot: str
     task: str
     max_turns: int = Field(ge=1)
     seeds: Seeds
@@ -301,12 +410,19 @@ class Resolved(BaseModel):
 
 
 # ------------------------------------------------------------------ loader
+ROBOT_ENV = "REVOLVE_ROBOT"          # the robot of task-level loads (the CLI sets it from the experiment)
 KINDS = {"experiments": Experiment, "tasks": Task, "robots": Robot, "scenes": Scene}
 FILES = {"tasks": "task.yaml", "robots": "robot.yaml", "scenes": "scene.yaml"}
 
 
 class SpecError(ValueError):
     pass
+
+
+def robot_env():
+    """{REVOLVE_ROBOT: its value} when set: what a launcher passes on to a job's container."""
+    v = os.environ.get(ROBOT_ENV)
+    return {ROBOT_ENV: v} if v else {}
 
 
 def read_yaml(path):
@@ -351,17 +467,29 @@ def spec_path(root, kind, name):
     return p
 
 
-def resolve_task(task, root):
-    robot = parse(Robot, spec_path(root, "robots", task.robot))
+def resolve_task(task, root, robot_name):
+    """(the task as robot_name runs it, the robot, the scene); the robot's contract must name the robot's
+    state and action joints in its observation.state / action selects."""
+    for r in task.robots:
+        if not (Path(root) / "robots" / r / FILES["robots"]).is_file():
+            raise SpecError(f"task {task.name}: robots.{r}: no robot {r!r}")
+    robot = parse(Robot, spec_path(root, "robots", robot_name))
     scene = parse(Scene, spec_path(root, "scenes", task.scene))
     contract = Path(root) / "robots" / robot.name / robot.contract
     if not contract.is_file():
         raise SpecError(f"robot {robot.name}: contract {contract} missing")
-    return robot, scene
+    c = read_yaml(contract)
+    sel = {k: [x.removeprefix("position.") for x in v["select"]]
+           for k, v in {**c.get("observations", {}), **c.get("actions", {})}.items() if "select" in v}
+    for key, want in (("observation.state", robot.joints.state), ("action", robot.joints.action)):
+        if sel.get(key) != want:
+            raise SpecError(f"robot {robot.name}: contract {key} select {sel.get(key)} != the robot's joints {want}")
+    return task.for_robot(robot.name), robot, scene
 
 
-def load(path):
+def load(path, robot=None):
     """Load and validate any spec file; experiments and tasks are resolved to their robot and scene.
+    The robot: an experiment's `robot:`; for a task (robot-free) the `robot` argument, else $REVOLVE_ROBOT.
     -> Resolved (experiment/task) or the parsed Robot/Scene."""
     path = Path(path)
     root = find_root(path)
@@ -374,13 +502,18 @@ def load(path):
             raise SpecError(f"{path}: recovery.phases {bad} are not phases of task {task.name}")
         if spec.name != path.stem:
             raise SpecError(f"{path}: name {spec.name!r} != the file name {path.stem!r}")
-        robot, scene = resolve_task(task, root)
-        return Resolved(experiment=spec, task=task, robot=robot, scene=scene)
+        if robot is not None and robot != spec.robot:
+            raise SpecError(f"{path}: robot {spec.robot!r}, not {robot!r}")
+        task, rb, scene = resolve_task(task, root, spec.robot)
+        return Resolved(experiment=spec, task=task, robot=rb, scene=scene)
     if spec.name != path.parent.name:
         raise SpecError(f"{path}: name {spec.name!r} != its folder {path.parent.name!r}")
     if kind == "tasks":
-        robot, scene = resolve_task(spec, root)
-        return Resolved(task=spec, robot=robot, scene=scene)
+        robot = robot or os.environ.get(ROBOT_ENV)
+        if not robot:
+            raise SpecError(f"{path}: a task is robot-free: name the robot (an experiment's `robot:`, ${ROBOT_ENV})")
+        task, rb, scene = resolve_task(spec, root, robot)
+        return Resolved(task=task, robot=rb, scene=scene)
     return spec
 
 

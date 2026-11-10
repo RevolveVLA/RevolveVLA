@@ -1,0 +1,43 @@
+# The mobile SO-101 XL's Rosetta contract (= mobile_so101's): mobile_panda's (same cameras, timing and topics) with the
+# SO-101's joints. Rosetta contract (iblnkn/rosetta d552e34, docs/reference/contract.md) for the camera bags of both
+# tasks (the bag writer): one LeRobot frame per 1/30 s tick from the bag start, task string = the
+# bag's custom_data lerobot.operator_prompt. The dataset embeds this file as
+# meta/rosetta_contract.yaml, where Rosetta's policy_runner_node finds it.
+# Every source is `hold` on the `receive` timeline (the bag log time when porting): the newest
+# message logged at or before the tick. State and action are the 1 ms step at or before it; a camera
+# frame is logged at its own tick, so frame k carries image k. The `header` timeline would drop
+# stamp (0, 0), which is step 0 and camera frame 0 here.
+robot_type: mobile_so101_xl
+robot_interface: ros2
+fps: 30
+
+observations:
+  # resize is required on every image key; the frames are 480x480 already (nearest, so a no-op)
+  observation.images.wrist:
+    channel: {topic: /cameras/wrist/image/compressed, type: sensor_msgs/msg/CompressedImage}
+    align: {strategy: hold, timeline: receive}
+    apply: [resize: [480, 480]]
+  observation.images.overhead_left:
+    channel: {topic: /cameras/overhead_left/image/compressed, type: sensor_msgs/msg/CompressedImage}
+    align: {strategy: hold, timeline: receive}
+    apply: [resize: [480, 480]]
+  observation.images.overhead_right:
+    channel: {topic: /cameras/overhead_right/image/compressed, type: sensor_msgs/msg/CompressedImage}
+    align: {strategy: hold, timeline: receive}
+    apply: [resize: [480, 480]]
+  # base x, y [m] (world), yaw [rad] (unwrapped), the 5 arm joints [rad], the jaw angle [rad]
+  observation.state:
+    channel: {topic: /joint_states, type: sensor_msgs/msg/JointState}
+    align: {strategy: hold, timeline: receive}
+    select: [position.base_x, position.base_y, position.base_yaw,
+             position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+             position.wrist_roll, position.gripper]
+
+actions:
+  # whole-body position targets: base x, y, yaw, the 5 arm joints, gripper = per-finger opening [m]
+  action:
+    channel: {topic: /action, type: sensor_msgs/msg/JointState}
+    align: {strategy: hold, timeline: receive}
+    select: [position.base_x, position.base_y, position.base_yaw,
+             position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+             position.wrist_roll, position.gripper]

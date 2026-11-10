@@ -1,7 +1,16 @@
 # simulator
-Gazebo Kura (gz-sim 11 / gz-physics 10 main) + MuJoCo physics for the PartNet kitchen and the mobile
-Panda. Ported from the earlier pipeline's gz demo (scripts, worlds) and simulator plugin (replay, live
-phase validator, save/restore), with every threshold read from specs/tasks/<t>/task.yaml.
+Gazebo Kura (gz-sim 11 / gz-physics 10 main) + MuJoCo physics for the PartNet kitchen and the robots
+(arms on a virtual holonomic base: mobile_panda, mobile_so101). Ported from the earlier pipeline's gz demo
+(scripts, worlds) and simulator plugin (replay, live phase validator, save/restore), with every threshold
+read from specs/tasks/<t>/task.yaml.
+
+Robots: the robot is `$REVOLVE_ROBOT` (the experiment's `robot:`; the CLI and the launchers pass it to every
+job). Each robot has `specs/robots/<robot>/robot.yaml` + `contract.yaml` and `src/sim/robots/<robot>/` with
+the same files (`robot.py` kinematics and laws, `model.py` gz model from robot.yaml `description`,
+`scripted.py` smoke plan and scripted episodes, `planner.py` the cuRobo planner robot that datagen and
+recovery build their planner assets from) behind `src/sim/robots/base.py` (shared base chain, Plan,
+Controller). Everything else in `src/sim/` is robot-independent. `src/sim/can_demo/` is the fixed-arm
+can-on-plate demo (Panda only, not a pipeline task).
 
 ## Build and test
 ```
@@ -13,8 +22,8 @@ phase validator, save/restore), with every threshold read from specs/tasks/<t>/t
   layer FROM this image for `rollout` (built by `./revolve build evaluation`).
 - `build.sh`: `ThirdParty/gz_kura/fetch.sh` (kura.repos pins + ThirdParty/patches) and colcon into
   `ThirdParty/gz_kura/install` (git-ignored; build/, log/, .ccache/ too), mounted at `/opt/gz_ws` as
-  the earlier gz build did. Rebuilds are incremental. franka_description is read in place from the
-  ThirdParty submodule (nothing to build).
+  the earlier gz build did. Rebuilds are incremental. The robots' model sources (robot.yaml `description`:
+  franka_description, SO-ARM100) are read in place from the ThirdParty submodules (nothing to build).
 - Assets (PartNet-Mobility, ReplicaCAD: non-commercial) are read in place from `assets/` (git-ignored, repo root)
   through the repo mount; never copied into git or the image. They are made by `assets_pipeline/` (moved from
   the earlier gz demo, see below).
@@ -46,8 +55,8 @@ models are kept as they were, so regenerated files match the existing ones.
 | Command | What | Was |
 |---|---|---|
 | `scene-check` | kitchen without robot: door/drawer limits, rest drift/jitter, cup on its shelf | `kitchen_test` |
-| `robot-smoke` | mobile Panda spawn + smoke test in the kitchen | `kitchen_robot_test` |
-| `can-demo` | Panda can-on-plate | `headless` can demo |
+| `robot-smoke` | the robot's spawn + smoke test in the kitchen (its `scripted.smoke_plan`) | `kitchen_robot_test` |
+| `can-demo` | Panda can-on-plate (`src/sim/can_demo/`) | `headless` can demo |
 | `episode --name fridge\|drawer` | scripted episode, fed through the live phase validator: its own checks + per-phase verdicts + phase states | `episode <name>` |
 | `replay --plan RUN --attempt A` | AutoMoMa plan attempt: offline verdict + per-phase verdicts + `phase_states/` + `state_log.npz` + MCAP `bag/` | `replay` + `live_validate` + bag write |
 | `restore-check --source D --phase P` | restore `D/phase_states/P_start.npz`, run on, compare with the source | `live_validate --restore` |

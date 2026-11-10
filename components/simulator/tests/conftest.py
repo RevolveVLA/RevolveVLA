@@ -8,7 +8,9 @@ episode dir with plan/<run>/handoff.* and replay/{episode,verdict}.json + state_
 runs/test_cache/simulator/fridge_seed0, git-ignored, a copy of `./revolve test recovery`'s fridge seed 0 datagen plan
 (runs/test_cache/recovery/datagen/open_fridge_door/plans/seed_0 -> plan/seed_0) and this suite's own replay of it
 (runs/sim_tests/<stamp>/replay -> replay/; datagen's recorded episode is not bit-identical to it); missing -> the
-stored-plan tests skip).
+stored-plan tests skip). A second robot: REVOLVE_SIM_PLAN_SO101 (default runs/test_cache/simulator/so101_drawer_seed8,
+git-ignored): a mobile_so101 open_drawer datagen run's plans/seed_8 (handoff.*) -> plan/seed_8 and its datagen check
+checks/seed_8_a0 -> replay/; replayed as datagen's check (its ROUND_TIMING / ROUND_PULL), missing -> that test skips.
 """
 import json
 import os
@@ -25,16 +27,29 @@ REPO = COMP.parents[1]
 sys.path[:0] = [str(COMP), str(COMP / "src" / "sim")]
 import launch  # noqa: E402
 
+os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
+
 EPISODE = Path(os.environ.get("REVOLVE_SIM_PLAN", REPO / "runs/test_cache/simulator/fridge_seed0"))
+EPISODE_SO101 = Path(os.environ.get("REVOLVE_SIM_PLAN_SO101", REPO / "runs/test_cache/simulator/so101_drawer_seed8"))
+SO101 = "mobile_so101"
 RUN = REPO / "runs" / "sim_tests" / time.strftime("%Y%m%d_%H%M%S")
 ASSETS = [REPO / "assets/generated_partnet/fridge/model.sdf",
           REPO / "assets/generated_partnet/kitchen_counter/model.sdf",
           REPO / "assets/generated/cup/model.sdf"]
 
 
-def plan_dir():
-    runs = sorted((EPISODE / "plan").glob("*/handoff.npz")) if EPISODE.is_dir() else []
+def plan_dir(episode=EPISODE):
+    runs = sorted((episode / "plan").glob("*/handoff.npz")) if episode.is_dir() else []
     return runs[0].parent if runs else None
+
+
+def so101_replay_env():
+    """The mobile_so101 replay job's env: its robot + datagen's round blocks of the drawer for it, as
+    components/datagen/generate.py docker_replay passes them to a check."""
+    sys.path.append(str(REPO / "components" / "datagen" / "src" / "datagen"))
+    import specs_bridge
+    blocks = specs_bridge.round_blocks("open_drawer", SO101)
+    return {"REVOLVE_ROBOT": SO101, **{f"ROUND_{k.upper()}": json.dumps(v) for k, v in blocks.items() if k in ("timing", "pull")}}
 
 
 def jobs_spec():
@@ -47,6 +62,10 @@ def jobs_spec():
     if plan_dir() is not None:
         attempt = json.loads((EPISODE / "replay" / "episode.json").read_text())["attempt_id"]
         j["replay"] = ["replay", "--plan", str(plan_dir()), "--attempt", str(attempt), "--out", out("replay")]
+    if plan_dir(EPISODE_SO101) is not None:
+        attempt = json.loads((EPISODE_SO101 / "replay" / "episode.json").read_text())["attempt_id"]
+        j["replay_so101"] = ["replay", "--plan", str(plan_dir(EPISODE_SO101)), "--attempt", str(attempt),
+                             "--task", "open_drawer", "--no-bag", "--out", out("replay_so101")]
     return j
 
 
@@ -104,7 +123,8 @@ def jobs():
     js = Jobs()
     t0 = time.time()
     for name, args in jobs_spec().items():
-        js.start(name, args, linger_s=8.0 if name == "replay" else 0.0)
+        js.start(name, args, linger_s=8.0 if name == "replay" else 0.0,
+                 env=so101_replay_env() if name == "replay_so101" else None)
     poller = threading.Thread(target=js.poll_http, args=("replay",), daemon=True) if "replay" in js.started else None
     if poller:
         poller.start()

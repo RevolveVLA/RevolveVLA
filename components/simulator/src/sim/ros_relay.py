@@ -1,15 +1,15 @@
 """ROS 2 side of the closed loop, beside gz and outside its 1 kHz loop: gz-transport <-> ROS 2 per the
 robot's Rosetta contract. Runs in revolve-simulator-ros (components/simulator/ros/Dockerfile) with ROS 2
-Jazzy sourced for this process only (cli.py rollout starts it beside gz). Ported unchanged from
-the earlier pipeline's ros_relay.py but for the default paths (specs/, runs/models/).
+Jazzy sourced for this process only (cli.py rollout starts it beside gz). Ported from the earlier
+pipeline's ros_relay.py; the joint names come from the robot's contract.
 
-  ros_relay.py <out dir> [contract.yaml] [camera model dir]
+  ros_relay.py <out dir> <contract.yaml> <camera model dir>
 
 gz -> ROS 2
   /closed_loop/state (closed_loop_system, every 1 ms step) -> the contract's JointState observation
-      topic (/joint_states: the 12 robot joints, positions and velocities), then /clock
+      topic (/joint_states: the robot joints of its observation.state select, positions and velocities), then /clock
       (rosgraph_msgs/Clock); both carry the step's sim time.
-  /mobile_panda/<camera>/image (the camera sensors in <model dir>/model.sdf, raw RGB) ->
+  /<model>/<camera>/image (the camera sensors in <model dir>/model.sdf, raw RGB) ->
       /cameras/<camera without _cam>/image/compressed (sensor_msgs/CompressedImage, Pillow JPEG q90,
       frame_id = the camera, stamp = the gz render time), as bag.py records them. Every
       CompressedImage topic in the contract must have a camera.
@@ -45,23 +45,22 @@ from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import CompressedImage, JointState
 
 ACTION_TOPIC, STATE_TOPIC = "/closed_loop/action", "/closed_loop/state"
-# closed_loop_system's state order (mobile_panda.Controller.names)
-STATE_NAMES = ["base_x", "base_y", "base_yaw"] + [f"panda_joint{i}" for i in range(1, 8)] + [
-    "panda_finger_joint_left", "panda_finger_joint_right"]
 JPEG_QUALITY = 90
 FRAMES_DIR = os.environ.get("CL_FRAMES_DIR")
 CI, JS = "sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/JointState"
 
 
 def contract_io(path):
-    """(image topics, state topic, action topic, action joint names) from a Rosetta contract."""
+    """(image topics, state topic, action topic, action joint names, state joint names) from a Rosetta
+    contract; the state names = closed_loop_system's state order (the robot's Controller.names)."""
     c = yaml.safe_load(Path(path).read_text())
     obs = [v["channel"] for v in c["observations"].values()]
     images = [o["topic"] for o in obs if o["type"] == CI]
     state = [o["topic"] for o in obs if o["type"] == JS]
     (act,) = c["actions"].values()
     names = [s.removeprefix("position.") for s in act["select"]]
-    return images, state[0], act["channel"]["topic"], names
+    sel = next(v["select"] for v in c["observations"].values() if v["channel"]["type"] == JS)
+    return images, state[0], act["channel"]["topic"], names, [s.removeprefix("position.") for s in sel]
 
 
 def cameras(model_dir):
@@ -77,9 +76,9 @@ def stamp(sec, nsec):
     return Time(sec=int(sec), nanosec=int(nsec))
 
 
-def main(out, contract="specs/robots/mobile_panda/contract.yaml", model_dir="runs/models/mobile_panda"):
+def main(out, contract, model_dir):
     out = Path(out)
-    img_topics, state_topic, action_topic, action_names = contract_io(contract)
+    img_topics, state_topic, action_topic, action_names, state_names = contract_io(contract)
     cams = cameras(model_dir)
     by_topic = {image_topic(c): c for c in cams}
     missing = [t for t in img_topics if t not in by_topic]
@@ -103,7 +102,7 @@ def main(out, contract="specs/robots/mobile_panda/contract.yaml", model_dir="run
     def on_state(msg):
         js = JointState()
         js.header.stamp = stamp(msg.header.stamp.sec, msg.header.stamp.nsec)
-        js.name = STATE_NAMES
+        js.name = state_names
         js.position = list(msg.position)
         js.velocity = list(msg.velocity)
         js_pub.publish(js)

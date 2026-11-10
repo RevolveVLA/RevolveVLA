@@ -4,19 +4,20 @@ Ported from the earlier pipeline's simulator plugin (unchanged but for a scripte
 Loaded by the replay world copy that cli.py writes (module_name swapped).
 $REPLAY_DIR holds actions.npz and episode.json from replay.py. The robot starts at the
 first action (joint reset at configure). Everything but the input, the spawn and the log is
-the scripted episode system (mobile_panda_episode_system, reused read-only):
+the scripted episode system (episode_system, reused read-only):
 Controller.apply every step, check windows from the episode's events, the grasped /
 door_open or drawer_open / sim-time checks, physics and contact checks, "DONE PASS/FAIL" on
-/mobile_panda_skill/status. Thresholds and the task object's joint and handle (door_* arrays,
+/robot_skill/status. Thresholds and the task object's joint and handle (door_* arrays,
 handle contacts) come from episode.json (the plugin data).
 
 Writes $REPLAY_DIR/state_log.npz before the DONE line: one row per physics step n (0-based),
 the state at the start of the step (time_s = n * dt), the Action and joint efforts applied
-during it, and the contacts the step produced.
+during it, and the contacts the step produced. robot_joint_* columns: the robot's Controller.names
+(base, arm, the raw gripper joints); contact_left/right_finger_handle: the gripper's two contact links.
 
 A recovery replay ($REPLAY_RECOVERY_SEED set, bands from $ROUND_RECOVERY) adds seeded DART-style
 noise to the executed base and arm targets (recovery_noise). The action_* arrays stay the clean
-expert targets of actions.npz; the log adds noise_base (N, 3), noise_arm (N, 7) and recovery_seed,
+expert targets of actions.npz; the log adds noise_base (N, 3), noise_arm (N, dof) and recovery_seed,
 and the executed target of step n is action_*[n] + noise_*[n]. Without the seed nothing changes.
 """
 import json
@@ -27,10 +28,9 @@ from types import SimpleNamespace
 
 import numpy as np
 
-import mobile_panda as mp
-import mobile_panda_episode_system as eps
-import mobile_panda_skill_system as sks
-import panda_plan as pp
+import episode_system as eps
+import skill_system as sks
+from robots.base import CONTROL_DT, Action, ActionSeq
 
 REPLAY_DIR = Path(os.environ.get("REPLAY_DIR", "."))
 RECOVERY_SEED = os.environ.get("REPLAY_RECOVERY_SEED")
@@ -40,16 +40,16 @@ RECOVERY_SEED = os.environ.get("REPLAY_RECOVERY_SEED")
 NOISE_SPAN, NOISE_RAMP = 0.6, 0.3
 
 
-def recovery_noise(n, k0, k1, block, seed):
+def recovery_noise(n, k0, k1, block, seed, dof):
     """Target noise of a recovery replay from its seed alone (check and record agree): one offset of
-    the base (x, y, yaw) and of the 7 arm joints, flat in the middle of steps [k0, k0 + NOISE_SPAN
+    the base (x, y, yaw) and of the dof arm joints, flat in the middle of steps [k0, k0 + NOISE_SPAN
     (k1 - k0)) with raised-cosine ramps in and out, zero elsewhere. Peaks (RCA item 29): planar base
     U[0.01, base_m] m in a uniform direction, yaw +-U[1, yaw_deg] deg, each joint U[-arm_rad, arm_rad].
-    -> noise_base (n, 3) [m, m, rad], noise_arm (n, 7) [rad]."""
+    -> noise_base (n, 3) [m, m, rad], noise_arm (n, dof) [rad]."""
     rng = np.random.default_rng(seed)
     r, phi = rng.uniform(0.01, block["base_m"]), rng.uniform(0.0, 2 * np.pi)
     yaw = rng.choice((-1.0, 1.0)) * np.radians(rng.uniform(1.0, block["yaw_deg"]))
-    arm = rng.uniform(-block["arm_rad"], block["arm_rad"], 7)
+    arm = rng.uniform(-block["arm_rad"], block["arm_rad"], dof)
     w = int(NOISE_SPAN * (k1 - k0))
     m = int(NOISE_RAMP * w)
     ramp = 0.5 - 0.5 * np.cos(np.pi * np.arange(m) / m)
@@ -83,8 +83,8 @@ class ReplaySystem(eps.EpisodeSystem):
         th = ep["thresholds"]
         sks.SLIP_TOL, sks.MAX_SPEED, sks.MAX_PEN = (th["handle_slip_max_m"], th["peak_body_speed_max_mps"],
                                                     th["penetration_max_m"])
-        seq = mp.ActionSeq.load(REPLAY_DIR / "actions.npz")
-        P = SimpleNamespace(events=[tuple(e) for e in ep["events"]], t=len(seq) * mp.CONTROL_DT,
+        seq = ActionSeq.load(REPLAY_DIR / "actions.npz")
+        P = SimpleNamespace(events=[tuple(e) for e in ep["events"]], t=len(seq) * CONTROL_DT,
                             ik_worst=(0.0, 0.0), actions=lambda: seq)
         return SimpleNamespace(P=P, checks=[tuple(c) for c in ep["checks"]], info=dict(budget=ep["budget_s"]),
                                spans=ep.get("spans", []))     # a scripted episode's spans (live_validate.py)
@@ -94,12 +94,13 @@ class ReplaySystem(eps.EpisodeSystem):
         c, n = self.ctl, self.n_total
         a = self.seq[0]                 # spawn at the first action, not SkillSystem's BASE0 / READY
         c.reset(ecm, a.base, a.arm, a.grip)
-        self.force = np.zeros(12)
-        taps = [_ForceTap(j, self.force, i) for i, j in enumerate(c.base + c.arm + c.fingers)]
-        c.base, c.arm, c.fingers = taps[:3], taps[3:10], taps[10:]
+        k, nb, na = len(c.names), len(c.base), len(c.arm)
+        self.force = np.zeros(k)
+        taps = [_ForceTap(j, self.force, i) for i, j in enumerate(c.base + c.arm + c.grip)]
+        c.base, c.arm, c.grip = taps[:nb], taps[nb:nb + na], taps[nb + na:]
         self.door = dict(self.state.joints)[self.ep["object_joint"]]
         z = lambda *s: np.zeros((n, *s))
-        self.log = dict(robot_joint_pos=z(12), robot_joint_vel=z(12), robot_joint_effort=z(12),
+        self.log = dict(robot_joint_pos=z(k), robot_joint_vel=z(k), robot_joint_effort=z(k),
                         door_pos=z(), door_vel=z(), base_link_pose=z(7), tcp_pose=z(7))
         self.contact_msgs = []          # (step, robot link, left on handle, right on handle, other, depth)
         self.wall = [None, None]        # wall time at the first and the last logged step
@@ -107,27 +108,27 @@ class ReplaySystem(eps.EpisodeSystem):
         if RECOVERY_SEED is not None:
             start = {lab: k for k, lab in self.ev_steps}
             self.noise = recovery_noise(len(self.seq), start["approach in"], start["grip close"],
-                                        json.loads(os.environ["ROUND_RECOVERY"]), int(RECOVERY_SEED))
+                                        json.loads(os.environ["ROUND_RECOVERY"]), int(RECOVERY_SEED), self.robot.dof)
 
     def pre_update(self, info, ecm):
         # SkillSystem.pre_update minus the cup / restore hooks (unused here), with the
         # controller's state read once and logged
         if info.paused:
             return
-        n = int(round(info.sim_time.total_seconds() / mp.CONTROL_DT)) - 1
+        n = int(round(info.sim_time.total_seconds() / CONTROL_DT)) - 1
         a = min(n, len(self.seq) - 1)
         m = self.measured(ecm)
         act = self.seq[a]
         if self.noise is not None:      # the executed target; the log keeps the clean one
-            act = mp.Action(act.base + self.noise[0][a], act.base_vel, act.arm + self.noise[1][a], act.arm_vel,
+            act = Action(act.base + self.noise[0][a], act.base_vel, act.arm + self.noise[1][a], act.arm_vel,
                             act.grip, act.grip_force)
         self.ctl.apply(ecm, act, m)
         if n >= self.n_total:
             return
         self.applied[n] = a
         L = self.log
-        L["robot_joint_pos"][n] = (*m["base"], *m["arm"], *m["fingers"])
-        L["robot_joint_vel"][n] = (*m["base_vel"], *m["arm_vel"], *m["fingers_vel"])
+        L["robot_joint_pos"][n] = (*m["base"], *m["arm"], *m["grip_q"])
+        L["robot_joint_vel"][n] = (*m["base_vel"], *m["arm_vel"], *m["grip_qv"])
         L["robot_joint_effort"][n] = self.force
         L["door_pos"][n] = (self.door.position(ecm) or [0.0])[0]
         L["door_vel"][n] = (self.door.velocity(ecm) or [0.0])[0]
@@ -135,7 +136,7 @@ class ReplaySystem(eps.EpisodeSystem):
         h = _pose7(self.ctl.hand.world_pose(ecm))
         w, x, y, zq = h[3:]
         hz = np.array([2 * (x * zq + w * y), 2 * (y * zq - w * x), 1 - 2 * (x * x + y * y)])
-        L["tcp_pose"][n] = (*(np.array(h[:3]) + pp.TCP_Z * hz), *h[3:])
+        L["tcp_pose"][n] = (*(np.array(h[:3]) + self.robot.tcp_z * hz), *h[3:])
         self.wall[0 if n == 0 else 1] = time.time()
 
     def measured(self, ecm):
@@ -146,19 +147,20 @@ class ReplaySystem(eps.EpisodeSystem):
     def on_contacts(self, msg):
         super().on_contacts(msg)
         st = msg.header.stamp
-        k = int(round((st.sec + st.nsec * 1e-9) / mp.CONTROL_DT)) - 1
+        k = int(round((st.sec + st.nsec * 1e-9) / CONTROL_DT)) - 1
         link, left, right, other, depth = None, False, False, 0, 0.0
+        scope = self.robot.model + "::"
         for c in msg.contact:
             names = (c.collision1.name, c.collision2.name)
-            rob = [s for s in names if s.startswith(mp.MODEL + "::")]
+            rob = [s for s in names if s.startswith(scope)]
             if not rob:
                 continue
             link = rob[0].split("::")[1]
-            oth = [s for s in names if not s.startswith(mp.MODEL + "::")]
+            oth = [s for s in names if not s.startswith(scope)]
             on_handle = bool(oth) and oth[0].startswith(self.ep["object_handle"])
-            left |= on_handle and link == "panda_leftfinger"
-            right |= on_handle and link == "panda_rightfinger"
-            other += not (on_handle and link in sks.FINGERS)
+            left |= on_handle and link == self.fingers[0]
+            right |= on_handle and link == self.fingers[1]
+            other += not (on_handle and link in self.fingers)
             depth = max(depth, max(c.depth) if len(c.depth) else 0.0)
         if link is not None:
             self.contact_msgs.append((k, link, left, right, other, depth))
@@ -170,7 +172,7 @@ class ReplaySystem(eps.EpisodeSystem):
         sub_idx = np.array([ep["subtasks"].index(s) for s in ep["event_subtask"]])
         # a contact sensor message stands for the steps until the next one (the Contact system
         # publishes only while a contact exists, so no message = no contact)
-        hold = max(1, int(round(1.0 / (ep["contact_rate_hz"] * mp.CONTROL_DT))))
+        hold = max(1, int(round(1.0 / (ep["contact_rate_hz"] * CONTROL_DT))))
         cl, cr = np.zeros(n, bool), np.zeros(n, bool)
         co, cd = np.zeros(n, np.int16), np.zeros(n, np.float32)
         per_link = {}
@@ -190,7 +192,7 @@ class ReplaySystem(eps.EpisodeSystem):
             noise_base=self.noise[0][:n], noise_arm=self.noise[1][:n], recovery_seed=np.int64(RECOVERY_SEED))
         np.savez_compressed(
             REPLAY_DIR / "state_log.npz", **self.log,
-            time_s=np.arange(n) * mp.CONTROL_DT, control_dt=mp.CONTROL_DT,
+            time_s=np.arange(n) * CONTROL_DT, control_dt=CONTROL_DT,
             robot_joint_names=np.array(self.ctl.names), door_joint=self.ep["object_joint"],
             action_base=seq.base[:n], action_base_vel=seq.base_vel[:n], action_arm=seq.arm[:n],
             action_arm_vel=seq.arm_vel[:n], action_grip=seq.grip[:n], action_grip_force=seq.grip_force[:n],
@@ -204,7 +206,7 @@ class ReplaySystem(eps.EpisodeSystem):
         t0 = time.time()
         self.save_log()
         wall = (self.wall[1] - self.wall[0]) if None not in self.wall else None
-        sim = self.n_total * mp.CONTROL_DT
+        sim = self.n_total * CONTROL_DT
         self.extra["replay"] = dict(
             plan_run=self.ep["plan_run"], attempt_id=self.ep["attempt_id"], steps=self.n_total, sim_s=sim,
             loop_wall_s=round(wall, 2) if wall else None, rtf=round(sim / wall, 3) if wall else None,

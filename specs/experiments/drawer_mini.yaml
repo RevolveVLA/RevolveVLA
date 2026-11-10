@@ -1,6 +1,7 @@
 # Mini loop on the drawer: ~10 demos, ~2k train steps, 4 probe + 4 held-out seeds.
 # Run: ./revolve run specs/experiments/drawer_mini.yaml
 name: drawer_mini
+robot: mobile_panda
 task: open_drawer
 max_turns: 5                       # turn = generate/recover -> train -> eval; the only cap
 seeds: {train: [0, 9], probe: [200, 203], heldout: [100, 103]}   # inclusive ranges, disjoint (checked)

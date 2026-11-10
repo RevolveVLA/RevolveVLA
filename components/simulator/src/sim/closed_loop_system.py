@@ -11,16 +11,16 @@ budget) and live.json (policy mode; "restore" for a retry from a saved phase sta
 step 0 with the spawn = that state's commanded action). Everything else is the base classes'
 (controller, physics and contact checks, per-step state_log.npz, DONE line).
 
-  in   /closed_loop/action  gz.msgs.Actuators, position = 11 values in the contract's action order:
-       base x, y, yaw (world frame, yaw unwrapped), panda_joint1-7, gripper (per-finger opening, m);
+  in   /closed_loop/action  gz.msgs.Actuators, position = the robot's action (robot.yaml joints.action):
+       base x, y, yaw (world frame, yaw unwrapped), the arm joints, gripper (opening per contact link, m);
        sent at the contract rate (30 Hz sim time). The newest one is the target until the next one: between
        ticks, on a stall and after the source stops.
   out  /closed_loop/state   gz.msgs.Actuators every 1 ms step, header stamp n x dt: position and velocity
-       of the 12 robot joints at the start of step n (state_log robot_joint_names order).
+       of the robot joints at the start of step n (state_log robot_joint_names order).
 
 Target -> Action: clamped to the joint and base limits; feed-forward velocity = (new - previous
 target) / max(their sim spacing, 1 / fps), clamped to the velocity limits, zeroed once the target is
-older than 2 ticks; grip force mobile_panda.GRIP_FORCE (every plan's). Before the first action the
+older than 2 ticks; grip force = the robot's gripper.force_n (every plan's). Before the first action the
 spawn is the target. Non-finite or wrong-length messages are counted and dropped.
 
 Success (hold_check.py): the expert's hold check on plan-free windows, evaluated at every release of the
@@ -46,16 +46,16 @@ import numpy as np
 from gz.msgs.actuators_pb2 import Actuators
 
 import hold_check
-import mobile_panda as mp
-import mobile_panda_skill_system as sks
-import mobile_panda_smoke_system as smoke
 import phase_replay_system as prs
 import phases as ph
+import robots
+import skill_system as sks
+import smoke_system as smoke
+from robots.base import CONTROL_DT, ActionSeq
 
 CL_DIR = Path(os.environ.get("CL_DIR", "."))
 ACTION_TOPIC, STATE_TOPIC = "/closed_loop/action", "/closed_loop/state"
-N_ACTION = 11
-DT = mp.CONTROL_DT
+DT = CONTROL_DT
 
 
 class ClosedLoopSystem(prs.PhaseReplaySystem):
@@ -65,12 +65,13 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         sks.SLIP_TOL, sks.MAX_SPEED, sks.MAX_PEN = (th["handle_slip_max_m"], th["peak_body_speed_max_mps"],
                                                     th["penetration_max_m"])
         n = int(round((ep["wait_s"] + ep["budget_s"]) / DT)) + 1
-        sp = ep["spawn"]
+        sp, rb = ep["spawn"], robots.current()
+        self.n_action, self.n_ff = len(rb.action_names), 3 + rb.dof     # whole-body action, its base + arm part
         rows = lambda v: np.tile(np.asarray(v, float), (n, 1))
         # rows are overwritten step by step with the applied targets (pre_update)
-        seq = mp.ActionSeq(base=rows(sp["base"]), base_vel=np.zeros((n, 3)), arm=rows(sp["arm"]),
-                           arm_vel=np.zeros((n, 7)), grip=np.full(n, sp["grip"]),
-                           grip_force=np.full(n, mp.GRIP_FORCE))
+        seq = ActionSeq(base=rows(sp["base"]), base_vel=np.zeros((n, 3)), arm=rows(sp["arm"]),
+                        arm_vel=np.zeros((n, rb.dof)), grip=np.full(n, sp["grip"]),
+                        grip_force=np.full(n, rb.gripper.force_n))
         P = SimpleNamespace(events=[(0.0, "closed loop", {})], t=n * DT, ik_worst=(0.0, 0.0), actions=lambda: seq)
         return SimpleNamespace(P=P, checks=[], info=dict(budget=n * DT), spans=[])
 
@@ -100,7 +101,7 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
     # -------------------------------------------------------------- input
     def on_action(self, msg):
         v = np.array(msg.position, float)
-        if v.shape != (N_ACTION,) or not np.all(np.isfinite(v)):
+        if v.shape != (self.n_action,) or not np.all(np.isfinite(v)):
             self.rejected += 1
             return
         self.rx_count += 1
@@ -112,23 +113,25 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         if msg is not None and msg[0] != self.taken and self.ending is None:
             self.taken = msg[0]
             v = np.clip(msg[1], self.lo, self.hi)
+            k = self.n_ff
             if self.target is None:
-                ff = np.zeros(10)
+                ff = np.zeros(k)
                 self.first_step = n
                 self.sc.info["budget"] = (n + 1) * DT + self.ep["budget_s"]
             else:
                 spacing = max((n - self.target[1]) * DT, 1.0 / self.fps)
-                ff = np.clip((v[:10] - self.target[0][:10]) / spacing, -self.vlim, self.vlim)
+                ff = np.clip((v[:k] - self.target[0][:k]) / spacing, -self.vlim, self.vlim)
             self.target = (v, n, ff)
             self.rx_step.append(n)
             self.rx_values.append(v)
         if self.target is None:
             return
         v, n0, ff = self.target
+        k = self.n_ff
         if (n - n0) * DT > 2.0 / self.fps + 1e-9:
-            ff = np.zeros(10)
+            ff = np.zeros(k)
         s, r = self.seq, min(n, len(self.seq) - 1)
-        s.base[r], s.base_vel[r], s.arm[r], s.arm_vel[r], s.grip[r] = v[:3], ff[:3], v[3:10], ff[3:10], v[10]
+        s.base[r], s.base_vel[r], s.arm[r], s.arm_vel[r], s.grip[r] = v[:3], ff[:3], v[3:k], ff[3:k], v[k]
         if n < self.n_total:
             self.log["action_index"][n] = len(self.rx_step) - 1
 
@@ -156,8 +159,9 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
 
     def hold_eval(self, r):
         L, g = self.log, self.seq.grip
-        return hold_check.evaluate(r, L["door_pos"], g, L["robot_joint_pos"][:, 10:12], L["handle_in_tcp"],
-                                   self.touched, self.hp, DT)
+        rb = self.robot
+        return hold_check.evaluate(r, L["door_pos"], g, rb.gripper.openings(L["robot_joint_pos"][:, rb.grip_cols]),
+                                   L["handle_in_tcp"], self.touched, self.hp, DT)
 
     def _post_update(self, info, ecm):
         busy = not (info.paused or self.finished or self.ending is not None)
@@ -228,7 +232,7 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         self.applied = np.arange(n)
         self.log = {k: v[:n] for k, v in self.log.items()}
         self.log["rx_step"] = np.array(self.rx_step, np.int64)
-        self.log["rx_values"] = np.array(self.rx_values, float).reshape(-1, N_ACTION)
+        self.log["rx_values"] = np.array(self.rx_values, float).reshape(-1, self.n_action)
         super().report()                        # phase verdicts, policy_success, state_log, actions, summary, DONE
 
 

@@ -42,14 +42,10 @@ regenerate:
   runs: 3
   attempts: 10
   seed0: 100
-  # The base spheres above (3 x 3 columns, r 0.12 at +-0.15 m) miss the 0.50 x 0.50 m chassis
-  # corners by 2.1 cm (drawer r1_a0 drove a corner into the west wall). Regeneration adds a column
-  # of spheres at each corner: r 0.07 at (+-0.205, +-0.205), 6.4 cm from the corner, bottom 5 cm up
-  # (lower ones touch the floor voxels: no IK at all). They sit on their own link and collide with
-  # the world only: as base_link spheres they push the AKR past cuRobo's self-collision kernel limit
-  # (CUDA "invalid configuration argument"). Against the task object (door / drawer, self-collision
-  # in the AKR) base_link's spheres get base_self_collision_buffer instead.
-  base_corner_spheres: {radius: 0.07, xy: 0.205, z: [0.12, 0.24, 0.36, 0.48]}
+  # Regeneration adds a column of spheres at each chassis corner (the robot's planner
+  # regen_base_corner_spheres in robot.yaml, on a link of their own that collides with the world only).
+  # Against the task object (door / drawer, self-collision in the AKR) base_link's spheres get this
+  # buffer instead.
   base_self_collision_buffer: 0.03
   # Open restarts: goal IK solutions nearest to the saved start, at least this far apart [rad, joint L2]
   goal_spacing: 0.05
@@ -78,3 +74,9 @@ tasks:
              nominal_arm: ready}
     timing: {settle_s: 0.0, close_s: 1.0, grip_settle_s: 0.0, pull_start_s: 0.84, hold_s: 1.7}
     pull: {repeat_tol: 1.0e-5}
+    # Per robot, keyed by the robot spec name (over the blocks above; null drops one). A 5-DoF arm gets no
+    # starts block: a start IK with the base locked at a drawn start (start_design.py) has no solution off
+    # its plane, so its attempts take AutoMoMa's whole-body IK (base free, retract = task.yaml base_retract).
+    robots:
+      mobile_so101: {starts: null}
+      mobile_so101_xl: {starts: null}

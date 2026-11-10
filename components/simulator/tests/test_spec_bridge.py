@@ -46,16 +46,37 @@ def test_sanity_violation_reads_the_condition():
 
 @pytest.mark.parametrize("world", ["kitchen_partnet.sdf", "kitchen_partnet_robot.sdf", "kitchen_partnet_skills.sdf"])
 def test_world_copy_render_off(tmp_path, world):
-    w = cli.world_copy(spec.WORLDS / world, tmp_path, video=False, module="phase_replay_system",
-                       robot_uri="/x/mobile_panda", rtf=0)
+    robot = None if world == "kitchen_partnet.sdf" else ("some_robot", "/x/some_robot")
+    w = cli.world_copy(spec.WORLDS / world, tmp_path, video=False, module="phase_replay_system", robot=robot, rtf=0)
     t = w.read_text()
     assert "scene_camera" not in t and "sensors-system" not in t and "recorder" not in t
     assert re.findall(r"<module_name>(\w+)</module_name>", t) == ["phase_replay_system"]
     assert "<real_time_factor>0</real_time_factor>" in t
-    assert ("model://mobile_panda" not in t) and (world == "kitchen_partnet.sdf" or "/x/mobile_panda" in t)
+    assert "model://robot" not in t and "<name>robot</name>" not in t
+    assert robot is None or ("<uri>/x/some_robot</uri>" in t and "<name>some_robot</name>" in t)
+
+
+def test_robots_load_by_spec_name():
+    """robots.load(name) for every robot spec; current() follows $REVOLVE_ROBOT and has no default."""
+    import os
+    import robots
+    names = sorted(d.name for d in (spec.SPECS / "robots").iterdir() if d.is_dir())
+    for n in names:
+        rb = robots.load(n)
+        assert (rb.name, rb.dof, len(rb.ready)) == (n, len(rb.arm_joints), rb.dof)
+        assert rb.state_names == [*rb.base_joints, *rb.arm_joints, *rb.gripper.joints]
+        assert rb.gripper.openings(list(rb.gripper.joint_targets(rb.gripper.open_m).values())) == \
+            pytest.approx([rb.gripper.open_m] * 2, abs=1e-6)
+    old = os.environ.pop("REVOLVE_ROBOT", None)
+    try:
+        with pytest.raises(RuntimeError, match="REVOLVE_ROBOT"):
+            robots.current()
+    finally:
+        if old is not None:
+            os.environ["REVOLVE_ROBOT"] = old
 
 
 def test_scene_spec_points_at_the_ported_world():
     r = spec.task("open_fridge_door")
     assert spec.path(r.scene.world).is_file() and spec.path(r.scene.world).parent == spec.WORLDS
-    assert spec.path(r.robot.franka_description).joinpath("robots").is_dir()
+    assert spec.path(r.robot.description).joinpath("robots").is_dir()

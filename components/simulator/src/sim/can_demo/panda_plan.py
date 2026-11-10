@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Panda kinematics and the can-on-plate motion plan (no Gazebo dependency).
+"""The can-on-plate motion plan of the Panda-only demo (fixed-base Panda + Hand on a table; no Gazebo
+dependency). The Panda's kinematics come from the mobile Panda robot (robots/mobile_panda/robot.py).
 
 Plans Cartesian straight-line TCP segments with min-jerk timing and solves IK
 for every 10 ms sample with damped least squares, seeded by the previous
@@ -8,48 +9,22 @@ sample so the joint path is continuous.
   panda_plan.py     print the plan and the worst IK error
 """
 import math
+import os
+import sys
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # the sim modules
+import robots  # noqa: E402
+from robots.base import min_jerk, rot, rotvec, tf  # noqa: E402, F401
+from robots.mobile_panda.robot import JOINT_TF, LOWER, UPPER  # noqa: E402
+
+PANDA = robots.load("mobile_panda")
 WORLD = "can_on_plate"
 BASE = np.array([0.0, 0.0, 0.40])           # panda pose in the world
 DT = 0.01                                    # setpoint period [s]
-
-# franka_description robots/fer/kinematics.yaml: (xyz, rpy) per joint
-JOINTS = [
-    ((0, 0, 0.333), (0, 0, 0)),
-    ((0, 0, 0), (-math.pi / 2, 0, 0)),
-    ((0, -0.316, 0), (math.pi / 2, 0, 0)),
-    ((0.0825, 0, 0), (math.pi / 2, 0, 0)),
-    ((-0.0825, 0.384, 0), (-math.pi / 2, 0, 0)),
-    ((0, 0, 0), (math.pi / 2, 0, 0)),
-    ((0.088, 0, 0), (math.pi / 2, 0, 0)),
-]
-LOWER = np.array([-2.8973, -1.7628, -2.8973, -3.0718, -2.8973, -0.0175, -2.8973])
-UPPER = np.array([2.8973, 1.7628, 2.8973, -0.0698, 2.8973, 3.7525, 2.8973])
-READY = np.array([0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785])
-FLANGE_Z, HAND_YAW, TCP_Z = 0.107, -math.pi / 4, 0.1034
-
-# Joint viscous damping [N m s/rad]. Written into the SDF by gen_panda_sdf.py,
-# where MuJoCo integrates it implicitly (stable at any inertia, unlike an
-# explicit D gain), and fed forward by the controller so tracking doesn't lag.
-ARM_DAMPING = [75.0, 100.0, 25.0, 35.0, 2.5, 2.5, 0.5]
-
-# Link masses and centres of mass (link frame), from franka_description
-# robots/fer/inertials.yaml and end_effectors/franka_hand/inertials.yaml.
-LINK_MASS_COM = [
-    (2.7907, (0.00033, -0.02204, -0.04762)),
-    (2.5420, (0.00038, -0.09211, 0.01908)),
-    (2.2513, (0.05152, 0.01696, -0.02971)),
-    (2.2037, (-0.05113, 0.05825, 0.01698)),
-    (2.2855, (-0.00005, 0.03730, -0.09280)),
-    (1.353, (0.06572, -0.00371, 0.00153)),
-    (0.35973, (0.00089, -0.00044, 0.05491)),
-]
-# hand (0.6544 kg) + both fingers (2 x 0.0291 kg), in the hand frame
-HAND_MASS_COM = [(0.6544, (-0.0000376, 0.0119128, 0.020726)),
-                 (0.0582, (0.0, 0.0, 0.080))]
-GRAVITY = 9.81
+READY = PANDA.ready
+TCP_TF = PANDA.tcp_tf
 
 # Scene (must match the world file)
 # The can lies on its side with its axis along world x; the fingers close
@@ -60,26 +35,6 @@ TABLE_Z = 0.40
 GRASP_DZ = 0.0             # TCP height relative to the can's axis
 GRIP_OPEN, GRIP_CLOSED = 0.04, 0.0
 CARRY_S = float(__import__("os").environ.get("CARRY_S", 3.5))   # carry duration [s]
-
-
-def rot(axis, a):
-    c, s = math.cos(a), math.sin(a)
-    if axis == "x":
-        return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
-    if axis == "y":
-        return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
-    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
-
-
-def tf(R=np.eye(3), p=(0, 0, 0)):
-    T = np.eye(4)
-    T[:3, :3], T[:3, 3] = R, p
-    return T
-
-
-JOINT_TF = [tf(rot("z", r[2]) @ rot("y", r[1]) @ rot("x", r[0]), p)
-            for p, r in JOINTS]
-TCP_TF = tf(p=(0, 0, FLANGE_Z)) @ tf(rot("z", HAND_YAW)) @ tf(p=(0, 0, TCP_Z))
 
 
 def fk(q):
@@ -95,35 +50,6 @@ def fk(q):
     return T, np.array(axes), np.array(origins)
 
 
-def gravity_torques(q):
-    """Joint torques that hold the arm (incl. hand + fingers) against gravity."""
-    T = tf(p=BASE)
-    axes, origins, coms = [], [], []
-    for Tj, qi, (m, c) in zip(JOINT_TF, q, LINK_MASS_COM):
-        T = T @ Tj
-        axes.append(T[:3, 2].copy())
-        origins.append(T[:3, 3].copy())
-        T = T @ tf(rot("z", qi))
-        coms.append((m, (T @ np.array([*c, 1.0]))[:3]))
-    Th = T @ tf(p=(0, 0, FLANGE_Z)) @ tf(rot("z", HAND_YAW))
-    coms += [(m, (Th @ np.array([*c, 1.0]))[:3]) for m, c in HAND_MASS_COM]
-    tau = np.zeros(7)
-    for i in range(7):
-        for k, (m, c) in enumerate(coms):
-            if k >= i:     # bodies outboard of joint i
-                tau[i] += m * GRAVITY * np.cross(axes[i], c - origins[i])[2]
-    return tau
-
-
-def rotvec(R):
-    """Rotation matrix -> axis*angle."""
-    a = math.acos(max(-1.0, min(1.0, (np.trace(R) - 1) / 2)))
-    if a < 1e-9:
-        return np.zeros(3)
-    v = np.array([R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]])
-    return v * a / (2 * math.sin(a))
-
-
 def ik(p_goal, R_goal, q, iters=30, tol=1e-4):
     q = q.copy()
     for _ in range(iters):
@@ -137,11 +63,6 @@ def ik(p_goal, R_goal, q, iters=30, tol=1e-4):
         null = (np.eye(7) - Jp @ J) @ (0.2 * (READY - q))
         q = np.clip(q + Jp @ e + null, LOWER + 1e-3, UPPER - 1e-3)
     return q, np.linalg.norm(e[:3]), np.linalg.norm(e[3:])
-
-
-def min_jerk(n):
-    s = np.linspace(0.0, 1.0, n)
-    return 10 * s**3 - 15 * s**4 + 6 * s**5
 
 
 def plan():

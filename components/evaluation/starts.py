@@ -4,7 +4,7 @@ each accepted episode's spawn. Here, per seed:
 
   seed S -> the datagen plan run for S (components/datagen: AutoMoMa planner seed S, clustered starts centred
             by S, start_design.py) -> its planned attempts replay-checked in order (camera off) -> the FIRST
-            accepted check is the start: its spawn (actions.npz row 0: base x, y, yaw, arm 1-7, gripper), the
+            accepted check is the start: its spawn (actions.npz row 0: base x, y, yaw, the arm joints, gripper), the
             planned grasp (live.json grasp_pose_world, the approach gate's reference) and the plan ids.
 
 So a train seed's start is its demo's start, and a probe / held-out seed's start is what a demo of it would

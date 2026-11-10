@@ -1,7 +1,8 @@
 """Planner assets, generated at plan time from the plugin data and the gz sources (the
 generator is the source of truth; outputs are not committed):
 
-  robot/<robot>.urdf, <robot>.yml      planner URDF + cuRobo robot cfg (ee_link panda_tcp)
+  robot/<robot>.urdf, <robot>.yml      planner URDF + cuRobo robot cfg (ee_link = robot.yaml tcp.link): the
+                                       shared base chain + robots/<robot>/planner.py (simulator component)
   object/<object>.urdf                 the task's gz object (fridge, cabinet) as a URDF, root link
                                        "world" = model frame
   object/grasp/NNNN.npy                TCP pose in the object frame, joint closed (x y z qw qx qy qz)
@@ -59,26 +60,29 @@ def urdf(name, links, joints):
     return f'<?xml version="1.0"?>\n<robot name="{name}">\n' + "\n".join(links + joints) + "\n</robot>\n"
 
 
-def gz_modules(rd):
-    sys.path.insert(0, str(plugins.path(rd["gz_scripts"])))
-    import mobile_panda as mp
-    import panda_plan as pp
-    return mp, pp
+SIM = "components/simulator/src/sim"          # the simulator's modules (robots/<robot>/)
+
+
+def gz_robot(rd):
+    """The robot of a robot spec dict, from the simulator's robots package (its planner.py: rb.planner)."""
+    if str(plugins.path(SIM)) not in sys.path:
+        sys.path.insert(0, str(plugins.path(SIM)))
+    import robots
+    return robots.load(rd["name"])
 
 
 # ---------------------------------------------------------------------- robot
 def robot(rd, task, out, yaw_window=None):
-    """Planner URDF parts and cuRobo kinematics cfg for the mobile Panda. yaw_window: base yaw
-    (low, high) in the object frame instead of the task's (a round's starts block)."""
-    from curobo.util_file import get_robot_configs_path, join_path, load_yaml
-    mp, pp = gz_modules(rd)
-    fd = plugins.path(rd["franka_description"]) / "robots/fer"
-    kin = yaml.safe_load((fd / "kinematics.yaml").read_text())
-    lim = yaml.safe_load((fd / "joint_limits.yaml").read_text())
+    """Planner URDF parts and cuRobo kinematics cfg: the shared base chain (base_x, base_y, base_yaw ->
+    base_link -> the arm's root link at the mount) + the robot's planner.py chain (root -> TCP), the base
+    spheres, the gripper locked open. yaw_window: base yaw (low, high) in the object frame instead of the
+    task's (a round's starts block)."""
+    rb = gz_robot(rd)
+    lock = rb.gripper.joint_targets(rd["gripper"]["open_m"])      # the gripper locked open
 
     # Base limits in the object-centred planner frame: the image of gz's +-3 m box (exact
     # for an object yaw that is a multiple of pi/2), yaw from the task window.
-    gx, gy, gyaw = rd["gz_base_limits"]
+    gx, gy, gyaw = rd["base"]["limits"]
     to_obj = np.linalg.inv(frames.object_tf(task["world_pose"]))
     pts = np.array([(to_obj @ [sx * gx, sy * gy, 0, 1])[:2] for sx in (-1, 1) for sy in (-1, 1)])
     lo, hi = pts.min(0), pts.max(0)
@@ -87,68 +91,50 @@ def robot(rd, task, out, yaw_window=None):
 
     joints = [
         joint("base_x", "prismatic", "world", "base_x_link", axis=(1, 0, 0),
-              lim=(lo[0], hi[0], mp.BASE_V_MAX)),
+              lim=(lo[0], hi[0], rd["base"]["v_max"])),
         joint("base_y", "prismatic", "base_x_link", "base_y_link", axis=(0, 1, 0),
-              lim=(lo[1], hi[1], mp.BASE_V_MAX)),
+              lim=(lo[1], hi[1], rd["base"]["v_max"])),
         joint("base_yaw", "revolute", "base_y_link", "base_link", axis=(0, 0, 1),
-              lim=(yaw[0], yaw[1], mp.BASE_W_MAX)),
-        joint("base_mount", "fixed", "base_link", "panda_link0", sdf.tf((mp.MOUNT_X, 0, mp.MOUNT_Z)))]
-    for n in range(1, 8):
-        k = kin[f"joint{n}"]["kinematic"]
-        lj = lim[f"joint{n}"].get("limit", lim[f"joint{n}"])
-        joints.append(joint(f"panda_joint{n}", "revolute", f"panda_link{n - 1}", f"panda_link{n}",
-                            sdf.tf((k["x"], k["y"], k["z"]), (k["roll"], k["pitch"], k["yaw"])),
-                            (0, 0, 1), (lj["lower"], lj["upper"], lj["velocity"])))
-    joints += [
-        joint("panda_hand_joint", "fixed", "panda_link7", "panda_hand",
-              sdf.tf((0, 0, kin["joint8"]["kinematic"]["z"]), (0, 0, pp.HAND_YAW))),
-        joint("panda_tcp_joint", "fixed", "panda_hand", "panda_tcp", sdf.tf((0, 0, pp.TCP_Z)))]
-    for side, fyaw in (("left", 0.0), ("right", math.pi)):      # as gen_panda_sdf.finger_link
-        joints.append(joint(f"panda_finger_joint_{side}", "prismatic", "panda_hand",
-                            f"panda_{side}finger", sdf.tf((0, 0, 0.0584), (0, 0, fyaw)), (0, 1, 0),
-                            (mp.GRIP_CLOSED, mp.GRIP_OPEN, 0.2)))
-    arm = [f"panda_link{n}" for n in range(8)] + ["panda_hand", "panda_leftfinger", "panda_rightfinger"]
-    links = [link(n) for n in ["world", "base_x_link", "base_y_link", "base_link", *arm, "panda_tcp"]]
-
-    franka = load_yaml(join_path(get_robot_configs_path(), "franka.yml"))["robot_cfg"]["kinematics"]
-    spheres = load_yaml(join_path(get_robot_configs_path(), franka["collision_spheres"]))["collision_spheres"]
-    spheres = {n: spheres[n] for n in arm}
-    for s in spheres["panda_rightfinger"]:      # gz's right finger frame is yawed by pi
-        s["center"] = [-s["center"][0], -s["center"][1], s["center"][2]]
+              lim=(yaw[0], yaw[1], rd["base"]["w_max"])),
+        joint("base_mount", "fixed", "base_link", rb.root_link,
+              sdf.tf((rd["mount"]["xyz"][0], 0, rd["mount"]["xyz"][2])))]
+    arm = rb.planner.chain(rb, rd)
+    joints += arm["joints"]
+    links = [link(n) for n in ["world", "base_x_link", "base_y_link", "base_link", *arm["links"]]]
+    spheres = dict(arm["spheres"])
     b = rd["base_spheres"]
     spheres["base_link"] = [{"center": [x, y, z], "radius": b["radius"]}
                             for x in b["x"] for y in b["y"] for z in b["z"]]
-    drop = "attached_object"
-    ignore = {k: [x for x in v if x != drop] for k, v in franka["self_collision_ignore"].items()}
-    ignore["base_link"] = rd["base_self_collision_ignore"]
-    buffer = {k: v for k, v in franka["self_collision_buffer"].items() if k != drop}
+    arm_coll = list(arm["spheres"])
+    ignore, buffer = rb.planner.self_collision(rb, rd, arm_coll)
+    ignore["base_link"] = list(rd["base_self_collision_ignore"])
     buffer["base_link"] = 0.0
     # Regeneration only (plan_from_state sets base_corner_spheres): a column of spheres at each chassis
     # corner on a fixed link of its own that collides with the world but not with the robot or the
     # task object, so cuRobo's self-collision pairs stay within its kernel's 32 x 512 limit; the base
     # keeps a margin to the task object through its self-collision buffer instead.
     c = rd.get("base_corner_spheres")
-    coll = ["base_link"] + arm
+    coll = ["base_link"] + arm_coll
     if c:
         joints.append(joint("base_corners_joint", "fixed", "base_link", "base_corners"))
         links.append(link("base_corners"))
         spheres["base_corners"] = [{"center": [sx * c["xy"], sy * c["xy"], z], "radius": c["radius"]}
                                    for sx in (-1, 1) for sy in (-1, 1) for z in c["z"]]
-        ignore["base_corners"] = ["base_link"] + arm
+        ignore["base_corners"] = ["base_link"] + arm_coll
         buffer["base_corners"] = 0.0
         buffer["base_link"] = rd.get("base_self_collision_buffer", 0.0)
         coll.append("base_corners")
-    names = ["base_x", "base_y", "base_yaw"] + [f"panda_joint{n}" for n in range(1, 8)] + list(rd["lock_joints"])
+    names = ["base_x", "base_y", "base_yaw", *rb.arm_joints, *lock]
     kcfg = {
         "use_usd_kinematics": False, "urdf_path": "", "asset_root_path": "",
-        "base_link": "world", "ee_link": rd["ee_link"],
+        "base_link": "world", "ee_link": rd["tcp"]["link"],
         "collision_link_names": coll, "collision_spheres": spheres,
         "collision_sphere_buffer": rd["collision_sphere_buffer"], "use_global_cumul": True,
         "self_collision_ignore": ignore, "self_collision_buffer": buffer,
-        "lock_joints": rd["lock_joints"],
+        "lock_joints": lock,
         "cspace": {"joint_names": names,
-                   "retract_config": [*task["base_retract"], *map(float, pp.READY),
-                                      *rd["lock_joints"].values()],
+                   "retract_config": [*task["base_retract"], *map(float, rd["arm"]["ready"]),
+                                      *lock.values()],
                    "null_space_weight": rd["null_space_weight"],
                    "cspace_distance_weight": rd["cspace_distance_weight"],
                    "max_acceleration": rd["max_acceleration"], "max_jerk": rd["max_jerk"]}}
@@ -166,7 +152,8 @@ def robot(rd, task, out, yaw_window=None):
 def task_object(rd, task, rob, out):
     """Object URDF, grasp poses and one AKR URDF + yml per grasp. The task joint (revolute or
     prismatic) moves the link that holds the handle ("door": the fridge door or the drawer)."""
-    mp, _ = gz_modules(rd)
+    rb = gz_robot(rd)
+    from robots.base import hand_rot
     m = sdf.Model(plugins.path(task["gz_model"]) / "model.sdf")
     jn = task["joint"]
     j = m.joints[jn]
@@ -195,12 +182,11 @@ def task_object(rd, task, rob, out):
     obj_urdf = d / f"{task['object']}.urdf"
     obj_urdf.write_text(urdf(task["object"], links, joints))
 
-    # Grasps: as mobile_panda_skills.grasp_fridge_handle, in the model frame (front = +x), then
-    # the hand rolled roll_deg about its z (-90: the fingers close vertically across a horizontal
-    # bar, as grasp_drawer_bar). The TCP positions run along the handle: the grasp key x, y or z.
+    # Grasps: the hand facing the handle head-on in the model frame (front = +x), closing along y, then
+    # rolled roll_deg about its z (-90: the gripper closes vertically across a horizontal bar). The TCP positions run along the handle: the grasp key x, y or z.
     H0 = m.pose(door, {}) @ T_lh
     n = np.array([1.0, 0.0, 0.0])
-    R = mp.hand_rot(-n, sdf.rot((0, 0, 1), math.atan2(-n[1], -n[0])) @ [0.0, 1.0, 0.0])
+    R = hand_rot(-n, sdf.rot((0, 0, 1), math.atan2(-n[1], -n[0])) @ [0.0, 1.0, 0.0])
     R = R @ sdf.rot((0, 0, 1), math.radians(task["grasp"]["roll_deg"]))
     along, = (k for k in "xyz" if k in task["grasp"])
     # Door spheres: the plugin's grid in the model frame (door closed), in the door link frame.
@@ -241,7 +227,7 @@ def task_object(rd, task, rob, out):
     for gid, (at, G) in enumerate(spots):
         np.save(d / "grasp" / f"{gid:04d}.npy", np.array(pose7(G)))
         T_hg = np.linalg.inv(H0) @ G
-        akr_j = [joint("akr_grasp", "fixed", "panda_tcp", task["handle"], np.linalg.inv(T_hg)),
+        akr_j = [joint("akr_grasp", "fixed", rob["kinematics"]["ee_link"], task["handle"], np.linalg.inv(T_hg)),
                  joint("akr_handle", "fixed", task["handle"], door, np.linalg.inv(T_lh)),
                  # value = -(gz joint position): AutoMoMa's "AKR mechanical convention"
                  joint(f"{jn}_akr", j["type"], door, f"{jn}_akr_link", axis=j["axis"],
@@ -268,14 +254,15 @@ def task_object(rd, task, rob, out):
         k.update(urdf_path=str(akr_urdf), ee_link=anchor)
         k["collision_link_names"].append(door)
         k["collision_spheres"][door] = door_spheres
-        k["self_collision_ignore"][door] = ["panda_hand", "panda_leftfinger", "panda_rightfinger"]
+        k["self_collision_ignore"][door] = list(rb.gripper.hand_links)
         if "base_corners" in k["self_collision_ignore"]:
             k["self_collision_ignore"]["base_corners"].append(door)
         k["self_collision_buffer"][door] = 0.0
         cs = k["cspace"]
-        cs["joint_names"].insert(10, f"{jn}_akr")
+        akr_at = 3 + rb.dof                     # after the base and arm joints, before the gripper locks
+        cs["joint_names"].insert(akr_at, f"{jn}_akr")
         for key, v in (("retract_config", 0.0), ("null_space_weight", 1), ("cspace_distance_weight", 1)):
-            cs[key].insert(10, v)
+            cs[key].insert(akr_at, v)
         yml = d / f"{stem}.yml"
         yml.write_text(yaml.safe_dump({"robot_cfg": {"kinematics": k}}, sort_keys=False))
         grasps[gid] = dict({along: at}, pose_obj=pose7(G), T_handle_grasp=T_hg.tolist(), akr_yml=str(yml))

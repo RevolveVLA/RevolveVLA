@@ -1,10 +1,10 @@
-"""gz-sim Python system: mobile Panda kitchen episodes (scripts/kitchen_episodes.py).
+"""gz-sim Python system: the robot's scripted kitchen episodes (robots/<robot>/scripted.py EPISODES).
 
 Loaded by a copy of worlds/kitchen_partnet_skills.sdf that a scripted episode (`cli.py episode`)
 writes (module and camera swapped). $EPISODE picks the episode (fridge,
 drawer). Same controller, logging and physics checks as the skill tests
-(mobile_panda_skill_system.SkillSystem: peak body speed, contact penetration,
-robot contacts other than the fingers on the grasped object, finger contact
+(skill_system.SkillSystem: peak body speed, contact penetration,
+robot contacts other than the gripper's contact links on the grasped object, their contact
 and slip of the grasped object), plus the episode checks:
   door_open        hinge angle >= want for the whole hold (handle still grasped), handle slip
   door_stays_open  hinge angle >= want from the handle release until the cup is out
@@ -13,7 +13,7 @@ and slip of the grasped object), plus the episode checks:
                    and no finger touching it (released)
   drawer_open      drawer >= want for the whole hold after the release
   sim time         the episode's last check ends within the budget
-Verdict "DONE PASS/FAIL" on /mobile_panda_skill/status; scripts/kitchen_test.py
+Verdict "DONE PASS/FAIL" on /robot_skill/status; kitchen_test.py
 drives the run and records the MP4 (the only output the episode needs; the
 summary JSON/TXT is written for the checks).
 """
@@ -24,11 +24,9 @@ import time
 
 import numpy as np
 
-import kitchen_episodes as ke
-import mobile_panda as mp
-import mobile_panda_skill_system as sks
-import mobile_panda_skills as sk
-import mobile_panda_smoke_system as smoke
+import skill_system as sks
+import skills as sk
+import smoke_system as smoke
 
 EPISODE = os.environ.get("EPISODE", "drawer")
 NEW_KINDS = ("door_open", "cup_out", "drawer_open")
@@ -36,7 +34,7 @@ NEW_KINDS = ("door_open", "cup_out", "drawer_open")
 
 class EpisodeSystem(sks.SkillSystem):
     def make_scenario(self, name):
-        return ke.episode(EPISODE, self.S)
+        return sk.episode(EPISODE, self.S)
 
     def configure(self, entity, sdf, ecm, event_mgr):
         super().configure(entity, sdf, ecm, event_mgr)
@@ -151,7 +149,7 @@ class EpisodeSystem(sks.SkillSystem):
             if r["kind"] == "cup_placed" and "released" not in r:
                 t1 = r["t"]
                 t0 = t1 - 2.0
-                touch = [f for f in sks.FINGERS
+                touch = [f for f in self.fingers
                          if any(t0 <= x <= t1 for x in self.obj_contact.get(("cup", f), []))]
                 r["released"] = not touch
                 r["pass_"] = r["pass_"] and not touch

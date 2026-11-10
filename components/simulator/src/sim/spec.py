@@ -1,5 +1,5 @@
-"""The specs (specs/tasks/<t>/task.yaml -> robot + scene, loaded and validated by revolve_common) as
-the ported sim code reads them. Replaces the earlier pipeline's plugin loader and per-task validators.
+"""The specs (specs/tasks/<t>/task.yaml for the robot $REVOLVE_ROBOT -> robot + scene, loaded and validated
+by revolve_common) as the ported sim code reads them. Replaces the earlier pipeline's plugin loader and per-task validators.
 
 Every threshold comes from the task spec: the live phase gates are its phase conditions (evaluated by
 revolve_common.metrics in phase_replay_system), and the offline verdict's legacy keys (episode.json
@@ -18,9 +18,9 @@ SPECS = Path(os.environ.get("REVOLVE_SPECS", ROOT / "specs"))
 HERE = Path(__file__).resolve().parent              # the sim modules (GZ_SIM_SYSTEM_PLUGIN_PATH)
 WORLDS = HERE.parent / "worlds"
 # Simulator settings, not task thresholds (they stay with the simulator)
-SIM = dict(control_dt=0.001,       # one whole-body Action per physics step [s] (mobile_panda.CONTROL_DT)
+SIM = dict(control_dt=0.001,       # one whole-body Action per physics step [s] (robots.base.CONTROL_DT)
            real_time_factor=0,     # replays uncapped: bit-identical state logs to capped (plugin.yaml note)
-           contact_rate_hz=200,    # robot contact sensors (gen_panda_sdf); the log holds each message this long
+           contact_rate_hz=200,    # robot contact sensors (robots/<robot>/model.py); the log holds each message this long
            module="automoma_replay_system")
 # Plans and episodes made before the 2026-11-03 renames name the old plugins
 RENAMED = {"fridge_door": "open_fridge_door", "drawer_open": "open_drawer", "kitchen": "kitchen_partnet"}
@@ -42,7 +42,7 @@ def model_dir(dirs, uri):
 
 @lru_cache(maxsize=None)
 def task(name) -> specs.Resolved:
-    """The task spec resolved to its robot and scene (validated)."""
+    """The task spec resolved for the robot $REVOLVE_ROBOT and its scene (validated)."""
     name = RENAMED.get(name, name)
     return specs.load(SPECS / "tasks" / name / "task.yaml")
 

@@ -25,6 +25,7 @@ from pathlib import Path
 import docker
 
 from revolve_common import job as J
+from revolve_common import specs
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = os.environ.get("REVOLVE_DATASET_IMAGE", "revolve-dataset:latest")
@@ -58,7 +59,7 @@ def start(args, job_dir, timeout=3600.0, linger_s=0.0, env=None, network=None) -
                 "bash", "--job-dir", cpath(job_dir), "--parser", "progress:parse", "--linger-s", str(linger_s)],
         detach=True, user=f"{os.getuid()}:{os.getgid()}", working_dir="/repo", labels={LABEL: "dataset", "revolve.job": jid},
         environment={"REPO": "/repo", "PYTHONDONTWRITEBYTECODE": "1", **OFFLINE_ENV,
-                     "PYTHONPATH": "/repo/common:/repo/components/dataset/src/dataset", **(env or {})},
+                     "PYTHONPATH": "/repo/common:/repo/components/dataset/src/dataset", **specs.robot_env(), **(env or {})},
         volumes={str(REPO): {"bind": "/repo", "mode": "ro"}, str(REPO / "runs"): {"bind": "/repo/runs", "mode": "rw"},
                  str(INSTALL): {"bind": "/opt/rosetta/install", "mode": "ro"}},
         network=network, shm_size="1g")

@@ -13,9 +13,9 @@ state_log.npz, summary.json) plus, while the run happens (phases.py has the rule
   and the same one step later in <phase>_start_next.npz (the reference for a restore check);
 - the gates of the phase that ends there, on the live sim state; its verdict waits until the
   contact messages (which lag the sim by seconds) are stamped past the phase end, then
-  "LIVE t=... PHASE <name> PASS/FAIL" is published on /mobile_panda_skill/status;
+  "LIVE t=... PHASE <name> PASS/FAIL" is published on /robot_skill/status;
 - per step: the peak link speed, the deepest contact and the robot contacts other than the
-  fingers on the handle, for the first-violation time of each global check.
+  gripper's contact links on the handle, for the first-violation time of each global check.
 Writes $REPLAY_DIR/phase_live.json before the DONE line; live_validate.py finalize adds the gz
 log check and the offline verdict of the same run -> phase_report.json.
 
@@ -39,14 +39,14 @@ import numpy as np
 from revolve_common import metrics as M
 
 import automoma_replay_system as ars
-import mobile_panda as mp
-import mobile_panda_skill_system as sks
-import mobile_panda_smoke_system as smoke
 import phases as ph
 import scene_state as ss
+import skill_system as sks
+import smoke_system as smoke
 import spec
+from robots.base import CONTROL_DT, robot_state
 
-DT = mp.CONTROL_DT
+DT = CONTROL_DT
 SLIP_EVERY = 5                  # steps between handle slip samples in the open phase
 
 
@@ -147,7 +147,7 @@ class PhaseReplaySystem(ars.ReplaySystem):
                 self.boundary(new, n, ecm, info.sim_time.total_seconds())
         if self.R and n == 0:
             self.state.restore(ecm, self.restore_snap)
-            self._meas = sks.robot_state(self.restore_snap)
+            self._meas = robot_state(self.robot, self.restore_snap)
         super().pre_update(info, ecm)
         self._meas = None
         if self.pol and 0 <= n < self.n_total:
@@ -240,13 +240,13 @@ class PhaseReplaySystem(ars.ReplaySystem):
             names = (c.collision1.name, c.collision2.name)
             if len(c.depth):
                 depth = max(depth, max(c.depth))
-            rob = [s for s in names if s.startswith(mp.MODEL + "::")]
+            rob = [s for s in names if s.startswith(self.robot.model + "::")]
             if not rob:
                 continue
-            oth = [s for s in names if not s.startswith(mp.MODEL + "::")]
+            oth = [s for s in names if not s.startswith(self.robot.model + "::")]
             link = rob[0].split("::")[1]
             hit = bool(oth) and any(oth[0].startswith(f"{mn}::{ln}::{cn}") for mn, ln, cn in sks.OBJ.values())
-            other += not (hit and link in sks.FINGERS)
+            other += not (hit and link in self.fingers)
         P = self.ps
         P["penetration_m"][k] = max(P["penetration_m"][k], depth)
         P["other_robot_contacts"][k] += other
@@ -294,7 +294,7 @@ class PhaseReplaySystem(ars.ReplaySystem):
         if p in self.live_windows:
             a, b = self.live_windows[p]
             t0, t1 = (a + 1) * DT - DT / 2, b * DT + DT / 2
-            on = [any(t0 <= x <= t1 for x in self.obj_contact.get((self.obj, f), [])) for f in sks.FINGERS]
+            on = [any(t0 <= x <= t1 for x in self.obj_contact.get((self.obj, f), [])) for f in self.fingers]
             c = next(c for c in self.conds[p] if c.metric == "finger_contacts")
             chk = self.judge(p, c.metric, c, dict(contact_left_finger_handle=[on[0]], contact_right_finger_handle=[on[1]],
                                                  window_s=[round(a * DT, 3), round(b * DT, 3)]), round(b * DT, 3))
@@ -390,7 +390,8 @@ class PhaseReplaySystem(ars.ReplaySystem):
         touched = lambda t0, t1: self.in_contact(self.ep["hold"]["obj"], t0, t1)
         res = None
         for r in cands:
-            res = hold_check.evaluate(r, q, g, L["robot_joint_pos"][:, 10:12], L["handle_in_tcp"], touched, hp, DT)
+            res = hold_check.evaluate(r, q, g, self.robot.gripper.openings(L["robot_joint_pos"][:, self.robot.grip_cols]),
+                                      L["handle_in_tcp"], touched, hp, DT)
             if res["pass"]:
                 break
         ok = bool(res and res["pass"])

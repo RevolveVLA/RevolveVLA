@@ -14,5 +14,5 @@ train_args:
   policy.num_expert_layers: 0
 python: "3.12.12"
 lerobot: {version: 0.6.1, commit: 7e241bd630a3719a56157a497ce5d08f244784f1}
-# serve: Rosetta's policy server; the fps is the robot contract's (specs robot mobile_panda, 30 Hz)
+# serve: Rosetta's policy server; the fps is the robot contract's (specs/robots/<robot>/contract.yaml)
 serve: {module: lerobot_rosetta.policy_server, device: cuda, port: 8080}

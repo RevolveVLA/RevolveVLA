@@ -1,6 +1,6 @@
 """Minimal SDF kinematics in numpy (no torch, no gz): frame poses from <pose relative_to>,
 joint motion about <axis><xyz>, box collisions (a model file's mesh collisions as their AABB
-boxes). Enough for the generated gz models (models/mobile_panda, assets/generated*/*) and the
+boxes). Enough for the generated gz models (runs/models/<model>, assets/generated*/*) and the
 world file; not a general SDF parser.
 
 SDF defaults used: a link pose is relative to the model frame, a joint pose to its child

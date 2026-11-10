@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -41,7 +42,9 @@ def manager_name(exp):
 
 def start(arg, resume):
     spec = spec_of(arg)
-    exp = specs.load_experiment(spec).experiment.name
+    r = specs.load_experiment(spec)
+    exp = r.experiment.name
+    os.environ[specs.ROBOT_ENV] = r.robot.name     # the experiment's robot, passed to the manager (container_kw)
     paths = P.Paths(REPO / "runs" / exp)
     have = (paths.exp / "state.json").is_file()
     if resume and not have:

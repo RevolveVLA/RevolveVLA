@@ -3,7 +3,8 @@ and the default; the launcher sets it). Everything else about the furniture (joi
 handles, AABBs) comes from the models' manifest.json files.
 
 Model poses must match the world files worlds/kitchen_partnet*.sdf. Values are in
-metres / radians; model frames have the front at +x and the floor at z = 0.
+metres / radians; model frames have the front at +x and the floor at z = 0. Numbers tuned to one robot's
+reach (bearings, episode poses) live in that robot's robots/<robot>/scripted.py.
 """
 import math
 import os
@@ -22,24 +23,7 @@ PROFILES = {
         # bar is clear of its standoffs between z 0.938 and 1.112 (fingers ~2 cm wide)
         handle_z=1.08,
         handle_band=(0.95, 1.10),
-        # handle on the door's west edge: reach it from the west
-        handle_bearing=math.radians(-45),
-        drawer_bearing=math.radians(45),
-        # 10 cm: the joint move home brushed the drawer front (14.8 -> 13.4 cm)
-        drawer_release_back=0.20,
-        episode=dict(
-            v_drive=0.8,                            # base peak speed of the drives [m/s] (90 s budget)
-            # door to 95 deg: at 64 its edge leaves < 1 cm for the forearm at the cup
-            door_goal=math.radians(95.0), swing_dur=8.0, swing_shift=(0.0, 0.0),
-            # the open door blocks the east side: reach the cup from the west;
-            # hand x up (link7 above the hand, clear of the rack's front lip)
-            cup_yaw=math.radians(100.0), cup_bearing=math.radians(-45), cup_d=0.73,
-            cup_delta=math.radians(20.0), cup_roll=1, cup_grasp_z=0.084,
-            cup_stage=(-0.15, -0.20),
-            back_off=(-0.25, -0.45),
-            place_xy=(0.895, -0.30), table_yaw=0.0, table_d=0.70,
-            drawer_back=0.3,
-        ),
+        v_drive=0.8,                                # base peak speed of the episodes' drives [m/s] (90 s budget)
     ),
 }
 
@@ -53,7 +37,4 @@ FRIDGE_INSIDE = PROFILE["fridge_inside"]
 CUP_FRIDGE = PROFILE["cup_fridge"]
 HANDLE_Z = PROFILE["handle_z"]
 HANDLE_BAND = PROFILE["handle_band"]
-HANDLE_BEARING = PROFILE["handle_bearing"]
-DRAWER_BEARING = PROFILE["drawer_bearing"]
-DRAWER_RELEASE_BACK = PROFILE["drawer_release_back"]
-EPISODE = PROFILE["episode"]
+V_DRIVE = PROFILE["v_drive"]

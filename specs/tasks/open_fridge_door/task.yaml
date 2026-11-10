@@ -3,7 +3,6 @@
 # and its simulator thresholds (checks, live_gates, closed_loop) and
 # phases.py.
 name: open_fridge_door
-robot: mobile_panda
 scene: kitchen_partnet
 prompt: open the fridge door        # language instruction: bag custom_data lerobot.operator_prompt
 card:                               # hub card fields

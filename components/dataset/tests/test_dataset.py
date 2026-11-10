@@ -12,6 +12,7 @@ import time
 import httpx
 import pytest
 import yaml
+from revolve_common import specs
 
 from conftest import REPO, RUN, TASK, _recovery_conftest, in_image, load
 
@@ -20,6 +21,7 @@ import launch as D
 
 CONTRACT = yaml.safe_load((REPO / "specs/robots/mobile_panda/contract.yaml").read_text())
 ROBOT = yaml.safe_load((REPO / "specs/robots/mobile_panda/robot.yaml").read_text())
+JOINTS = specs.load(REPO / "specs/robots/mobile_panda/robot.yaml").joints   # state / action derived
 PROMPT = yaml.safe_load((REPO / f"specs/tasks/{TASK}/task.yaml").read_text())["prompt"]
 SUMMARY = "meta/revolve_dataset.json"
 
@@ -116,8 +118,8 @@ def test_features_match_contract(runs):
     for key, spec in CONTRACT["observations"].items():
         if key.startswith("observation.images."):
             assert f[key]["dtype"] == "video" and f[key]["shape"] == [480, 480, 3]
-    assert f["observation.state"]["names"] == ["position." + j for j in ROBOT["joints"]["state"]]
-    assert f["action"]["names"] == ["position." + j for j in ROBOT["joints"]["action"]]
+    assert f["observation.state"]["names"] == ["position." + j for j in JOINTS.state]
+    assert f["action"]["names"] == ["position." + j for j in JOINTS.action]
     assert f["observation.state"]["shape"] == [12] and f["action"]["shape"] == [11]
     assert info["fps"] == CONTRACT["fps"] and info["robot_type"] == CONTRACT["robot_type"] and info["codebase_version"] == "v3.0"
     assert (RUN / "joint" / "turn_0" / "dataset" / "meta" / "rosetta_contract.yaml").read_text() == \

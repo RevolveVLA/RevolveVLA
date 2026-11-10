@@ -1,20 +1,17 @@
-"""gz-sim Python system: mobile Panda contact-skill tests in the kitchen.
+"""gz-sim Python system: contact-skill tests of the robot ($REVOLVE_ROBOT) in the kitchen.
 
 Loaded by worlds/kitchen_partnet_skills.sdf; runs every 1 ms step. $SKILL picks the
-scenario (plans in scripts/mobile_panda_skills.py):
-  fridge_handle   grasp the top door handle, pull the door 8 deg on its arc, release
-  drawer_pull     grasp the drawer bar (hand rolled 90 deg), pull it 15 cm, release
-  cup_pick_place  cup on the table: pick, lift 15 cm, hold 2 s, place 18 cm west, release
+scenario (the robot's SCENARIOS, robots/<robot>/scripted.py), or:
   reset_test      cup_pick_place, saving the scene mid-carry and restoring it 1.5 s later
-                  (scripts/scene_state.py); checks the restored state and that the rerun
+                  (scene_state.py); checks the restored state and that the rerun
                   from it reaches the same state as the original
   replay          replay $REPLAY_DIR/actions.npz (a recorded run) from the same initial
                   state and compare with $REPLAY_DIR/final_state.npz
 Every run saves its applied actions (actions.npz, one Action per step), the
 initial and final scene state (.npz) next to $KITCHEN_TEST_OUT, and checks
 physics sanity (peak body speed, contact penetration, robot contacts other
-than the fingers on the grasped object). Verdict "DONE PASS/FAIL" on
-/mobile_panda_skill/status; scripts/kitchen_test.py drives the run.
+than the gripper's contact links on the grasped object). Verdict "DONE PASS/FAIL" on
+/robot_skill/status; kitchen_test.py drives the run.
 """
 import json
 import math
@@ -28,11 +25,11 @@ from gz.msgs.stringmsg_pb2 import StringMsg
 from gz.sim import Link, Model, World
 from gz.transport import Node
 
-import mobile_panda as mp
-import mobile_panda_skills as sk
-import mobile_panda_smoke_system as smoke
-import panda_plan as pp
+import robots
 import scene_state as ss
+import skills as sk
+import smoke_system as smoke
+from robots.base import CONTROL_DT, ActionSeq, Controller, robot_state, tf
 
 # Contact callbacks run on a transport thread that needs the GIL, which the sim
 # thread holds for every step. With the default 5 ms switch interval they get ~200
@@ -50,14 +47,14 @@ REPLAY_TOL = 0.01
 OBJ = {"handle": ("fridge", "top_door", "top_door_handle"),
        "bar": ("kitchen_counter", "drawer2_top", "drawer2_top_handle_bar"),
        "cup": ("cup", "cup", "cup_collision")}
-FINGERS = ("panda_leftfinger", "panda_rightfinger")
+STATUS = "/robot_skill/status"
 # Opt-in fast mode (`--step <s>`): the world's physics step is
 # KITCHEN_STEP, an integer multiple R of the 1 ms action grid. Step n then only takes
 # the values R*m - 1, so the action sequence is resampled by sim time and every
 # step-index event is moved to the first step at or after it (grid()).
-STEP = float(os.environ.get("KITCHEN_STEP") or mp.CONTROL_DT)
-R = int(round(STEP / mp.CONTROL_DT))
-assert R >= 1 and abs(R * mp.CONTROL_DT - STEP) < 1e-9, f"KITCHEN_STEP {STEP} is not a multiple of 1 ms"
+STEP = float(os.environ.get("KITCHEN_STEP") or CONTROL_DT)
+R = int(round(STEP / CONTROL_DT))
+assert R >= 1 and abs(R * CONTROL_DT - STEP) < 1e-9, f"KITCHEN_STEP {STEP} is not a multiple of 1 ms"
 PROFILE = bool(os.environ.get("KITCHEN_PROFILE"))
 
 
@@ -71,8 +68,10 @@ class SkillSystem:
 
     def configure(self, entity, sdf, ecm, event_mgr):
         world = World(entity)
-        self.model = Model(world.model_by_name(ecm, mp.MODEL))
-        self.ctl = mp.Controller(self.model, ecm)
+        self.robot = robots.current()
+        self.fingers = self.robot.gripper.contact_links      # the two "finger" links of the contact checks
+        self.model = Model(world.model_by_name(ecm, self.robot.model))
+        self.ctl = Controller(self.robot, self.model, ecm)
         if os.environ.get("KITCHEN_FINGER_LAW", "dt") == "dt":
             self.ctl.dt = STEP
         self.ctl.reset(ecm, sk.BASE0)
@@ -91,13 +90,13 @@ class SkillSystem:
         self.sc = self.make_scenario(base_skill)
         self.seq = self.sc.P.actions()
         if SKILL == "replay":
-            self.seq = mp.ActionSeq.load(os.path.join(rd, "actions.npz"))
+            self.seq = ActionSeq.load(os.path.join(rd, "actions.npz"))
         n = len(self.seq)
         # reset_test: save mid-carry, restore 1.5 s later, rerun from there
         self.k_save = self.k_restore = None
         if skill == "reset_test":
             ev = {lab: t for t, lab, _ in self.sc.P.events}
-            self.k_save = int(round((ev["arm carry"] + 1.2) / mp.CONTROL_DT))
+            self.k_save = int(round((ev["arm carry"] + 1.2) / CONTROL_DT))
             self.k_restore = self.k_save + 1500
         self.n_total = n + (self.k_restore - self.k_save if self.k_save else 0)
         self.snaps = {}
@@ -113,14 +112,15 @@ class SkillSystem:
         for i, kind, info in self.sc.checks:
             t0 = ev[i][0]
             t1 = ev[i + 1][0] if i + 1 < len(ev) else self.sc.P.t
-            self.windows.append(dict(k0=grid(int(round(t0 / mp.CONTROL_DT))),
-                                     k1=grid(int(round(t1 / mp.CONTROL_DT)) - 1), kind=kind, info=info))
-        self.ev_steps = [(int(round(t / mp.CONTROL_DT)), lab) for t, lab, _ in ev]
+            self.windows.append(dict(k0=grid(int(round(t0 / CONTROL_DT))),
+                                     k1=grid(int(round(t1 / CONTROL_DT)) - 1), kind=kind, info=info))
+        self.ev_steps = [(int(round(t / CONTROL_DT)), lab) for t, lab, _ in ev]
 
         # collision shapes for the clearance report (as in the smoke test)
-        rob = smoke.collisions(mp.MODEL)
+        rob = smoke.collisions(self.robot.model)
+        self.robot_links = smoke.contact_links(self.robot.model)
         self.rob = []
-        for ln in smoke.ROBOT_LINKS:
+        for ln in self.robot_links:
             for kind, Tc, dims in rob.get(ln, []):
                 self.rob.append((Link(self.model.link_by_name(ecm, ln)), ln,
                                  *smoke.sample_points(kind, Tc, dims)))
@@ -149,15 +149,15 @@ class SkillSystem:
         self.finished, self.t, self.ev_i, self.a = False, 0.0, 0, 0
         self.prof = dict(steps=0, pre_s=0.0, post_s=0.0, cb_s=0.0, wall_first=None, sim_first=None)
         self.node = Node()
-        self.pub = self.node.advertise("/mobile_panda_skill/status", StringMsg)
-        topics = [f"/world/{WORLD}/model/{mp.MODEL}/link/{ln}/sensor/contact/contact"
-                  for ln in smoke.ROBOT_LINKS]
+        self.pub = self.node.advertise(STATUS, StringMsg)
+        topics = [f"/world/{WORLD}/model/{self.robot.model}/link/{ln}/sensor/contact/contact"
+                  for ln in self.robot_links]
         topics += [f"/world/{WORLD}/model/{m}/link/{m}/sensor/contact/contact"
                    for m in ("cup", "table_01")]
         for tp in topics:
             if not self.node.subscribe(Contacts, tp, self.on_contacts):
                 self.say(f"could not subscribe to {tp}")
-        self.say(f"skill {SKILL} ({skill}): {n} actions ({n * mp.CONTROL_DT:.1f} s), "
+        self.say(f"skill {SKILL} ({skill}): {n} actions ({n * CONTROL_DT:.1f} s), "
                  f"{len(self.windows)} checks, worst IK {self.sc.P.ik_worst[0]*1000:.2f} mm / "
                  f"{math.degrees(self.sc.P.ik_worst[1]):.2f} deg"
                  + (f"; save at step {self.k_save}, restore at {self.k_restore}" if self.k_save else "")
@@ -193,23 +193,23 @@ class SkillSystem:
             depth = max(c.depth) if len(c.depth) else 0.0
             if depth > self.pen["max"]:
                 self.pen.update(max=depth, t=t, where=" / ".join(names))
-            rob = [n for n in names if n.startswith(mp.MODEL + "::")]
+            rob = [n for n in names if n.startswith(self.robot.model + "::")]
             if not rob:
                 continue
-            other = [n for n in names if not n.startswith(mp.MODEL + "::")]
+            other = [n for n in names if not n.startswith(self.robot.model + "::")]
             link = rob[0].split("::")[1]
             hit = None
             for key, (mn, ln, cn) in OBJ.items():
                 if other and other[0].startswith(f"{mn}::{ln}::{cn}"):
                     hit = key
-            if hit and link in FINGERS:
+            if hit and link in self.fingers:
                 self.obj_contact.setdefault((hit, link), []).append(t)
                 self.contact_first.setdefault(f"{hit}/{link}", round(t, 3))
             elif len(self.other_contacts) < 50:
                 self.other_contacts.append([round(t, 3), self.phase_at(t), *names, depth])
 
     def phase_at(self, t):
-        a = self.action_index(int(round(t / mp.CONTROL_DT)) - 1)
+        a = self.action_index(int(round(t / CONTROL_DT)) - 1)
         lab = ""
         for k, label in self.ev_steps:
             if k <= a:
@@ -242,7 +242,7 @@ class SkillSystem:
     def _pre_update(self, info, ecm):
         if info.paused:
             return
-        n = int(round(info.sim_time.total_seconds() / mp.CONTROL_DT)) - 1
+        n = int(round(info.sim_time.total_seconds() / CONTROL_DT)) - 1
         self.state.after_restore(ecm)
         if n == grid(0) and self.cup_start is not None:      # cup on the table for this test
             self.state.set_model_pose(ecm, "cup", self.cup_start)
@@ -250,7 +250,7 @@ class SkillSystem:
         if self.k_restore is not None and n == self.k_restore + 1:
             self.state.restore(ecm, self.snaps["save"])
             # the ECM still holds the pre-restore state this step: control from the snapshot
-            meas = robot_state(self.snaps["save"])
+            meas = robot_state(self.robot, self.snaps["save"])
             self.say(f"t={info.sim_time.total_seconds():6.2f}s RESTORE state of step {self.k_save}")
         a = min(self.action_index(n), len(self.seq) - 1)    # after the end: hold the last action
         if n < self.n_total:
@@ -259,15 +259,15 @@ class SkillSystem:
 
     # -------------------------------------------------------------- metrics
     def tcp(self, ecm):
-        return smoke.gz_mat(self.ctl.hand.world_pose(ecm)) @ pp.tf(p=(0, 0, pp.TCP_Z))
+        return smoke.gz_mat(self.ctl.hand.world_pose(ecm)) @ tf(p=(0, 0, self.robot.tcp_z))
 
     def joint(self, snap, name):
         names = [str(x) for x in snap["joint_names"]]
         return float(snap["joint_pos"][names.index(name)])
 
     def in_contact(self, key, t0, t1):
-        """Both fingers touched the object during [t0, t1] (sim time)."""
-        return all(any(t0 <= t <= t1 for t in self.obj_contact.get((key, f), [])) for f in FINGERS)
+        """Both contact links touched the object during [t0, t1] (sim time)."""
+        return all(any(t0 <= t <= t1 for t in self.obj_contact.get((key, f), [])) for f in self.fingers)
 
     def post_update(self, info, ecm):
         if PROFILE and not (info.paused or self.finished):
@@ -286,7 +286,7 @@ class SkillSystem:
                 self.report()
             return
         t = self.t = info.sim_time.total_seconds()
-        n = int(round(t / mp.CONTROL_DT)) - 1
+        n = int(round(t / CONTROL_DT)) - 1
         a = self.a = self.action_index(n)
         while self.ev_i + 1 < len(self.ev_steps) and a >= self.ev_steps[self.ev_i + 1][0]:
             self.ev_i += 1
@@ -407,11 +407,11 @@ class SkillSystem:
             msg = f"door {math.degrees(ang):.2f} deg (planned {math.degrees(info['want']):.1f})"
             if kind == "door_pulled":
                 best, per = self.clearance(ecm, per_link=True)
-                arm = {k: v for k, v in per["fridge"].items() if k not in FINGERS + ("panda_hand",)}
+                arm = {k: v for k, v in per["fridge"].items() if k not in self.robot.gripper.hand_links}
                 r["clearance_fridge_cm"] = {k: round(v * 100, 1) for k, v in per["fridge"].items()}
                 ok &= contact and slip <= SLIP_TOL and min(arm.values()) > 0.01
                 msg += f", slip {slip*1000:.1f} mm, clearance to fridge (cm): " + \
-                       ", ".join(f"{k.replace('panda_', '')} {v*100:.1f}" for k, v in per["fridge"].items())
+                       ", ".join(f"{k} {v*100:.1f}" for k, v in per["fridge"].items())
         elif kind in ("drawer_pulled", "drawer_released"):
             x = self.joint(snap, "kitchen_counter::middle_slide_top")
             r["drawer_cm"] = round(x * 100, 2)
@@ -476,7 +476,7 @@ class SkillSystem:
         idx = self.applied
         ss.save(os.path.join(self.dir, "initial_state.npz"), self.snaps["initial"])
         ss.save(os.path.join(self.dir, "final_state.npz"), self.snaps["final"])
-        mp.ActionSeq(**{k: getattr(self.seq, k)[idx] for k in mp.ActionSeq.FIELDS}).save(
+        ActionSeq(**{k: getattr(self.seq, k)[idx] for k in ActionSeq.FIELDS}).save(
             os.path.join(self.dir, "actions.npz"))
         data = {"pass": ok, "skill": SKILL, "checks": checks, "results": self.results, "extra": self.extra,
                 "peak_speed": {"value": self.vmax[0], "link": self.vmax[1], "t": self.vmax[2]},
@@ -490,19 +490,6 @@ class SkillSystem:
             json.dump(data, f, indent=1, default=_json)
         self.say(f"DONE {'PASS' if ok else 'FAIL'}: {sum(c['pass'] for c in checks)}/{len(checks)} "
                  f"checks, summary {self.out}")
-
-
-def robot_state(snap):
-    """Controller.state()-like dict from a scene snapshot."""
-    names = [str(x) for x in snap["joint_names"]]
-
-    def get(f, joints):
-        return np.array([snap[f][names.index(f"{mp.MODEL}::{j}")] for j in joints])
-    arm = [f"panda_joint{i}" for i in range(1, 8)]
-    fingers = ["panda_finger_joint_left", "panda_finger_joint_right"]
-    return dict(base=get("joint_pos", mp.BASE_JOINTS), base_vel=get("joint_vel", mp.BASE_JOINTS),
-                arm=get("joint_pos", arm), arm_vel=get("joint_vel", arm),
-                fingers=get("joint_pos", fingers), fingers_vel=get("joint_vel", fingers))
 
 
 def snap_cup(sys_, ecm):

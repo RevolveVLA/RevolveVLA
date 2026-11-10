@@ -3,7 +3,6 @@
 # validator and its simulator thresholds (checks, live_gates,
 # closed_loop) and phases.py.
 name: open_drawer
-robot: mobile_panda
 scene: kitchen_partnet
 prompt: open the top drawer of the cabinet
 card:
@@ -100,3 +99,12 @@ rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 
 
 # Live validator settings: contact stamps lag the sim; restore check of a saved phase state
 live: {contact_wait_s: 0.05, restore_pos_max_m: 0.001, restore_rot_max_deg: 0.1}
+
+# Per-robot settings (merged over the blocks above when the task runs on that robot). The mobile SO-101
+# grasps the bar from 0.63 m (base centre to the bar, model x 0.3895): the planner's base retract.
+robots:
+  mobile_so101:
+    planner: {base_retract: [1.02, 0.0, 3.141592653589793]}
+  # The 2x SO-101 grasps from 1.01 m (its reach 0.72 m + the shoulder_lift axis 0.29 m ahead of the centre).
+  mobile_so101_xl:
+    planner: {base_retract: [1.40, 0.0, 3.141592653589793]}

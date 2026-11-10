@@ -1,7 +1,7 @@
 """MCAP rosbag2 bag of one replay: simulator state and actions, plus the training cameras' frames
 when the replay is a camera replay (cameras on: capture.json and <camera>/*.png).
-rosbags (+ Pillow for JPEG), no ROS install; runs in automoma-bags (gz-kura-mujoco + rosbags +
-Pillow, as the earlier pipeline's bag writer).
+rosbags (+ Pillow for JPEG), no ROS install; runs in revolve-simulator (cli.py replay). The robot is
+$REVOLVE_ROBOT's spec: /action joint names = its joints.action, the final state's joint scope = its gz model.
 
   bag.py write <replay dir>
       <replay>/state_log.npz + verdict.json -> <replay>/bag/ (metadata.yaml + bag.mcap, zstd
@@ -44,11 +44,18 @@ CI = "sensor_msgs/msg/CompressedImage"
 JPEG_QUALITY = 90
 PROMPT = "lerobot.operator_prompt"   # Rosetta reads the task string from this custom_data key
 ON_CHANGE = {"/subtask": STR, "/event": STR, "/contacts": STR}
-ACTION_NAMES = ["base_x", "base_y", "base_yaw"] + [f"panda_joint{i}" for i in range(1, 8)] + ["gripper"]
 CUSTOM = ("plan_run", "attempt_id", "grasp_id", "verdict", "failed_checks", "steps", "control_dt_s",
           "verdict_json")
 EULER_TOL = 1e-9   # final pos vs last pos + final vel x dt (MuJoCo's semi-implicit Euler step)
 TS = get_typestore(Stores.ROS2_JAZZY)
+
+
+def robot():
+    """The robot spec ($REVOLVE_ROBOT): /action names (joints.action) and the gz joint scope (model)."""
+    import os
+    import spec
+    from revolve_common import specs
+    return specs.load(spec.SPECS / "robots" / os.environ[specs.ROBOT_ENV] / "robot.yaml")
 
 
 def per_step(obj):
@@ -115,7 +122,8 @@ def content(s, obj):
         # effort; base and arm targets set no effort (NaN)
         "/action": (np.hstack([s["action_base"], s["action_arm"], s["action_grip"][:, None]]),
                     np.hstack([s["action_base_vel"], s["action_arm_vel"], np.zeros((n, 1))]),
-                    np.hstack([np.full((n, 10), np.nan), s["action_grip_force"][:, None]])),
+                    np.hstack([np.full((n, s["action_base"].shape[1] + s["action_arm"].shape[1]), np.nan),
+                               s["action_grip_force"][:, None]])),
         obj: (s["door_pos"][:, None], s["door_vel"][:, None], np.zeros((n, 0))),
         "/base_pose": s["base_link_pose"], "/tcp_pose": s["tcp_pose"],
         "/subtask": [json.dumps({"subtask": str(x)}) for x in sub],
@@ -150,7 +158,7 @@ def write(replay):
     Time, Header = T["builtin_interfaces/msg/Time"], T["std_msgs/msg/Header"]
     JointState, String = T[JS], T[STR]
     Pose, Point, Quat = T["geometry_msgs/msg/Pose"], T["geometry_msgs/msg/Point"], T["geometry_msgs/msg/Quaternion"]
-    names = {"/joint_states": [str(x) for x in s["robot_joint_names"]], "/action": ACTION_NAMES,
+    names = {"/joint_states": [str(x) for x in s["robot_joint_names"]], "/action": robot().joints.action,
              obj: [str(s["door_joint"]).split("::")[-1]]}
     changed = {t: [0] + [k for k in range(1, n) if c[t][k] != c[t][k - 1]] for t in ON_CHANGE}
 
@@ -341,7 +349,7 @@ def check(bag, replay=None):
         "every per-step message equals its state_log.npz row; on-change topics forward-filled equal every row")
 
     fj = list(f["joint_names"])
-    names = [f"mobile_panda::{x}" for x in s["robot_joint_names"]] + [str(s["door_joint"])]
+    names = [f"{robot().model}::{x}" for x in s["robot_joint_names"]] + [str(s["door_joint"])]
     idx = [fj.index(x) for x in names]
     q_last = np.r_[got["/joint_states"][-1][0], got[obj][-1][0]] if n else np.zeros(len(idx))
     q_f, v_f = f["joint_pos"][idx], f["joint_vel"][idx]
@@ -351,7 +359,7 @@ def check(bag, replay=None):
         dict(final_state_step=int(f["step"]), bag_last_step=n - 1, euler_residual=euler, plain_max_diff=plain,
              tol=EULER_TOL),
         "final_state.npz is the state after the last step (step = steps - 1); its positions = the bag's last "
-        f"/joint_states + {obj} positions + final velocity x dt within tol (12 robot joints + the object joint); "
+        f"/joint_states + {obj} positions + final velocity x dt within tol (the robot joints + the object joint); "
         "plain_max_diff is the one step of motion")
 
     failed = json.dumps([x["name"] for x in v["checks"] if not x["pass"]])

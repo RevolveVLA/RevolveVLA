@@ -18,12 +18,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-READY_ARM = (0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785)   # the Panda READY pose [rad]
 FACING_YAW_OBJ = math.pi
-# Box centre [m] per task in the object frame (D0 has no key for it), in front of the handle. A D1
-# plan smoke (seed 60, 50 attempts) found no start IK for drawer bases under x 0.85 m (the counter)
-# and few fridge trajectories from y under -0.28 m (the handle side of the door).
-BOX_CENTRE_OBJ = {"open_fridge_door": (0.95, -0.05), "open_drawer": (0.98, 0.0)}
+# The box centre per task and the nominal arm are the robot's: robots/<robot>/planner.py BOX_CENTRE_OBJ and
+# robot.yaml arm.ready (plan.py passes them in).
 GRASPS = 5
 
 # D0 core.ROUND_BLOCKS["starts"]: kind, low, high, low excluded (checked again here: the
@@ -244,6 +241,6 @@ def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box
     return out
 
 
-def ik_seed(start: Start) -> tuple[float, ...]:
-    """Start IK seed: base_x, base_y, base_yaw of the start, then the READY arm (panda_joint1-7)."""
-    return (start.x, start.y, start.yaw) + READY_ARM
+def ik_seed(start: Start, arm: tuple[float, ...]) -> tuple[float, ...]:
+    """Start IK seed: base_x, base_y, base_yaw of the start, then the nominal arm (the robot's READY)."""
+    return (start.x, start.y, start.yaw) + tuple(arm)

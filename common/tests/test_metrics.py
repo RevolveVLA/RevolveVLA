@@ -114,7 +114,7 @@ def test_task_phase_on_hand_made_state():
     """The fridge open phase on a hand-made end state, live and offline."""
     from revolve_common import specs
     from conftest import SPECS
-    task = specs.load(SPECS / "tasks" / "open_fridge_door" / "task.yaml").task
+    task = specs.load(SPECS / "tasks" / "open_fridge_door" / "task.yaml", robot="mobile_panda").task
     conds = task.phase("open").pass_.all
     states = [dict(t=round(i * 0.05, 3), joints={"top_door_hinge": math.radians(65)},
                    handle_in_tcp=[0, 0.011, 0], handle_in_tcp_ref=[0, 0, 0],

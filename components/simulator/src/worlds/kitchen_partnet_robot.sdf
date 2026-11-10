@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <!--
-  Mobile Panda smoke-test world (PartNet-Mobility asset set): the scene of
-  worlds/kitchen_partnet.sdf (layout described there) plus the mobile Panda
-  (models/mobile_panda) at the room centre facing east.
-  scripts/mobile_panda_smoke_system.py runs the robot smoke test ($KITCHEN_ASSETS=partnet).
+  Robot smoke-test world (PartNet-Mobility asset set): the scene of
+  worlds/kitchen_partnet.sdf (layout described there) plus the robot
+  (the placeholder include `robot`) at the room centre facing east.
+  smoke_system.py runs the robot smoke test ($KITCHEN_ASSETS=partnet).
   The scene camera sits in the open south-east corner.
 -->
 <sdf version="1.11" xmlns:experimental="http://sdformat.org/schemas/experimental">
@@ -25,7 +25,7 @@
     <!-- Robot smoke test (controller + checks), every 1 ms step -->
     <plugin filename="gz-sim-python-system-loader-system"
             name="gz::sim::systems::PythonSystemLoader">
-      <module_name>mobile_panda_smoke_system</module_name>
+      <module_name>smoke_system</module_name>
     </plugin>
 
     <gravity>0 0 -9.81</gravity>
@@ -107,10 +107,11 @@
       </experimental:params>
     </include>
 
-    <!-- Mobile Panda: base joints (base_x, base_y, base_yaw) are world x, y, yaw -->
+    <!-- The robot: a placeholder include that cli.py world_copy names and points at the robot's model
+         ($REVOLVE_ROBOT); base joints (base_x, base_y, base_yaw) are world x, y, yaw -->
     <include>
-      <name>mobile_panda</name>
-      <uri>model://mobile_panda</uri>
+      <name>robot</name>
+      <uri>model://robot</uri>
       <pose>0 0 0 0 0 0</pose>
     </include>
 

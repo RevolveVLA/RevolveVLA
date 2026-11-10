@@ -6,7 +6,7 @@
 name: kitchen_partnet
 world: components/simulator/src/worlds/kitchen_partnet_skills.sdf
 assets: [assets/generated_partnet, assets/generated]   # model://<name>: first dir that has it
-skip: [mobile_panda, cup]                    # the robot; the cup sits inside the fridge
+skip: [robot, cup]                           # the placeholder robot include; the cup sits inside the fridge
 # Included models added box by box; other includes as one box (their manifest AABB). The task object
 # always goes in box by box, without its moving link (AKR spheres cover that).
 detailed: [fridge, walls]

@@ -1,19 +1,14 @@
-"""gz-sim Python system: mobile Panda smoke test in the kitchen.
+"""gz-sim Python system: smoke test of the robot ($REVOLVE_ROBOT) in the kitchen.
 
 Loaded by worlds/kitchen_partnet_robot.sdf; runs every 1 ms step. The whole run is
-one ActionSeq (scripts/mobile_panda.py) planned at configure time and applied
-step by step:
-  settle 1 s, rest 10 s (drift check), gripper close/open,
-  drive 1 m in front of the fridge, then to a reach pose and move the TCP
-  near the top door handle (z 1.15), back to READY;
-  same for the kitchen_counter drawer bar (z 0.715) and above the table,
-  where the gripper closes and opens again.
-Checks: rest drift, base pose at each stop, TCP pose at each target, finger
-opening, robot contacts (none expected: nothing is grasped), clearance from
+one ActionSeq planned at configure time by the robot's smoke_plan (robots/<robot>/scripted.py: rest,
+gripper close / open, drives and TCP reaches to the kitchen's handles) and applied step by step.
+Checks: rest drift, base pose at each stop, TCP pose at each target (tolerance: the check's `tol`, else
+EE_TOL), gripper opening, robot contacts (none expected: nothing is grasped), clearance from
 the robot's collision shapes to the furniture's boxes, peak body speed and
-contact penetration. Progress on /mobile_panda/status; the verdict line is
+contact penetration. Progress on /robot/status; the verdict line is
 "DONE PASS" / "DONE FAIL", numbers in $KITCHEN_TEST_OUT (JSON); the actions are
-saved next to it (smoke_actions.npz). scripts/kitchen_test.py drives the run.
+saved next to it (smoke_actions.npz). kitchen_test.py drives the run.
 """
 import json
 import math
@@ -27,32 +22,30 @@ from gz.sim import Link, Model, World
 from gz.transport import Node
 
 import kitchen_assets as ka
-import mobile_panda as mp
-import panda_plan as pp
+import robots
+from robots.base import CONTROL_DT, Controller, rot, rotvec, tf, wrap
 
 WORLD = "kitchen"
 # Model poses (x, y, yaw), must match worlds/kitchen_partnet_robot.sdf (scripts/kitchen_assets.py)
 POSES = ka.POSES
 TABLE_Z0 = 0.002
 BASE0 = (0.0, 0.0, 0.0)                    # room centre, facing east
-STANDOFF = 0.08                            # TCP in front of a handle's front face [m]
 HANDLE_Z = ka.HANDLE_Z                     # fridge handle target height
 BASE_TOL, YAW_TOL = 0.03, math.radians(3)
 REST_BASE_TOL, REST_ARM_TOL = 0.01, math.radians(1)
 EE_TOL, EE_ROT_TOL = 0.02, math.radians(5)
 MAX_SPEED, MAX_PEN = 5.0, 0.01
-ROBOT_LINKS = ["base_link"] + [f"panda_link{i}" for i in range(1, 8)] + [
-    "panda_hand", "panda_leftfinger", "panda_rightfinger"]
+STATUS = "/robot/status"
 
 
 # ------------------------------------------------------------------ helpers
 def rpy_mat(r, p, y):
-    return pp.rot("z", y) @ pp.rot("y", p) @ pp.rot("x", r)
+    return rot("z", y) @ rot("y", p) @ rot("x", r)
 
 
 def pose_mat(text):
     v = [float(x) for x in (text or "0 0 0 0 0 0").split()]
-    return pp.tf(rpy_mat(*v[3:]), v[:3])
+    return tf(rpy_mat(*v[3:]), v[:3])
 
 
 def gz_mat(pose):
@@ -61,7 +54,7 @@ def gz_mat(pose):
     R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)],
                   [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
                   [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]])
-    return pp.tf(R, (p.x(), p.y(), p.z()))
+    return tf(R, (p.x(), p.y(), p.z()))
 
 
 def model_dir(name):
@@ -88,6 +81,12 @@ def collisions(name):
     return out
 
 
+def contact_links(name):
+    """The links of a model with a contact sensor, in model order (a robot's: every collision link)."""
+    root = ET.parse(os.path.join(model_dir(name), "model.sdf")).getroot()
+    return [ln.get("name") for ln in root.iter("link") if ln.find("sensor[@type='contact']") is not None]
+
+
 def sample_points(kind, T, dims):
     """Points (link frame) and radii approximating a collision shape."""
     if kind == "capsule":
@@ -104,7 +103,7 @@ def sample_points(kind, T, dims):
 
 def model_tf(name):
     x, y, yaw = POSES[name]
-    return pp.tf(pp.rot("z", yaw), (x, y, TABLE_Z0 if name == "table_01" else 0.0))
+    return tf(rot("z", yaw), (x, y, TABLE_Z0 if name == "table_01" else 0.0))
 
 
 def to_world(name, p):
@@ -146,90 +145,31 @@ def targets():
     return T
 
 
-def heading(normal):
-    return math.atan2(-normal[1], -normal[0])     # facing the furniture
-
-
-def build_plan():
-    T = targets()
-    P = mp.Plan(BASE0)
-    checks = []         # (event index of the hold, kind, info)
-
-    def check(kind, dur, **info):
-        P.hold(dur, f"check {kind} {info.get('name', '')}", info)
-        checks.append((len(P.events) - 1, kind, info))
-
-    P.hold(1.0, "settle")
-    P.hold(10.0, "rest")
-    P.gripper(mp.GRIP_CLOSED, 1.5, label="gripper close")
-    check("grip", 0.5, name="closed_1", want=mp.GRIP_CLOSED)
-    P.gripper(mp.GRIP_OPEN, 1.5, label="gripper open")
-    check("grip", 0.5, name="open_1", want=mp.GRIP_OPEN)
-
-    def visit(name, t, closing_arm, bearing, label):
-        hd = heading(t["normal"])
-        one_m = np.array([*(t["face"][:2] + 1.0 * t["normal"][:2]), hd])
-        P.drive(one_m, label=f"drive {name}_1m")
-        check("base", 2.0, name=f"{name}_1m", goal=one_m.tolist())
-        pre = t["front"] + STANDOFF * t["normal"]
-        far = t["front"] + (STANDOFF + 0.07) * t["normal"]
-        base = mp.base_for_reach(pre, hd, bearing, 0.7)
-        P.drive(base, label=f"drive {name}_reach")
-        check("base", 1.0, name=f"{name}_reach", goal=base.tolist())
-        closing = pp.rot("z", hd) @ np.array(closing_arm, float)
-        R = mp.hand_rot(-t["normal"], closing)
-        P.arm_pose(far, R, 4.0, label=f"arm {name} far")
-        P.arm_pose(pre, R, 2.0, label=f"arm {name} {label}", cartesian=True)
-        check("ee", 2.0, name=f"{name}_{label}", p=pre.tolist(), R=R.tolist())
-        P.arm_joints(mp.READY, 4.0, label="arm ready")
-
-    visit("fridge", T["fridge"], (0, 1, 0), math.radians(45), "handle")
-    visit("counter", T["counter"], (0, 0, -1), math.radians(45), "drawer_bar")
-
-    t = T["table"]
-    hd = heading(t["normal"])
-    one_m = np.array([t["centre"][0], t["face"][1] + 1.0, hd])
-    P.drive(one_m, label="drive table_1m")
-    check("base", 2.0, name="table_1m", goal=one_m.tolist())
-    above = np.array([t["centre"][0], t["face"][1] - 0.18, t["top"] + 0.20])
-    base = mp.base_for_reach(above, hd, 0.0, 0.55)
-    P.drive(base, label="drive table_reach")
-    check("base", 1.0, name="table_reach", goal=base.tolist())
-    R = mp.fk(mp.READY, base)[0][:3, :3]          # hand down, as at READY
-    P.arm_pose(above, R, 3.0, label="arm table above")
-    check("ee", 1.0, name="table_above", p=above.tolist(), R=R.tolist())
-    P.gripper(mp.GRIP_CLOSED, 1.5, label="gripper close")
-    check("grip", 0.5, name="closed_2", want=mp.GRIP_CLOSED)
-    P.gripper(mp.GRIP_OPEN, 1.5, label="gripper open")
-    check("grip", 0.5, name="open_2", want=mp.GRIP_OPEN)
-    P.arm_joints(mp.READY, 3.0, label="arm ready")
-    P.hold(1.0, "done")
-    return P, checks, T
-
-
 # ------------------------------------------------------------------ system
 class Smoke:
     def configure(self, entity, sdf, ecm, event_mgr):
         world = World(entity)
-        self.model = Model(world.model_by_name(ecm, mp.MODEL))
-        self.ctl = mp.Controller(self.model, ecm)
+        self.robot = robots.current()
+        self.model = Model(world.model_by_name(ecm, self.robot.model))
+        self.ctl = Controller(self.robot, self.model, ecm)
         self.ctl.reset(ecm, BASE0)
-        self.plan, self.checks, self.T = build_plan()
+        self.plan, self.checks, self.T = self.robot.scripted.smoke_plan(self.robot, targets())
         self.seq = self.plan.actions()
-        self.out = os.environ.get("KITCHEN_TEST_OUT", "mobile_panda_smoke.json")
+        self.out = os.environ.get("KITCHEN_TEST_OUT", "robot_smoke.json")
         self.seq.save(os.path.join(os.path.dirname(os.path.abspath(self.out)), "smoke_actions.npz"))
         ev = self.plan.events
         self.check_at = {}   # control step at the end of each check hold -> check
         for i, kind, info in self.checks:
             end = ev[i + 1][0] if i + 1 < len(ev) else self.plan.t
-            self.check_at[int(round(end / mp.CONTROL_DT)) - 1] = (kind, info)
-        self.ev_steps = [(int(round(t / mp.CONTROL_DT)), lab) for t, lab, _ in ev]
-        self.rest = (int(round(ev[1][0] / mp.CONTROL_DT)), int(round(ev[2][0] / mp.CONTROL_DT)))
+            self.check_at[int(round(end / CONTROL_DT)) - 1] = (kind, info)
+        self.ev_steps = [(int(round(t / CONTROL_DT)), lab) for t, lab, _ in ev]
+        self.rest = (int(round(ev[1][0] / CONTROL_DT)), int(round(ev[2][0] / CONTROL_DT)))
 
         # collision shapes: robot (sampled points) and furniture (boxes)
-        rob = collisions(mp.MODEL)
+        rob = collisions(self.robot.model)
+        self.robot_links = contact_links(self.robot.model)
         self.rob = []
-        for ln in ROBOT_LINKS:
+        for ln in self.robot_links:
             for kind, Tc, dims in rob.get(ln, []):
                 self.rob.append((Link(self.model.link_by_name(ecm, ln)), ln,
                                  *sample_points(kind, Tc, dims)))
@@ -258,9 +198,9 @@ class Smoke:
         self.q_err_max = 0.0
         self.finished, self.t, self.ev_i = False, 0.0, 0
         self.node = Node()
-        self.pub = self.node.advertise("/mobile_panda/status", StringMsg)
-        topics = [f"/world/{WORLD}/model/{mp.MODEL}/link/{ln}/sensor/contact/contact"
-                  for ln in ROBOT_LINKS]
+        self.pub = self.node.advertise(STATUS, StringMsg)
+        topics = [f"/world/{WORLD}/model/{self.robot.model}/link/{ln}/sensor/contact/contact"
+                  for ln in self.robot_links]
         topics += [f"/world/{WORLD}/model/{m}/link/{m}/sensor/contact/contact"
                    for m in ("cup", "table_01")]
         for tp in topics:
@@ -272,7 +212,7 @@ class Smoke:
                  f"{np.round(self.T['fridge']['handle'], 3)}, bar {np.round(self.T['counter']['handle'], 3)}")
 
     def say(self, text):
-        print(f"[mobile_panda] {text}", flush=True)
+        print(f"[robot] {text}", flush=True)
         msg = StringMsg()
         msg.data = text
         self.pub.publish(msg)
@@ -284,7 +224,7 @@ class Smoke:
             depth = max(c.depth) if len(c.depth) else 0.0
             if depth > self.pen["max"]:
                 self.pen.update(max=depth, t=self.t, where=" / ".join(names))
-            if any(mp.MODEL in n for n in names) and len(self.robot_contacts) < 50:
+            if any(self.robot.model in n for n in names) and len(self.robot_contacts) < 50:
                 self.robot_contacts.append([round(self.t, 3), self.phase(), *names, depth])
 
     def phase(self):
@@ -293,12 +233,12 @@ class Smoke:
     def pre_update(self, info, ecm):
         if info.paused:
             return
-        k = int(round(info.sim_time.total_seconds() / mp.CONTROL_DT))
+        k = int(round(info.sim_time.total_seconds() / CONTROL_DT))
         self.ctl.apply(ecm, self.seq[k])
 
     # -------------------------------------------------------------- metrics
     def tcp(self, ecm):
-        return gz_mat(self.hand.world_pose(ecm)) @ pp.tf(p=(0, 0, pp.TCP_Z))
+        return gz_mat(self.hand.world_pose(ecm)) @ tf(p=(0, 0, self.robot.tcp_z))
 
     def clearance(self, ecm, per_link=False):
         """Min distance robot shapes -> furniture boxes, per furniture model:
@@ -322,7 +262,7 @@ class Smoke:
                 best[mn] = (float(d[i]), str(who[i]), ln)
             if per_link:
                 lk = links.setdefault(mn, {})
-                for rl in ROBOT_LINKS:
+                for rl in self.robot_links:
                     m = float(d[who == rl].min()) if np.any(who == rl) else math.inf
                     lk[rl] = round(min(lk.get(rl, math.inf), m), 4)
         return (best, links) if per_link else best
@@ -331,7 +271,7 @@ class Smoke:
         if info.paused or self.finished:
             return
         t = self.t = info.sim_time.total_seconds()
-        k = int(round(t / mp.CONTROL_DT)) - 1          # action applied this step
+        k = int(round(t / CONTROL_DT)) - 1          # action applied this step
         while self.ev_i + 1 < len(self.ev_steps) and k >= self.ev_steps[self.ev_i + 1][0]:
             self.ev_i += 1
             self.say(f"t={t:6.2f}s {self.ev_steps[self.ev_i][1]}")
@@ -344,7 +284,7 @@ class Smoke:
                 self.rest0 = (st["base"].copy(), st["arm"].copy())
             self.rest_dev[0] = max(self.rest_dev[0], float(np.linalg.norm(st["base"][:2] - self.rest0[0][:2])))
             self.rest_dev[1] = max(self.rest_dev[1], float(np.max(np.abs(st["arm"] - self.rest0[1]))),
-                                   abs(mp.wrap(st["base"][2] - self.rest0[0][2])))
+                                   abs(wrap(st["base"][2] - self.rest0[0][2])))
         if k % 5 == 0:
             for lname, link in self.links.items():
                 v, w = link.world_linear_velocity(ecm), link.world_angular_velocity(ecm)
@@ -375,7 +315,7 @@ class Smoke:
             goal = np.array(info["goal"])
             r.update(goal=goal.round(4).tolist(), pose=[Tb[0, 3], Tb[1, 3], yaw_of(Tb)],
                      err_xy=float(np.linalg.norm(Tb[:2, 3] - goal[:2])),
-                     err_yaw=abs(mp.wrap(yaw_of(Tb) - goal[2])))
+                     err_yaw=abs(wrap(yaw_of(Tb) - goal[2])))
             r["pass"] = r["err_xy"] <= BASE_TOL and r["err_yaw"] <= YAW_TOL
             msg = f"err {r['err_xy']*100:.2f} cm / {math.degrees(r['err_yaw']):.2f} deg"
         elif kind == "ee":
@@ -383,10 +323,11 @@ class Smoke:
             p, R = np.array(info["p"]), np.array(info["R"])
             r.update(target=p.round(4).tolist(), tcp=Tt[:3, 3].round(4).tolist(),
                      err_p=float(np.linalg.norm(Tt[:3, 3] - p)),
-                     err_rot=float(np.linalg.norm(pp.rotvec(R @ Tt[:3, :3].T))),
+                     err_rot=float(np.linalg.norm(rotvec(R @ Tt[:3, :3].T))),
                      q=st["arm"].round(3).tolist())
             r["clearance"], r["clearance_per_link"] = self.clearance(ecm, per_link=True)
-            r["pass"] = r["err_p"] <= EE_TOL and r["err_rot"] <= EE_ROT_TOL
+            r["tol"] = info.get("tol", EE_TOL)
+            r["pass"] = r["err_p"] <= r["tol"] and r["err_rot"] <= EE_ROT_TOL
             if info["name"].startswith("fridge"):
                 r["pass"] &= ka.HANDLE_BAND[0] <= Tt[2, 3] <= ka.HANDLE_BAND[1]
             cl = ", ".join(f"{m} {d*100:.1f} cm ({rl}/{fl})" for m, (d, rl, fl) in r["clearance"].items())
@@ -418,7 +359,7 @@ class Smoke:
             elif r["kind"] == "ee":
                 check(f"TCP at {r['name']} (mm, deg, z m)", r["pass"],
                       [round(r["err_p"] * 1000, 1), round(math.degrees(r["err_rot"]), 2), r["tcp"][2]],
-                      [EE_TOL * 1000, round(math.degrees(EE_ROT_TOL), 1),
+                      [r["tol"] * 1000, round(math.degrees(EE_ROT_TOL), 1),
                        "%.2f-%.2f" % ka.HANDLE_BAND if r["name"].startswith("fridge") else "-"])
             else:
                 check(f"gripper {r['name']} (mm per finger)", r["pass"], r["fingers_mm"], r["want_mm"])
@@ -446,7 +387,7 @@ class Smoke:
                          "ik_worst_mm_deg": [self.plan.ik_worst[0] * 1000,
                                              math.degrees(self.plan.ik_worst[1])],
                          "events": [(round(t, 2), lab) for t, lab, _ in self.plan.events]},
-                "mount_z": mp.MOUNT_Z, "mount_x": mp.MOUNT_X}
+                "mount_z": float(self.robot.mount[2]), "mount_x": float(self.robot.mount[0])}
         with open(self.out, "w") as f:
             json.dump(data, f, indent=1, default=float)
         self.say(f"DONE {'PASS' if ok else 'FAIL'}: {sum(c['pass'] for c in checks)}/{len(checks)} "

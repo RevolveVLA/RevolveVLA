@@ -5,7 +5,7 @@ the earlier pipeline's live_validate.py; the gates and thresholds come from the 
 Preparers (write the feed <out>/actions.npz, <out>/episode.json read by ReplaySystem, <out>/live.json):
   prepare_plan(plan run dir, attempt, out, task, feed)   one AutoMoMa plan attempt (replay.py actions):
       feed 1khz = its 1 ms actions; 30hz = what a 30 Hz policy would command (held_feed)
-  prepare_scripted(name, out, task)    a scripted episode (kitchen_episodes.py: fridge, drawer)
+  prepare_scripted(name, out, task)    a scripted episode of the robot (robots/<robot>/scripted.py EPISODES)
   prepare_restore(source run dir, phase, out)   the source run from <phase>_start.npz on
       (phase_states/ of a prepare_plan / prepare_scripted run), restored in step 0
 finalize(out)
@@ -83,14 +83,13 @@ def prepare_plan(run, attempt, out, task_name=None, feed="1khz"):
 
 
 def prepare_scripted(name, out, task_name):
-    """A scripted kitchen episode (kitchen_episodes.py) as a fed stream: its plan's actions, events, check
-    windows and spans; the grasp target of its first grasp is the approach gate's reference."""
-    import kitchen_episodes as ke
-    import mobile_panda as mp
+    """A scripted kitchen episode of the robot (skills.episode) as a fed stream: its plan's actions, events,
+    check windows and spans; the grasp target of its first grasp is the approach gate's reference."""
+    import skills
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     r = spec.task(task_name)
-    sc = ke.episode(name)
+    sc = skills.episode(name)
     seq = sc.P.actions()
     seq.save(out / "actions.npz")
     obj, part, unit = spec.hold(r)[:3]
@@ -98,7 +97,7 @@ def prepare_scripted(name, out, task_name):
     hd = next(x for x in man["handles"] if x["name"] == r.task.object.handle)
     hold_check = r.task.replay.hold_check
     ev = [[round(t, 6), lab, info] for t, lab, info in sc.P.events]
-    ep = dict(plan_run=f"scripted_{name}", attempt_id=0, grasp_id=0, scripted=name, control_dt=mp.CONTROL_DT,
+    ep = dict(plan_run=f"scripted_{name}", attempt_id=0, grasp_id=0, scripted=name, control_dt=spec.SIM["control_dt"],
               steps=len(seq), duration_s=sc.P.t, budget_s=sc.info["budget"], contact_rate_hz=spec.SIM["contact_rate_hz"],
               task=r.task.name, object_joint=f"{r.task.object.name}::{r.task.object.joint}",
               object_handle=f"{r.task.object.name}::{hd['link']}::{r.task.object.handle}",

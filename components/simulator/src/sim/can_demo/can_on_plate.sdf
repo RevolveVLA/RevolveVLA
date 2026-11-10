@@ -14,7 +14,7 @@
       <engine><filename>gz-physics-mujoco-plugin</filename></engine>
     </plugin>
     <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
-    <!-- Pick-and-place controller: scripts/pick_place_system.py, runs every step -->
+    <!-- Pick-and-place controller: can_demo/pick_place_system.py, runs every step -->
     <plugin filename="gz-sim-python-system-loader-system"
             name="gz::sim::systems::PythonSystemLoader">
       <module_name>pick_place_system</module_name>

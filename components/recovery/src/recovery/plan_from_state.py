@@ -24,8 +24,9 @@ weights), with the regeneration's extra chassis corner spheres (generator `regen
               staging pose replay.py spawns at).
 
 Writes handoff.npz / handoff.json in plan.py's format (one row per attempt, rows 0-3 the grasp,
-4-35 the pull) plus reach_world (A, R, 10) / reach_len / reach_dt for mode reach, handoff.json
-"regenerate" (regen.json + the corner spheres), plan_report.json and assets/.
+4-35 the pull) plus reach_world (A, R, 3 + arm DoF) / reach_len / reach_dt for mode reach, handoff.json
+"regenerate" (regen.json + the corner spheres), plan_report.json and assets/. The robot is the task spec's
+($REVOLVE_ROBOT); its chassis corner spheres are robot.yaml planner regen_base_corner_spheres.
 """
 import json
 import os
@@ -40,7 +41,7 @@ import torch
 import frames
 import gen_assets
 import specs_bridge as plugins
-from plan import now, pick_pairs
+from plan import convert_12d, now, pick_pairs
 
 def world_to_obj_base(b, obj, yaw_lo):
     """World base (x, y, yaw) -> the planner (object) frame, yaw in [yaw_lo, yaw_lo + 2 pi)."""
@@ -58,7 +59,9 @@ def main(out):
     rd, sc, task, gen = (plugins.load(k, names[k]) for k in ("robot", "scene", "task", "generator"))
     task = dict(task, replay=r.task.replay.model_dump())      # the reach's standoff_m
     R = gen["regenerate"]
-    rd = dict(rd, base_corner_spheres=R["base_corner_spheres"], base_self_collision_buffer=R["base_self_collision_buffer"])
+    rd = dict(rd, base_corner_spheres=rd["regen_base_corner_spheres"], base_self_collision_buffer=R["base_self_collision_buffer"])
+    rb = gen_assets.gz_robot(rd)
+    nq = 3 + rb.dof                              # base + arm joints
     attempts = int(os.environ.get("ATTEMPTS", R["attempts"]))
     seed = int(os.environ.get("SEED", R["seed0"]))
     torch.manual_seed(seed)
@@ -120,8 +123,8 @@ def main(out):
 
     # the saved state: robot joints (measured) and the task joint, in the planner frame
     jp = {str(n): float(v) for n, v in zip(s["joint_names"], s["joint_pos"])}
-    bw = np.array([jp[f"mobile_panda::base_{k}"] for k in ("x", "y", "yaw")])
-    arm = np.array([jp[f"mobile_panda::panda_joint{i}"] for i in range(1, 8)])
+    bw = np.array([jp[f"{rb.model}::{j}"] for j in rb.base_joints])
+    arm = np.array([jp[f"{rb.model}::{j}"] for j in rb.arm_joints])
     door0 = jp[f"{task['object']}::{jn}"]
     yaw_lo = task["base_yaw_window"][0]
     q_start = np.r_[world_to_obj_base(bw, obj, yaw_lo), arm]
@@ -138,7 +141,7 @@ def main(out):
         return out_
 
     t = now()
-    problems = []          # (gid, S row (10), G row (10))
+    problems = []          # (gid, S row (nq), G row (nq))
     ik = {}
     if rg["mode"] == "pull":
         gid = max(A["object"]["grasps"]) if rg.get("grasp_from_state") else rg["source_grasp_id"]
@@ -212,12 +215,11 @@ def main(out):
     rows.sort(key=lambda r: r["attempt_id"])
     T["traj_s"] = now() - t
 
-    merged = TrajResult.cat([r for _, r in results])
-    conv = pipe._convert_to_12d(merged)
+    conv = convert_12d(pipe, TrajResult.cat([r for _, r in results]), nq)
     (out / "automoma").mkdir(parents=True, exist_ok=True)
     pipe.planning_io.save_converted(conv, str(out / "automoma" / "traj_data_train.pt"))
     traj = conv["traj_robot"].numpy().astype(np.float64)
-    q = torch.as_tensor(traj[..., :10].reshape(-1, 10), dtype=torch.float32, device="cuda")
+    q = torch.as_tensor(traj[..., :nq].reshape(-1, nq), dtype=torch.float32, device="cuda")
     ee = planner.motion_gen.ik_solver.fk(q).ee_pose
     tcp_obj = frames.pose7_to_tf(torch.cat([ee.position, ee.quaternion], -1).cpu().numpy().astype(np.float64))
     tcp_world = frames.pose_to_world(tcp_obj, obj).reshape(*traj.shape[:2], 4, 4)
@@ -227,11 +229,11 @@ def main(out):
     vel = planner.motion_gen.kinematics.kinematics_config.joint_limits.velocity[1].cpu().numpy()
     for r in rows:
         w = world[r["attempt_id"]]
-        d = np.diff(w[:, :10], axis=0)
-        seg = np.maximum(np.linalg.norm(d[:, :2], axis=1) / vel[0], np.abs(d[:, 2:10] / vel[2:10]).max(1))
+        d = np.diff(w[:, :nq], axis=0)
+        seg = np.maximum(np.linalg.norm(d[:, :2], axis=1) / vel[0], np.abs(d[:, 2:nq] / vel[2:nq]).max(1))
         r.update(duration_hint_s=float(seg.sum()), base_travel_m=float(np.linalg.norm(d[:, :2], axis=1).sum()),
                  base_start_world=w[0, :3].tolist(), base_end_world=w[-1, :3].tolist(),
-                 start_vs_saved_max=float(np.abs(traj[r["attempt_id"], 0, :10] - q_start).max()),
+                 start_vs_saved_max=float(np.abs(traj[r["attempt_id"], 0, :nq] - q_start).max()),
                  **{f"door_final_{unit}": float(door[r["attempt_id"], -1])})
 
     # reach (mode reach): MotionGen from the saved state to each planned pull's staging pose
@@ -245,7 +247,7 @@ def main(out):
         for r in rows:
             if not r["success"]:
                 continue
-            q0 = torch.as_tensor(traj[r["attempt_id"], 0, :10], dtype=torch.float32, device="cuda")[None]
+            q0 = torch.as_tensor(traj[r["attempt_id"], 0, :nq], dtype=torch.float32, device="cuda")[None]
             Rz = frames.quat_wxyz_to_R(planner.motion_gen.ik_solver.fk(q0).ee_pose.quaternion.cpu().numpy()[0])[:, 2]
             axy = Rz[:2] / np.linalg.norm(Rz[:2])
             stage = q0.clone()
@@ -278,18 +280,18 @@ def main(out):
                   attempt_id=np.arange(len(rows)), grasp_id=np.array([r["grasp_id"] for r in rows]))
     if rg["mode"] == "reach":
         n = max([len(v[0]) for v in reach.values()], default=1)
-        rw, rl, rdt = np.zeros((len(rows), n, 10)), np.zeros(len(rows), int), np.zeros(len(rows))
+        rw, rl, rdt = np.zeros((len(rows), n, nq)), np.zeros(len(rows), int), np.zeros(len(rows))
         for a, (p, dt) in reach.items():
             rw[a, :len(p)], rl[a], rdt[a] = p, len(p), dt
         arrays.update(reach_world=rw, reach_len=rl, reach_dt=rdt)
     np.savez_compressed(out / "handoff.npz", **arrays)
-    meta = {"format": "plan.py handoff format (handoff.json of a plan run); reach_world (A, R, 10) world base + arm "
+    meta = {"format": f"plan.py handoff format (handoff.json of a plan run); reach_world (A, R, {nq}) world base + arm "
                       "at reach_dt (A,) s, reach_len (A,) valid rows (mode reach only)",
             "run": out.name, "plugins": names, "seed": seed, "curobo_seeds": seeds, "attempts": len(rows),
             "planned": int(success.sum()), "object_world_pose": obj, "goal_angle": goal,
             "grasps": {g: {k: v[k] for k in (ax, "pose_obj", "T_handle_grasp")} for g, v in A["object"]["grasps"].items()},
             "attempts_detail": rows,
-            "regenerate": dict(rg, base_corner_spheres=R["base_corner_spheres"],
+            "regenerate": dict(rg, base_corner_spheres=rd["base_corner_spheres"],
                                base_self_collision_buffer=R["base_self_collision_buffer"], corner_spheres=corners, reach_slowdown=R["reach_slowdown"],
                                start_state_world_base=bw.tolist(), start_state_planner=q_start.tolist(),
                                start_task_joint=door0)}

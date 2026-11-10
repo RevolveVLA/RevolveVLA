@@ -4,7 +4,7 @@
 
 At every waypoint, in the world frame (TCP gate on the first n planned trajectories, or all
 when fewer plan, at least 1; drift reported for all planned ones):
-- planner TCP (cuRobo FK of panda_tcp, handoff tcp_world) vs Gazebo panda_tcp, computed
+- planner TCP (cuRobo FK of robot.yaml tcp.link, handoff tcp_world) vs the Gazebo TCP frame, computed
   from the SDF Gazebo loads (robot gz_sdf, posed by its <include> in the world file) at
   base_x, base_y, base_yaw = frames.base_to_world(planner base). Pass: < 2 cm and < 10 deg.
 - grasp drift (reported, not gated): Gazebo TCP vs the grasp on the gz object's handle
@@ -36,7 +36,8 @@ def main(run, n=None):
     robot = sdf.Model(plugins.path(rd["gz_sdf"]))
     obj = sdf.Model(plugins.path(task["gz_model"]) / "model.sdf")
     placed = {name: T for name, _, T, _ in sdf.world_entities(plugins.path(world))}
-    M_robot, M_obj = placed[robot.name], placed[task["object"]]
+    # the scene's robot include is the placeholder `robot` (the simulator names it for the robot at run time)
+    M_robot, M_obj = placed["robot"], placed[task["object"]]
     door = obj.joints[task["joint"]]["child"]
     T_lh = next(T for nm, T, _ in obj.boxes[door] if nm == task["handle"])
     names = [str(x) for x in z["joint_names"]]
@@ -46,7 +47,7 @@ def main(run, n=None):
         T_hg = np.array(h["grasps"][str(int(z["grasp_id"][a]))]["T_handle_grasp"])
         ep, ea, dp, da = [], [], [], []
         for k in range(z["traj_robot_world"].shape[1]):
-            T_gz = M_robot @ robot.pose("panda_tcp", dict(zip(names, z["traj_robot_world"][a, k])))
+            T_gz = M_robot @ robot.pose(rd["tcp"]["link"], dict(zip(names, z["traj_robot_world"][a, k])))
             T_pl = z["tcp_world"][a, k]
             ep.append(np.linalg.norm(T_gz[:3, 3] - T_pl[:3, 3]))
             ea.append(math.degrees(sdf.angle_between(T_gz[:3, :3], T_pl[:3, :3])))
@@ -62,9 +63,9 @@ def main(run, n=None):
     # Joint limits: planner URDF vs the SDF Gazebo loads.
     u = ET.parse(run / "assets" / "robot" / f"{rd['name']}.urdf").getroot()
     lim = {j.get("name"): j.find("limit").attrib for j in u.findall("joint") if j.find("limit") is not None}
-    arm = {f"panda_joint{i}": max(abs(float(lim[f"panda_joint{i}"][key]) - robot.joints[f"panda_joint{i}"][s])
-                                  for key, s in (("lower", "lower"), ("upper", "upper"), ("velocity", "velocity")))
-           for i in range(1, 8)}
+    arm = {n: max(abs(float(lim[n][key]) - robot.joints[n][s])            # robot.yaml arm joints
+                  for key, s in (("lower", "lower"), ("upper", "upper"), ("velocity", "velocity")))
+           for n in rd["joints"]["arm"]}
     corners = [frames.base_to_world([x, y, 0.0], task["world_pose"])[:2]
                for x in (float(lim["base_x"]["lower"]), float(lim["base_x"]["upper"]))
                for y in (float(lim["base_y"]["lower"]), float(lim["base_y"]["upper"]))]

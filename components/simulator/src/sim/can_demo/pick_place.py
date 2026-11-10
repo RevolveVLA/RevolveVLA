@@ -2,7 +2,7 @@
 """Drive a demo run: wait for the (paused) world, start the scene-camera
 recording, unpause, relay /pick_place/status, then stop the recording.
 
-The controller itself runs inside gz-sim (scripts/pick_place_system.py).
+The controller itself runs inside gz-sim (can_demo/pick_place_system.py). The Panda-only can demo.
 
   pick_place.py [--video out.mp4] [--timeout 120]
 Exit code 0 when the can ends up on the plate.

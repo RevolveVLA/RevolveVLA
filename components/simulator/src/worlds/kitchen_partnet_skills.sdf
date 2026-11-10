@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <!--
   Skill and episode world (PartNet-Mobility asset set; layout: worlds/kitchen_partnet.sdf):
-  same robot and camera, runs scripts/mobile_panda_skill_system.py ($SKILL picks the
+  same robot and camera, runs skill_system.py ($SKILL picks the
   scenario, $KITCHEN_ASSETS=partnet). For cup_pick_place / reset_test the system moves
   the cup from the fridge rack onto the table at the first step.
 -->
@@ -24,7 +24,7 @@
     <!-- Robot skill tests (controller + checks), every 1 ms step -->
     <plugin filename="gz-sim-python-system-loader-system"
             name="gz::sim::systems::PythonSystemLoader">
-      <module_name>mobile_panda_skill_system</module_name>
+      <module_name>skill_system</module_name>
     </plugin>
 
     <gravity>0 0 -9.81</gravity>
@@ -106,10 +106,11 @@
       </experimental:params>
     </include>
 
-    <!-- Mobile Panda: base joints (base_x, base_y, base_yaw) are world x, y, yaw -->
+    <!-- The robot: a placeholder include that cli.py world_copy names and points at the robot's model
+         ($REVOLVE_ROBOT); base joints (base_x, base_y, base_yaw) are world x, y, yaw -->
     <include>
-      <name>mobile_panda</name>
-      <uri>model://mobile_panda</uri>
+      <name>robot</name>
+      <uri>model://robot</uri>
       <pose>0 0 0 0 0 0</pose>
     </include>
 

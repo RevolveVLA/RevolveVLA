@@ -8,8 +8,8 @@ which writes its numbers to $KITCHEN_TEST_OUT (default <out>/kitchen_test.json).
 
   kitchen_test.py --out DIR [--video out.mp4] [--log gz_sim.log] [--timeout 300]
                   [--status /kitchen_test/status] [--label KITCHEN_TEST]
-Also drives the mobile Panda smoke test (worlds/kitchen_partnet_robot.sdf) with
---status /mobile_panda/status --label MOBILE_PANDA_SMOKE.
+Also drives the robot smoke test (worlds/kitchen_partnet_robot.sdf) with
+--status /robot/status --label ROBOT_SMOKE.
 Writes DIR/summary.json and DIR/summary.txt. Exit code 0 when every check passes.
 """
 import argparse

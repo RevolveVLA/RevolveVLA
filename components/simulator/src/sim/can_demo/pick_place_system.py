@@ -1,11 +1,11 @@
-"""gz-sim Python system: Panda pick-and-place controller.
+"""gz-sim Python system: Panda pick-and-place controller (the Panda-only can-on-plate demo).
 
-Loaded by gz-sim-python-system-loader-system (see worlds/can_on_plate.sdf),
+Loaded by gz-sim-python-system-loader-system (see can_demo/can_on_plate.sdf),
 so it runs inside the simulation loop, every 1 ms physics step. Control is
 in lockstep with MuJoCo: no transport latency, same result on every run.
 
-- Arm: joint torques: P on the planned trajectory, gravity compensation (link
-  masses from franka_description) and feed-forward of the joint damping. The
+- Arm: joint torques (the mobile Panda's law, robots/mobile_panda/robot.py): P on the planned trajectory,
+  gravity compensation (link masses from franka_description) and feed-forward of the joint damping. The
   D term lives in the SDF joint damping, which MuJoCo integrates implicitly;
   an explicit D gain went unstable near q2 = 0, where joints 1 and 3 align. Velocity commands are avoided on
   purpose: the plugin implements them as a huge implicit damping term that
@@ -26,15 +26,9 @@ from gz.sim import Joint, Link, Model, World
 from gz.transport import Node
 
 import panda_plan as pp
+from robots.mobile_panda import robot as panda
 
 START_DELAY = 1.0          # [s] let everything settle before moving
-# Arm P gains: roughly I*w^2 for w = 25 rad/s, with per-joint inertia
-# estimates. Torques are clipped to the Panda's limits.
-ARM_KP = np.array([940.0, 1250.0, 312.0, 437.0, 31.0, 31.0, 6.0])
-ARM_DAMPING = np.array(pp.ARM_DAMPING)
-ARM_TAU_MAX = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
-FINGER_KP, FINGER_KD = 1000.0, 5.0
-CENTER_KP, CENTER_KD = 2000.0, 10.0   # common-mode (pair stays centred)
 FINGER_FMAX = float(os.environ.get("FINGER_FMAX", 12.0))
 
 
@@ -53,24 +47,13 @@ _UNIT_Z = None
 
 
 def arm_torques(q, q_des, qd_des):
-    """Arm joint torques: P + damping feed-forward + gravity compensation."""
-    tau = ARM_KP * (q_des - q) + ARM_DAMPING * qd_des + pp.gravity_torques(q)
-    return np.clip(tau, -ARM_TAU_MAX, ARM_TAU_MAX)
+    """Arm joint torques: P + damping feed-forward + gravity compensation (1 ms law)."""
+    return pp.PANDA.arm_torques(q, q_des, qd_des)
 
 
 def finger_forces(fq, fv, grip, fmax=None):
     """Coupled-finger forces (left, right) for per-finger opening target grip."""
-    fmax = FINGER_FMAX if fmax is None else fmax
-    # Left opens along +y_hand, right along -y_hand: (qL - qR)/2 is how far
-    # the pair has shifted off-centre along the hand's y axis.
-    off, off_v = (fq[0] - fq[1]) / 2, (fv[0] - fv[1]) / 2
-    f_center = -CENTER_KP * off - CENTER_KD * off_v
-    out = []
-    for qf, vf, sign in zip(fq, fv, (1, -1)):
-        squeeze = FINGER_KP * (grip - qf) - FINGER_KD * vf
-        squeeze = max(-fmax, min(fmax, squeeze))
-        out.append(squeeze + sign * f_center)
-    return out
+    return panda.finger_forces(fq, fv, grip, FINGER_FMAX if fmax is None else fmax)
 
 
 class PickPlace:
@@ -83,17 +66,15 @@ class PickPlace:
         self.qd = np.gradient(self.qs, pp.DT, axis=0)
 
         world = World(entity)
-        panda = Model(world.model_by_name(ecm, "panda"))
-        self.arm = [Joint(panda.joint_by_name(ecm, f"panda_joint{i}"))
-                    for i in range(1, 8)]
-        self.fingers = [Joint(panda.joint_by_name(ecm, f"panda_finger_joint_{s}"))
-                        for s in ("left", "right")]
+        arm = Model(world.model_by_name(ecm, "panda"))
+        self.arm = [Joint(arm.joint_by_name(ecm, n)) for n in pp.PANDA.arm_joints]
+        self.fingers = [Joint(arm.joint_by_name(ecm, n)) for n in pp.PANDA.gripper.joints]
         for j, q0 in zip(self.arm + self.fingers, list(pp.READY) + [0.04, 0.04]):
             j.enable_position_check(ecm)
             j.enable_velocity_check(ecm)
             j.reset_position(ecm, [float(q0)])
-        self.hand = Link(panda.link_by_name(ecm, "panda_hand"))
-        self.rf = Link(panda.link_by_name(ecm, "panda_rightfinger"))
+        self.hand = Link(arm.link_by_name(ecm, "panda_hand"))
+        self.rf = Link(arm.link_by_name(ecm, "panda_rightfinger"))
         self.can = Link(Model(world.model_by_name(ecm, "can")).canonical_link(ecm))
         self.plate = Link(Model(world.model_by_name(ecm, "plate")).canonical_link(ecm))
 

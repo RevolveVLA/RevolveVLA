@@ -28,12 +28,13 @@ def image():
 
 def experiment(name, max_turns, script, monkeypatch, stall=6):
     specs = ROOT / "specs"
-    if not specs.is_dir():
-        for k in ("tasks", "robots", "scenes"):
-            shutil.copytree(REPO / "specs" / k, specs / k)
+    for k in ("tasks", "robots", "scenes"):          # fresh copy: a stale one fails validation after a spec change
+        shutil.rmtree(specs / k, ignore_errors=True)
+        shutil.copytree(REPO / "specs" / k, specs / k)
     (specs / "experiments").mkdir(parents=True, exist_ok=True)
     spec = specs / "experiments" / f"{name}.yaml"
     spec.write_text(f"""name: {name}
+robot: mobile_panda
 task: open_fridge_door
 max_turns: {max_turns}
 seeds: {{train: [0, 1], probe: [200, 201], heldout: [100, 101]}}

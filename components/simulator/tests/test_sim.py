@@ -4,7 +4,7 @@ import math
 
 import numpy as np
 import pytest
-from conftest import EPISODE, RUN, load, plan_dir
+from conftest import EPISODE, EPISODE_SO101, RUN, load, plan_dir
 
 from revolve_common import metrics as M
 from revolve_common import specs
@@ -170,6 +170,27 @@ def test_replay_stored_plan(jobs, replay, numbers):
                              state_log_sha256=sha(out / "state_log.npz"), identical_to_legacy=same,
                              bag=load(out / "bag.json")["size_mb"], wall_s=replay["wall_s"])
     assert same, "state_log.npz differs from the stored replay"
+
+
+def test_replay_so101_stored_plan(jobs, numbers):
+    """A second robot (mobile_so101: 5-DoF arm, one-joint jaw) through the same shared replay: its stored
+    accepted drawer plan replayed as datagen's check: verdict accepted, every phase passes, and the state log
+    is bit-identical to the stored check of the same plan."""
+    if "replay_so101" not in jobs.started:
+        pytest.skip(f"no stored mobile_so101 plan at {EPISODE_SO101} (REVOLVE_SIM_PLAN_SO101)")
+    r = done(jobs, "replay_so101")
+    out = RUN / "replay_so101"
+    rep, v = phase_report("replay_so101"), load(out / "verdict.json")
+    assert r["exit"] == 0 and v["verdict"] == "accepted", v["reasons"]
+    assert {p: x["status"] for p, x in rep["phases"].items()} == dict.fromkeys(PHASES, "pass")
+    assert load(out / "episode.json")["task"] == "open_drawer"
+    stored = load(EPISODE_SO101 / "replay" / "verdict.json")
+    assert v["verdict"] == stored["verdict"] and v["reasons"] == stored["reasons"]
+    same = sha(out / "state_log.npz") == sha(EPISODE_SO101 / "replay" / "state_log.npz")
+    numbers["replay_so101"] = dict(plan=str(plan_dir(EPISODE_SO101)), verdict=v["verdict"], metrics=v["metrics"],
+                                   phases=phase_numbers(rep), state_log_sha256=sha(out / "state_log.npz"),
+                                   identical_to_stored=same, wall_s=r["wall_s"])
+    assert same, "state_log.npz differs from the stored check"
 
 
 def test_wrapper_http(jobs, replay):

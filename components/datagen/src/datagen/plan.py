@@ -1,7 +1,7 @@
-"""Plan whole-body trajectories with AutoMoMa's planner (plan step only) for the task plugin:
-open the fridge door (open_fridge_door, the default) or the drawer (open_drawer).
+"""Plan whole-body trajectories with AutoMoMa's planner (plan step only) for a task: open the fridge door
+(open_fridge_door) or the drawer (open_drawer), with the robot of $REVOLVE_ROBOT (the experiment's).
 
-  python plan.py <out_dir> [robot=.. scene=.. task=.. generator=..]   (entry.py plan, in revolve-datagen)
+  python plan.py <out_dir> task=.. [scene=.. generator=..]   (entry.py plan, in revolve-datagen)
   env ATTEMPTS, SEED override the generator's attempts (N) and seed; CENTRE_SEED the starts block's
   centre seed (default SEED).
 Ported from the earlier pipeline's plan.py: specs via specs_bridge (was its plugin loader),
@@ -47,7 +47,8 @@ import gen_assets
 import specs_bridge as plugins
 import start_design
 
-DEFAULTS = {"robot": "mobile_panda", "scene": "kitchen_partnet", "task": "open_fridge_door", "generator": "automoma"}
+DEFAULTS = {"generator": "automoma"}
+AUTOMOMA_ROBOT_COLS = 10    # AutoMoMa's _convert_to_12d splits the state at this column: robot | object
 
 
 def now():
@@ -71,7 +72,7 @@ def pick_pairs(S, G, k):
     return pairs
 
 
-IK_SEEDS_STARTS = 1000  # IK seeds per attempt with a starts block (start IK: 7 arm joints, base locked)
+IK_SEEDS_STARTS = 1000  # IK seeds per attempt with a starts block (start IK: the arm joints, base locked)
 
 
 def round_first_seed(out, seed):
@@ -82,18 +83,18 @@ def round_first_seed(out, seed):
 
 class PinnedStartIK:
     """Start IK of a starts block: AutoMoMa's IK problem (its IK collision checker, collision on)
-    with base_x, base_y and base_yaw locked at the start, the arm seeded with ik_seed's READY arm
-    and regularised toward READY. One cuRobo IKSolver; each start moves the locked base with
-    update_kinematics_config, as cuRobo's MotionGen.update_locked_joints does."""
+    with base_x, base_y and base_yaw locked at the start, the arm seeded with ik_seed's nominal arm
+    and regularised toward it (the robot's READY). One cuRobo IKSolver; each start moves the locked base
+    with update_kinematics_config, as cuRobo's MotionGen.update_locked_joints does."""
 
-    def __init__(self, planner, robot_cfg, base, seed):
+    def __init__(self, planner, robot_cfg, base, seed, arm):
         from curobo.wrap.reacher.ik_solver import IKSolver, IKSolverConfig
         self.planner, self.robot_cfg = planner, robot_cfg
         coll = planner._get_collision_checker(fixed_base=False, enable_collision=True, collision_role="ik")
         self.solver = IKSolver(IKSolverConfig.load_from_robot_config(
             self.config(base), None, planner.tensor_args, IK_SEEDS_STARTS, world_coll_checker=coll,
             use_cuda_graph=False, seed=seed))
-        self.ready = planner.tensor_args.to_device(list(start_design.READY_ARM))
+        self.ready = planner.tensor_args.to_device(list(arm))
 
     def config(self, base):
         from curobo.types.robot import RobotConfig
@@ -103,9 +104,9 @@ class PinnedStartIK:
         return RobotConfig.from_dict(cfg, self.planner.tensor_args)
 
     def solve(self, target, q_seed):
-        """(10-D start IK on the CPU or None, solutions found, index of the one taken) for a TCP
-        target Pose and the 10-D seed (start base, arm seed). Takes the solution nearest READY that
-        the 10-D IK model of plan_ik also finds feasible at the target."""
+        """(start IK (base + arm) on the CPU or None, solutions found, index of the one taken) for a TCP
+        target Pose and the seed (start base, arm seed). Takes the solution nearest READY that the
+        whole-body IK model of plan_ik also finds feasible at the target."""
         from curobo.types.state import JointState
         self.solver.kinematics.update_kinematics_config(self.config(q_seed[:3]).kinematics.kinematics_config)
         arm = self.planner.tensor_args.to_device(list(q_seed[3:]))
@@ -125,7 +126,7 @@ class PinnedStartIK:
 
 
 def goal_seed(q_start, tcp_start, tcp_goal, yaw_window):
-    """10-D goal IK seed: the start base moved rigidly with the TCP from its start to its goal pose
+    """Goal IK seed (base + arm): the start base moved rigidly with the TCP from its start to its goal pose
     (planner frame, 4x4), the yaw clamped into the window, the start arm."""
     M = tcp_goal @ np.linalg.inv(tcp_start)
     x, y, yaw = (float(v) for v in q_start[:3])
@@ -136,7 +137,7 @@ def goal_seed(q_start, tcp_start, tcp_goal, yaw_window):
 
 
 def seeded_goal_ik(planner, target, seed):
-    """(10-D goal IK on the CPU or None) for a TCP target Pose: plan_ik's IK solver regularised
+    """(goal IK (base + arm) on the CPU or None) for a TCP target Pose: plan_ik's IK solver regularised
     toward and seeded with `seed`, the solution nearest the seed."""
     ta = planner.tensor_args
     s = ta.to_device(seed)
@@ -148,8 +149,9 @@ def seeded_goal_ik(planner, target, seed):
     return sol[int(torch.linalg.norm(sol - s, dim=1).argmin())].cpu()
 
 
-def plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts, yaw_window, seed):
-    """rows, results (one per start, in attempt order), ik report: the plan step of a starts block."""
+def plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts, yaw_window, seed, arm):
+    """rows, results (one per start, in attempt order), ik report: the plan step of a starts block.
+    arm: the nominal arm of the starts (the robot's READY)."""
     from automoma.core.types import TrajResult
     from automoma.utils.file_utils import load_robot_cfg, process_robot_cfg
     from automoma.utils.math_utils import get_open_ee_pose, stack_iks_angle
@@ -168,11 +170,11 @@ def plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts, yaw_windo
                                                  enable_collision=True)
     planner._update_world_collision(planner.motion_gen, closed, True, include_object_mesh=True)
     tcp = {(gid, angle): target(gid, angle) for gid in used for angle in (0.0, goal)}
-    pin = PinnedStartIK(planner, robot_cfg, start_design.ik_seed(starts[0])[:3], 1531 + seed)
+    pin = PinnedStartIK(planner, robot_cfg, start_design.ik_seed(starts[0], arm)[:3], 1531 + seed, arm)
     q_start, found, pick = {}, {}, {}
     for st in starts:
         q_start[st.attempt_id], found[st.attempt_id], pick[st.attempt_id] = pin.solve(
-            tcp[st.grasp_id, 0.0], start_design.ik_seed(st))
+            tcp[st.grasp_id, 0.0], start_design.ik_seed(st, arm))
     del pin
     planner.free_cuda_cache()
     # Goal IK at the goal angle, one per start: seeded with the start moved rigidly with the handle.
@@ -221,7 +223,7 @@ def plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts, yaw_windo
                 ok = bool(one.success.any())
                 passed = ok and planner.filter_traj(one, akr).num_samples > 0
             else:       # no start IK or no goal IK: a failed attempt at its drawn start, READY arm
-                q = stack_iks_angle(torch.tensor([start_design.ik_seed(st)], dtype=torch.float32), 0.0)
+                q = stack_iks_angle(torch.tensor([start_design.ik_seed(st, arm)], dtype=torch.float32), 0.0)
                 one = TrajResult(q, q, q[:, None].repeat(1, steps, 1), torch.tensor([False]))
                 ok = passed = False
             rows[a] = dict(attempt_id=a, grasp_id=gid, cluster=st.cluster, **{f"grasp_{ax}": grasps[gid][ax]},
@@ -232,19 +234,46 @@ def plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts, yaw_windo
     return rows, results, ik
 
 
+def convert_12d(pipe, merged, nq):
+    """AutoMoMa's _convert_to_12d for nq = 3 + arm DoF robot columns: it splits robot / object at column
+    AUTOMOMA_ROBOT_COLS, so the robot is zero-padded to that width before and the pad dropped after (zero
+    columns for a 7-DoF arm)."""
+    from automoma.core.types import TrajResult
+    pad = AUTOMOMA_ROBOT_COLS - nq
+    if pad < 0:
+        raise SystemExit(f"{nq} robot joints (3 + arm DoF) > AutoMoMa's {AUTOMOMA_ROBOT_COLS} robot columns: an arm "
+                         f"above {AUTOMOMA_ROBOT_COLS - 3} DoF needs an AutoMoMa patch (ThirdParty/patches/automoma)")
+
+    def wide(t):
+        return torch.cat([t[..., :nq], t.new_zeros((*t.shape[:-1], pad)), t[..., nq:]], -1)
+    conv = pipe._convert_to_12d(TrajResult(wide(merged.start_states), wide(merged.goal_states),
+                                           wide(merged.trajectories), merged.success))
+    for key in ("start_robot", "goal_robot", "traj_robot"):
+        conv[key] = torch.cat([conv[key][..., :nq], conv[key][..., AUTOMOMA_ROBOT_COLS:]], -1)
+    return conv
+
+
 def main(out, sel):
     out = Path(out).resolve()          # AutoMoMa joins relative urdf paths onto /opt/automoma
     if (out / "handoff.json").exists():
         raise SystemExit(f"{out} already holds a run")
-    names = {**DEFAULTS, **sel}
+    if "task" not in sel:
+        raise SystemExit("plan.py: task=<task> is required")
+    r = plugins.task_spec(sel["task"])           # robot = $REVOLVE_ROBOT (the experiment's), no default
+    names = {"robot": r.robot.name, "scene": r.scene.name, "task": sel["task"], **DEFAULTS, **sel}
+    if names["robot"] != r.robot.name:
+        raise SystemExit(f"plan.py: robot={names['robot']} but $REVOLVE_ROBOT names {r.robot.name}")
     rd, sc, task, gen = (plugins.load(k, names[k]) for k in ("robot", "scene", "task", "generator"))
+    rb = gen_assets.gz_robot(rd)
+    arm = tuple(float(x) for x in rb.ready)      # the starts' nominal arm (generator starts nominal_arm: ready)
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
     if spec is not None:
-        if task["name"] not in start_design.BOX_CENTRE_OBJ:
-            raise SystemExit(f"starts: no box centre for task {task['name']} in start_design.BOX_CENTRE_OBJ")
-        box = start_design.BOX_CENTRE_OBJ[task["name"]]
+        if task["name"] not in rb.planner.BOX_CENTRE_OBJ:
+            raise SystemExit(f"starts: no box centre for task {task['name']} in robots/{rb.implementation}/planner.py "
+                             "BOX_CENTRE_OBJ (or drop the starts block for this robot in generator.yaml)")
+        box = rb.planner.BOX_CENTRE_OBJ[task["name"]]
         centre_seed = round_first_seed(out, seed)
         request = start_design.read_plan_request(out / start_design.REQUEST_FILE, seed, attempts, spec)
         starts = (start_design.plan_starts(centre_seed, seed, attempts, spec, box) if request is None
@@ -311,7 +340,7 @@ def main(out, sel):
     if spec is not None:
         t = now()
         rows, results, ik_report = plan_clustered(planner, A, task, gen, robot_cfg, obj_pose, starts,
-                                                  start_design.yaw_window_rad(spec), seed)
+                                                  start_design.yaw_window_rad(spec), seed, arm)
         quota = {g: sum(s.grasp_id == g for s in starts) for g in sorted({s.grasp_id for s in starts})}
         T["ik_traj_s"] = now() - t
     else:
@@ -358,16 +387,16 @@ def main(out, sel):
         raise SystemExit("no attempts: no grasp has both start and goal IK")
 
     # AutoMoMa's own 12-D conversion and .pt writer (all attempts; traj_success = planned).
-    merged = TrajResult.cat(results)
-    conv = pipe._convert_to_12d(merged)
+    nq = 3 + rb.dof                                   # base + arm joints
+    conv = convert_12d(pipe, TrajResult.cat(results), nq)
     (out / "automoma").mkdir(parents=True, exist_ok=True)
     pt = out / "automoma" / "traj_data_train.pt"
     pipe.planning_io.save_converted(conv, str(pt))
 
-    # Planner TCP (cuRobo FK, panda_tcp) and base, both to the world frame.
+    # Planner TCP (cuRobo FK of the robot's TCP link) and base, both to the world frame.
     obj = task["world_pose"]
-    traj = conv["traj_robot"].numpy().astype(np.float64)            # (A, 36, 12) object frame
-    q = torch.as_tensor(traj[..., :10].reshape(-1, 10), dtype=torch.float32, device="cuda")
+    traj = conv["traj_robot"].numpy().astype(np.float64)            # (A, 36, nq + 2) object frame
+    q = torch.as_tensor(traj[..., :nq].reshape(-1, nq), dtype=torch.float32, device="cuda")
     ee = planner.motion_gen.ik_solver.fk(q).ee_pose
     tcp_obj = frames.pose7_to_tf(torch.cat([ee.position, ee.quaternion], -1).cpu().numpy().astype(np.float64))
     tcp_world = frames.pose_to_world(tcp_obj, obj).reshape(*traj.shape[:2], 4, 4)
@@ -378,8 +407,8 @@ def main(out, sel):
     vel = planner.motion_gen.kinematics.kinematics_config.joint_limits.velocity[1].cpu().numpy()
     for r in rows:
         w = world[r["attempt_id"]]
-        d = np.diff(w[:, :10], axis=0)
-        seg = np.maximum(np.linalg.norm(d[:, :2], axis=1) / vel[0], np.abs(d[:, 2:10] / vel[2:10]).max(1))
+        d = np.diff(w[:, :nq], axis=0)
+        seg = np.maximum(np.linalg.norm(d[:, :2], axis=1) / vel[0], np.abs(d[:, 2:nq] / vel[2:nq]).max(1))
         r.update(duration_hint_s=float(seg.sum()), base_travel_m=float(np.linalg.norm(d[:, :2], axis=1).sum()),
                  base_yaw_world=[float(w[:, 2].min()), float(w[:, 2].max())],
                  base_start_world=w[0, :3].tolist(), base_end_world=w[-1, :3].tolist(),
@@ -400,13 +429,14 @@ def main(out, sel):
             "files": {"handoff.npz": "numpy arrays below, one row per attempt",
                       "automoma/traj_data_train.pt": "AutoMoMa 12-D .pt, same rows, planner frame"},
             "joint_names": jnames,
-            "traj_robot_obj": f"(A, 36, 12) AutoMoMa traj_robot: base in the object ({task['object']}) frame",
-            "traj_robot_world": "(A, 36, 12) same with base_x, base_y, base_yaw in the world = gz joint "
+            "traj_robot_obj": f"(A, 36, {nq + 2}) AutoMoMa traj_robot (base, arm, 2 gripper columns): base in "
+                              f"the object ({task['object']}) frame",
+            "traj_robot_world": f"(A, 36, {nq + 2}) same with base_x, base_y, base_yaw in the world = gz joint "
                                 "values; frames.base_to_world(traj_robot_obj[..., :3], object_world_pose)",
             "door_angle": f"(A, 36) {unit}, gz {task['object']}::{jn} position: 0 closed, positive opens "
                           f"(axis {[round(v, 6) for v in A['object']['joint_axis_model']]} in the model frame). "
                           f"= AutoMoMa traj_obj; AutoMoMa's AKR state holds -door_angle ({jn}_akr)",
-            "tcp_world": "(A, 36, 4, 4) planner FK of panda_tcp, world frame",
+            "tcp_world": f"(A, 36, 4, 4) planner FK of {rd['tcp']['link']}, world frame",
             "steps": "rows 0-3 = waypoint 0 while the gripper closes (fingers 0.04 -> 0), rows 4-35 = "
                      "the 32 trajopt waypoints; no time step (cuRobo optimize_dt, not kept by AutoMoMa)",
             "quaternions": "wxyz wherever a 7-D pose appears (cuRobo, AutoMoMa)",

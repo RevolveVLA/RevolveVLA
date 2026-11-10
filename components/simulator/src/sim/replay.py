@@ -4,7 +4,7 @@ the earlier pipeline's replay.py: the task, robot and scene come from specs/ (sp
 threshold from the task spec.
 
   replay.py actions <plan run dir> <attempt id> <out dir> [<task name>]
-      handoff.npz row -> <out>/actions.npz (mobile_panda.ActionSeq, one whole-body Action per
+      handoff.npz row -> <out>/actions.npz (robots.base.ActionSeq, one whole-body Action per
       1 ms step) and <out>/episode.json (events, check windows, thresholds, timing, clearance,
       the task object's joint, handle and bag topic). The task is the plan's (handoff.json) unless named.
       A spawn state in collision is rejected here: verdict.json (spawn_in_collision), exit 1, no gz.
@@ -13,7 +13,7 @@ threshold from the task spec.
       check with its value and threshold, the failed checks as reasons. Exit code 0 = accepted.
       The checks: validation.py (shared and the task's, from its spec).
 
-Episode built from the gz skill building blocks (Plan, Scenario, mobile_panda_skills.close):
+Episode built from the gz skill building blocks (Plan, Scenario, skills.close) for the robot $REVOLVE_ROBOT:
   approach  spawn at the plan's first base moved standoff_m back along the hand axis, the arm at
             the plan's first arm config, gripper open (the replay system resets the robot to the
             first action at t = 0); settle settle_s; base in to the plan's first base. The arm is
@@ -44,11 +44,11 @@ from pathlib import Path
 
 import numpy as np
 
-import mobile_panda as mp
-import mobile_panda_skills as sk
-import panda_plan as pp
+import robots
 import sdf
+import skills as sk
 import spec
+from robots.base import CONTROL_DT, PLAN_DT, Plan, wrap
 from validation import spawn_check, verdict
 
 SUBTASKS = ("approach", "grasp", "pull", "hold", "release")
@@ -58,17 +58,16 @@ CLEARANCE_EVERY = 5          # plan rows (10 ms) between clearance samples
 GRASP_CHECK_S = 0.5          # grasp check hold before the pull [s]
 # With a timing block the grasp check is the first plan row of the pull. gz takes the handle's slip
 # reference at the window end, so it must come before the 5-9 mm in-hand transient of the pull start.
-TIMED_GRASP_CHECK_S = mp.PLAN_DT
-NO_CHASSIS = {"base_link", "panda_link0", "panda_link1", "panda_link2"}   # on the chassis
+TIMED_GRASP_CHECK_S = PLAN_DT
 
 
-def hand_axis_xy(q, base):
-    z = mp.fk(q, base)[0][:3, 2]
+def hand_axis_xy(q, base, robot=None):
+    z = (robot or robots.current()).fk(q, base)[0][:3, 2]
     return np.array([*(z[:2] / np.linalg.norm(z[:2])), 0.0])
 
 
 def hold_rows(P, rows, label):
-    """mp.Plan.hold for an exact number of plan rows, and no event for 0 rows (Plan.hold pushes 2)."""
+    """Plan.hold for an exact number of plan rows, and no event for 0 rows (Plan.hold pushes 2)."""
     if rows > 0:
         P.events.append((P.t, label, {}))
         P.rows += [(P.b.copy(), P.q.copy(), P.g, P.f) for _ in range(rows)]
@@ -80,11 +79,11 @@ def timed_grasp(P, b0, rp, t):
     before the pull holds: 'grip settle' up to grip_settle_s, then 'grip wait'. Returns the
     gripper targets of the close rows after the pull start (pull_start_s < close_s): the pull
     rows carry them."""
-    n = lambda s: int(round(s / mp.PLAN_DT))
+    n = lambda s: int(round(s / PLAN_DT))
     hold_rows(P, n(t["settle_s"]), "settle")
     P.drive(b0, rp["approach_s"], label="approach in")
     k = len(P.rows) + n(t["pull_start_s"])
-    P.gripper(mp.GRIP_CLOSED, t["close_s"], label="grip close")
+    P.gripper(P.robot.gripper.closed_m, t["close_s"], label="grip close")
     rest = [r[2] for r in P.rows[k:]]
     del P.rows[k:]
     hold_rows(P, min(n(t["grip_settle_s"]), k - len(P.rows)), "grip settle")
@@ -104,16 +103,17 @@ def build(run, attempt, task, robot, timing=None, pull=None):
     det = next(d for d in meta["attempts_detail"] if d["attempt_id"] == attempt)
     rp = tm = task["replay"]                               # pull_slowdown, pull_min_s: the task's replay block
     obj, part, unit, si, from_si = spec.hold(spec.task(task["name"]))
-    W = h["traj_robot_world"][k, 4:, :10].copy()          # 32 waypoints: base x, y, yaw, arm 1-7
-    clipped = float(np.abs(np.clip(W[:, 3:], pp.LOWER, pp.UPPER) - W[:, 3:]).max())
-    W[:, 3:] = np.clip(W[:, 3:], pp.LOWER, pp.UPPER)       # cuRobo rounds the limits outwards
-    yaw_offset = mp.wrap(W[0, 2]) - W[0, 2]                # 2 pi k: spawn yaw in (-pi, pi]
+    R = robots.current()
+    W = h["traj_robot_world"][k, 4:, :3 + R.dof].copy()     # 32 waypoints: base x, y, yaw, arm
+    clipped = float(np.abs(np.clip(W[:, 3:], R.lower, R.upper) - W[:, 3:]).max())
+    W[:, 3:] = np.clip(W[:, 3:], R.lower, R.upper)         # cuRobo rounds the limits outwards
+    yaw_offset = wrap(W[0, 2]) - W[0, 2]                   # 2 pi k: spawn yaw in (-pi, pi]
     W[:, 2] += yaw_offset
     b0, q0 = W[0, :3], W[0, 3:]
 
     sc = sk.Scenario(f"automoma_{run.name}_{attempt}")
     # spawn: staging base, arm at q0, gripper open (Scenario's own Plan starts at BASE0, READY)
-    sc.P = P = mp.Plan(b0 - rp["standoff_m"] * hand_axis_xy(q0, b0), q0)
+    sc.P = P = Plan(R, b0 - rp["standoff_m"] * hand_axis_xy(q0, b0, R), q0)
     pull_grip = []
     if timing is None:
         P.hold(rp["settle_s"], "settle")
@@ -129,21 +129,21 @@ def build(run, attempt, task, robot, timing=None, pull=None):
     t_wp = np.linspace(0.0, T, len(W))
     P.events.append((P.t, "pull", dict(duration_s=T, dt_waypoint_s=T / (len(W) - 1))))
     # timed: the pull row holds the first waypoint, so the 1 ms upsampling moves nothing before it
-    for j, ts in enumerate(np.arange(0 if timing else 1, round(T / mp.PLAN_DT) + 1) * mp.PLAN_DT):
-        if timing is not None and j == round(TIMED_GRASP_CHECK_S / mp.PLAN_DT):
+    for j, ts in enumerate(np.arange(0 if timing else 1, round(T / PLAN_DT) + 1) * PLAN_DT):
+        if timing is not None and j == round(TIMED_GRASP_CHECK_S / PLAN_DT):
             sc.checks.append((len(P.events) - 1, "grasped", dict(obj=obj)))     # window: the "pull" event
             P.events.append((P.t, "pull on", {}))
         x = np.array([np.interp(ts, t_wp, W[:, i]) for i in range(W.shape[1])])
         P.b, P.q = x[:3], x[3:]
         P.rows.append((P.b.copy(), P.q.copy(), pull_grip[j] if j < len(pull_grip) else P.g, P.f))
     sc.check(rp["hold_check"], rp["hold_s"], obj=obj, want=si(rp[f"{part}_open_min_{unit}"]))
-    P.gripper(mp.GRIP_OPEN, 1.5, label="release")
-    P.drive(P.b - rp["retreat_m"] * hand_axis_xy(P.q, P.b), rp["retreat_s"], label="retreat")
+    P.gripper(R.gripper.open_m, 1.5, label="release")
+    P.drive(P.b - rp["retreat_m"] * hand_axis_xy(P.q, P.b, R), rp["retreat_s"], label="retreat")
     P.hold(0.5, "done")
     sc.info = dict(budget=rp["budget_s"])
 
-    vlim = np.array([mp.BASE_V_MAX, mp.BASE_V_MAX, mp.BASE_W_MAX] +
-                    [robot.joints[f"panda_joint{i}"]["velocity"] for i in range(1, 8)])
+    vlim = np.array([R.base_v_max, R.base_v_max, R.base_w_max] +
+                    [robot.joints[n]["velocity"] for n in R.arm_joints])
     seg = np.abs(np.diff(W, axis=0)) / (T / (len(W) - 1))
     facts = dict(plan_run=run.name, attempt_id=attempt, grasp_id=int(h["grasp_id"][k]),
                  **{key: det[key] for key in ("grasp_x", "grasp_y", "grasp_z") if key in det},
@@ -164,12 +164,13 @@ def clearance(P, door_final, task, scene, robot):
     and at its planned final position after the pull; other models as their AABBs; walls) and,
     for the arm, to its own chassis.
     The pull itself is the planner's (cuRobo spheres, T2 clearance check)."""
-    import mobile_panda_smoke_system as smoke              # gz image only (gz.* imports)
+    import smoke_system as smoke                           # gz image only (gz.* imports)
+    R = robots.current()
     shapes = {}
-    for ln, cols in smoke.collisions(mp.MODEL).items():
+    for ln, cols in smoke.collisions(R.model).items():
         pts = [smoke.sample_points(kind, T, dims) for kind, T, dims in cols]
         shapes[ln] = (np.vstack([p for p, _ in pts]), np.concatenate([r for _, r in pts]))
-    chassis = next((T, np.array(d)) for kind, T, d in smoke.collisions(mp.MODEL)["base_link"] if kind == "box")
+    chassis = next((T, np.array(d)) for kind, T, d in smoke.collisions(R.model)["base_link"] if kind == "box")
 
     def boxes(door):
         out = []
@@ -192,7 +193,7 @@ def clearance(P, door_final, task, scene, robot):
         q = np.abs((p - T[:3, 3]) @ T[:3, :3]) - size / 2
         return np.linalg.norm(np.maximum(q, 0), axis=-1) + np.minimum(q.max(-1), 0)
 
-    starts = [(round(t / mp.PLAN_DT), lab) for t, lab, _ in P.events]
+    starts = [(round(t / PLAN_DT), lab) for t, lab, _ in P.events]
     phase_of = {}
     for i, (k0, lab) in enumerate(starts):
         k1 = starts[i + 1][0] if i + 1 < len(starts) else len(P.rows)
@@ -208,17 +209,16 @@ def clearance(P, door_final, task, scene, robot):
         if lab not in keep:
             continue
         b, q, g, _ = P.rows[k]
-        qd = dict(base_x=b[0], base_y=b[1], base_yaw=b[2], panda_finger_joint_left=g, panda_finger_joint_right=g,
-                  **{f"panda_joint{i + 1}": v for i, v in enumerate(q)})
+        qd = dict(zip(R.base_joints, b), **R.gripper.joint_targets(g), **dict(zip(R.arm_joints, q)))
         Tc = robot.pose("base_link", qd) @ chassis[0]
         for ln, (pts, rad) in shapes.items():
             Tl = robot.pose(ln, qd)
             p = pts @ Tl[:3, :3].T + Tl[:3, 3]
-            cands = world[after] + ([] if ln in NO_CHASSIS else [("mobile_panda::chassis", Tc, chassis[1])])
+            cands = world[after] + ([] if ln in R.on_chassis else [(f"{R.model}::chassis", Tc, chassis[1])])
             for name, Tb, size in cands:
                 d = float((sd_box(p, Tb, size) - rad).min())
                 if lab not in res or d < res[lab][0]:
-                    res[lab] = [d, ln, name, round(k * mp.PLAN_DT, 2)]
+                    res[lab] = [d, ln, name, round(k * PLAN_DT, 2)]
     return {lab: dict(min_m=round(v[0], 4), link=v[1], obstacle=v[2], t=v[3]) for lab, v in res.items()}
 
 
@@ -248,7 +248,7 @@ def actions(run, attempt, out, task_name=None):
     man = json.loads((spec.path(task["gz_model"]) / "manifest.json").read_text())
     hd = next(x for x in man["handles"] if x["name"] == task["handle"])
     half = spec.grasp_half_width(r, hd["size"])    # per-finger opening the gz grasp check expects
-    ep = dict(facts, control_dt=mp.CONTROL_DT, steps=len(seq), duration_s=sc.P.t, budget_s=sc.info["budget"],
+    ep = dict(facts, control_dt=CONTROL_DT, steps=len(seq), duration_s=sc.P.t, budget_s=sc.info["budget"],
               contact_rate_hz=spec.SIM["contact_rate_hz"],
               task=task["name"], object_joint=f"{task['object']}::{task['joint']}",
               object_handle=f"{task['object']}::{hd['link']}::{task['handle']}", joint_topic=task["joint_topic"],

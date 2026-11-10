@@ -43,11 +43,12 @@ import yaml
 import cli
 import live_validate
 import replay as rp_
+import robots
 import sdf
+import skills as sk
 import spec
+from robots.base import CONTROL_DT, PLAN_DT, Plan, tf
 
-mp, sk = rp_.mp, rp_.sk
-HAND = {"panda_hand", "panda_leftfinger", "panda_rightfinger"}
 CLEAR_EVERY = 5                 # plan rows (50 ms) between clearance samples
 GENERATOR = spec.ROOT / "components" / "datagen" / "src" / "datagen" / "generator.yaml"
 
@@ -60,7 +61,8 @@ def load_snapshot(path):
     d = np.load(path, allow_pickle=True)
     s = {k: d[k] for k in d.files}
     names = [str(x) for x in s["joint_names"]]
-    s["robot"] = {n.split("::")[1]: float(v) for n, v in zip(names, s["joint_pos"]) if n.startswith("mobile_panda::")}
+    scope = f"{robots.current().model}::"
+    s["robot"] = {n.split("::")[1]: float(v) for n, v in zip(names, s["joint_pos"]) if n.startswith(scope)}
     s["joints"] = {n: float(v) for n, v in zip(names, s["joint_pos"])}
     return s
 
@@ -74,7 +76,7 @@ class Builder:
     """The regenerated part as a Plan with check windows (sk.Scenario without its settle at BASE0)."""
 
     def __init__(self, b, q, g, f):
-        self.P = mp.Plan(b, q, g, f)
+        self.P = Plan(robots.current(), b, q, g, f)
         self.checks = []
 
     def check(self, kind, dur, **info):
@@ -94,9 +96,11 @@ def build(plan, attempt, r, task):
     snap = load_snapshot(plan / "start_state.npz")
     rp = tm = task["replay"]                               # pull_slowdown, pull_min_s: the task's replay block
     obj, part, unit, si, from_si = spec.hold(r)
-    W = h["traj_robot_world"][k, 4:, :10].copy()
-    clipped = float(np.abs(np.clip(W[:, 3:], rp_.pp.LOWER, rp_.pp.UPPER) - W[:, 3:]).max())
-    W[:, 3:] = np.clip(W[:, 3:], rp_.pp.LOWER, rp_.pp.UPPER)
+    rb = robots.current()
+    nq = 3 + rb.dof                                        # base + arm columns
+    W = h["traj_robot_world"][k, 4:, :nq].copy()
+    clipped = float(np.abs(np.clip(W[:, 3:], rb.lower, rb.upper) - W[:, 3:]).max())
+    W[:, 3:] = np.clip(W[:, 3:], rb.lower, rb.upper)
     b_s = np.array(snap["action_base"], float)
     q_s = np.array(snap["action_arm"], float)
     if rg["mode"] == "pull":
@@ -106,18 +110,18 @@ def build(plan, attempt, r, task):
         B.check("grasped", 0.5, obj=obj)
         start_jump = np.abs(W[0] - np.r_[b_s, q_s])
     else:                                       # reach: reach, approach in, close, grasp check
-        R = h["reach_world"][k][: int(h["reach_len"][k])].copy()      # (n, 10) at reach_dt
+        R = h["reach_world"][k][: int(h["reach_len"][k])].copy()      # (n, nq) at reach_dt
         yaw_offset = unwrap_to(R[0, 2], b_s[2]) - R[0, 2]
         R[:, 2] += yaw_offset
         W[:, 2] = unwrap_to(W[0, 2], R[-1, 2]) - W[0, 2] + W[:, 2]
-        R[:, 3:] = np.clip(R[:, 3:], rp_.pp.LOWER, rp_.pp.UPPER)
-        B = Builder(b_s, q_s, mp.GRIP_OPEN, float(snap["action_grip_force"]))
+        R[:, 3:] = np.clip(R[:, 3:], rb.lower, rb.upper)
+        B = Builder(b_s, q_s, rb.gripper.open_m, float(snap["action_grip_force"]))
         P = B.P
         dt_r = float(h["reach_dt"][k]) * float(rg["reach_slowdown"])
         t_r = np.arange(len(R)) * dt_r
         P.events.append((P.t, "reach", dict(duration_s=float(t_r[-1]), planner_dt_s=float(h["reach_dt"][k]))))
-        for ts in np.arange(1, round(t_r[-1] / mp.PLAN_DT) + 1) * mp.PLAN_DT:
-            x = np.array([np.interp(ts, t_r, R[:, i]) for i in range(10)])
+        for ts in np.arange(1, round(t_r[-1] / PLAN_DT) + 1) * PLAN_DT:
+            x = np.array([np.interp(ts, t_r, R[:, i]) for i in range(nq)])
             P.b, P.q = x[:3], x[3:]
             P.rows.append((P.b.copy(), P.q.copy(), P.g, P.f))
         P.hold(0.3, "reach settle")
@@ -130,12 +134,12 @@ def build(plan, attempt, r, task):
     T = max(tm["pull_min_s"], tm["pull_slowdown"] * det["duration_hint_s"])
     t_wp = np.linspace(0.0, T, len(W))
     P.events.append((P.t, "pull", dict(duration_s=T, dt_waypoint_s=T / (len(W) - 1))))
-    for ts in np.arange(1, round(T / mp.PLAN_DT) + 1) * mp.PLAN_DT:
+    for ts in np.arange(1, round(T / PLAN_DT) + 1) * PLAN_DT:
         x = np.array([np.interp(ts, t_wp, W[:, i]) for i in range(W.shape[1])])
         P.b, P.q = x[:3], x[3:]
         P.rows.append((P.b.copy(), P.q.copy(), P.g, P.f))
     B.check(rp["hold_check"], rp["hold_s"], obj=obj, want=si(rp[f"{part}_open_min_{unit}"]))
-    P.gripper(mp.GRIP_OPEN, 1.5, label="release")
+    P.gripper(rb.gripper.open_m, 1.5, label="release")
     P.drive(P.b - rp["retreat_m"] * rp_.hand_axis_xy(P.q, P.b), rp["retreat_s"], label="retreat")
     P.hold(0.5, "done")
     facts = dict(plan_run=plan.name, attempt_id=attempt, grasp_id=int(h["grasp_id"][k]),
@@ -155,8 +159,8 @@ class Clearance:
     the gripper is closed, the hand and fingers are not checked against the task object (they hold it)."""
 
     def __init__(self, task, scene, robot):
-        import mobile_panda_smoke_system as smoke
-        cols = smoke.collisions(mp.MODEL)
+        import smoke_system as smoke
+        cols = smoke.collisions(robots.current().model)
         self.shapes = {}
         for ln, cs in cols.items():
             pts = [smoke.sample_points(kind, T, dims) for kind, T, dims in cs]
@@ -191,16 +195,16 @@ class Clearance:
 
     def at(self, b, q, g, door, holding):
         """{link: (min distance, obstacle)} for one robot state."""
-        qd = dict(base_x=b[0], base_y=b[1], base_yaw=b[2], panda_finger_joint_left=g, panda_finger_joint_right=g,
-                  **{f"panda_joint{i + 1}": v for i, v in enumerate(q)})
+        rb = robots.current()
+        qd = dict(zip(rb.base_joints, b), **rb.gripper.joint_targets(g), **dict(zip(rb.arm_joints, q)))
         Tc = self.robot.pose("base_link", qd) @ self.chassis[0]
         objb = self.obj_boxes(door)
         out = {}
         for ln, (pts, rad) in self.shapes.items():
             Tl = self.robot.pose(ln, qd)
             p = pts @ Tl[:3, :3].T + Tl[:3, 3]
-            cands = self.static + ([] if holding and ln in HAND else objb) + \
-                ([] if ln in rp_.NO_CHASSIS else [("mobile_panda::chassis", Tc, self.chassis[1])])
+            cands = self.static + ([] if holding and ln in rb.gripper.hand_links else objb) + \
+                ([] if ln in rb.on_chassis else [(f"{rb.model}::chassis", Tc, self.chassis[1])])
             best = (math.inf, "")
             for name, Tb, size in cands:
                 d = float((self.sd_box(p, Tb, size) - rad).min())
@@ -213,7 +217,7 @@ class Clearance:
 def clearance(P, door_rows, holding_rows, C):
     """Per event label: min clearance [m], link, obstacle, t; plus the base_link minimum. door_rows: the
     task joint per plan row (closed before the pull, the planned value during it, final after)."""
-    starts = [(round(t / mp.PLAN_DT), lab) for t, lab, _ in P.events]
+    starts = [(round(t / PLAN_DT), lab) for t, lab, _ in P.events]
     res = {}
     for i, (k0, lab) in enumerate(starts):
         k1 = starts[i + 1][0] if i + 1 < len(starts) else len(P.rows)
@@ -226,7 +230,7 @@ def clearance(P, door_rows, holding_rows, C):
                 key = "base_link" if ln == "base_link" else "arm"
                 for kk in (lab, f"{key}_all"):
                     if kk not in res or d < res[kk][0]:
-                        res[kk] = [d, ln, obs, round(k * mp.PLAN_DT, 2), lab]
+                        res[kk] = [d, ln, obs, round(k * PLAN_DT, 2), lab]
     return {lab: dict(min_m=round(v[0], 4), link=v[1], obstacle=v[2], t=v[3], event=v[4]) for lab, v in res.items()}
 
 
@@ -252,7 +256,7 @@ def actions(plan, attempt, out):
     rp = task["replay"]
     man = json.loads((spec.path(task["gz_model"]) / "manifest.json").read_text())
     hd = next(x for x in man["handles"] if x["name"] == task["handle"])
-    ep = dict(facts, control_dt=mp.CONTROL_DT, steps=len(seq), duration_s=P.t, budget_s=rp["budget_s"],
+    ep = dict(facts, control_dt=CONTROL_DT, steps=len(seq), duration_s=P.t, budget_s=rp["budget_s"],
               contact_rate_hz=spec.SIM["contact_rate_hz"], task=task["name"], object_joint=f"{task['object']}::{task['joint']}",
               object_handle=f"{task['object']}::{hd['link']}::{task['handle']}", joint_topic=task["joint_topic"],
               prompt=task["prompt"], hold=dict(check=rp["hold_check"], obj=obj, part=part, unit=unit),
@@ -264,21 +268,21 @@ def actions(plan, attempt, out):
               regenerated=dict(source_rollout=rg["source_rollout"], source_plan_run=rg.get("source_plan_run"),
                                source_attempt_id=rg.get("source_attempt_id"), phase=rg["phase"],
                                restore_phase=rg["restore_phase"], mode=rg["mode"],
-                               action_index_offset=rg["action_index"], source_sim_time_s=rg["action_index"] * mp.CONTROL_DT,
+                               action_index_offset=rg["action_index"], source_sim_time_s=rg["action_index"] * CONTROL_DT,
                                planner_seed=meta["seed"], planner_run=rg["planner_run"],
                                **({"grasp_from_state": True} if rg.get("grasp_from_state") else {})))
     # the task joint per plan row: as restored before the pull, the planned path during it, final after
     pull = next(i for i, (_, lab, _) in enumerate(P.events) if lab == "pull")
-    k_pull = round(P.events[pull][0] / mp.PLAN_DT)
-    n_pull = round(ep["timing"]["pull_s"] / mp.PLAN_DT)
+    k_pull = round(P.events[pull][0] / PLAN_DT)
+    n_pull = round(ep["timing"]["pull_s"] / PLAN_DT)
     d0 = snap["joints"][ep["object_joint"]]
     t_wp = np.linspace(0, n_pull, len(door_plan) - 4)
     door_rows = np.full(len(P.rows), float(door_plan[-1]))
     door_rows[:k_pull] = d0
     door_rows[k_pull:k_pull + n_pull] = np.interp(np.arange(n_pull), t_wp, door_plan[4:])
     rel = next(i for i, (_, lab, _) in enumerate(P.events) if lab == "release")
-    k_rel_end = round(P.events[rel + 1][0] / mp.PLAN_DT)
-    k_close = next((round(t / mp.PLAN_DT) for t, lab, _ in P.events if lab == "grip close"), 0)
+    k_rel_end = round(P.events[rel + 1][0] / PLAN_DT)
+    k_close = next((round(t / PLAN_DT) for t, lab, _ in P.events if lab == "grip close"), 0)
     holding = np.zeros(len(P.rows), bool)
     holding[k_close:k_rel_end] = True          # the hand on the handle: grip close (or the restart) to the release end
     C = Clearance(task, scene, robot)
@@ -358,7 +362,7 @@ def candidate(a):
 def grasp_rel_of(snap, obj):
     """The handle link in the TCP frame (phase_replay_system.handle_rel) from a snapshot's link poses."""
     import scene_state as ss
-    from mobile_panda_skill_system import OBJ
+    from skill_system import OBJ
     mn, ln, _ = OBJ[obj]
     names = [str(x) for x in snap["link_names"]]
 
@@ -367,7 +371,8 @@ def grasp_rel_of(snap, obj):
         T = np.eye(4)
         T[:3, :3], T[:3, 3] = ss.quat_mat(snap["link_quat"][i]), snap["link_pos"][i]
         return T
-    tcp = pose("mobile_panda::panda_hand") @ rp_.pp.tf(p=(0, 0, rp_.pp.TCP_Z))
+    rb = robots.current()
+    tcp = pose(f"{rb.model}::{rb.hand_link}") @ tf(p=(0, 0, rb.tcp_z))
     return np.linalg.inv(tcp) @ pose(f"{mn}::{ln}")
 
 
@@ -385,12 +390,12 @@ def perturb(a):
     if q[m] < si(a.joint):
         raise SystemExit(f"{src} never reaches {a.joint} after its open start (max {q.max()})")
     A = dict(np.load(run / "actions.npz"))
-    k = m + int(round(a.settle_s / mp.CONTROL_DT))
+    k = m + int(round(a.settle_s / CONTROL_DT))
     for f in ("base", "arm", "grip", "grip_force"):
         A[f][m:] = A[f][m]
     for f in ("base_vel", "arm_vel"):
         A[f][m:] = 0.0
-    A["grip"][k:] = mp.GRIP_OPEN
+    A["grip"][k:] = robots.current().gripper.open_m
     np.savez_compressed(run / "actions.npz", **A)
     print(f"perturb: pull fed to step {m} ({a.joint} {live['unit']}), held {a.settle_s} s, gripper open at {k}")
     cli.models(r)
@@ -409,7 +414,7 @@ def perturb(a):
     ep = json.loads((src / "episode.json").read_text())
     pr = dict(result=dict(failed_phase="open", regenerate=True, failed_checks=["perturbed"], first_failure_t=None),
               phases={}, note=f"test fixture: {src.name} open start, pull stopped at {a.joint} {live['unit']}")
-    (ro / "episode.json").write_text(json.dumps(dict(task=r.task.name, prompt=ep.get("prompt"), control_dt=mp.CONTROL_DT,
+    (ro / "episode.json").write_text(json.dumps(dict(task=r.task.name, prompt=ep.get("prompt"), control_dt=CONTROL_DT,
                                                      seed=(ep.get("datagen") or {}).get("seed"),
                                                      policy_rollout=dict(perturbed_from=str(src), stop_at=a.joint,
                                                                          joint_si=q_si)), indent=1))

@@ -7,13 +7,17 @@ Needs: `./revolve build datagen` and `./revolve build simulator`, the generated 
 assets (licence-bound, not in git), a free GPU (~3 GB per planner).
 """
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+
 import pytest
+
+os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]

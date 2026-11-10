@@ -1,6 +1,7 @@
 # Mini loop on the fridge: ~10 demos, ~2k train steps, 4 probe + 4 held-out seeds.
 # Run: ./revolve run specs/experiments/fridge_mini.yaml
 name: fridge_mini
+robot: mobile_panda
 task: open_fridge_door
 max_turns: 3                       # turn = generate/recover -> train -> eval; the only cap
                                    # 3: two recovery turns, ~40 min a turn (smoke-run timings)

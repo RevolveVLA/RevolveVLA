@@ -1,0 +1,22 @@
+# Data generation only for the mobile SO-101 on the drawer: 10 train seeds, one demo each.
+# The schema needs every block; only datagen is used. Run the generate step alone (no dataset, train or eval):
+#   REVOLVE_ROBOT=mobile_so101 .venv/bin/python components/datagen/generate.py --task open_drawer --seeds 0-9 \
+#       --out runs/drawer_so101_datagen/turn_0/data --episodes-per-seed 1 --workers 2
+# (`./revolve run` would go on to the dataset, training and evaluation steps, not run for this robot yet;
+# recovery and an oracle eval rollout are covered by the recovery and evaluation tests.)
+name: drawer_so101_datagen
+robot: mobile_so101
+task: open_drawer
+max_turns: 1
+seeds: {train: [0, 9], probe: [200, 203], heldout: [100, 103]}   # probe / held-out unused (no eval)
+datagen: {episodes_per_seed: 1, workers: 2}
+recovery: {episodes_per_failure: 3, phases: [approach, grasp, open]}   # unused here (datagen only)
+training:
+  policy: smolvla
+  base: lerobot/smolvla_base
+  mode: finetune_last
+  steps: 2000
+  batch_size: 8
+  backend: local
+eval: {rollouts_per_seed: 1, retries: 0}
+stall_timeout_s: 900

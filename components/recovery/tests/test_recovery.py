@@ -39,14 +39,10 @@ def accepted(recovered, case):
     return out, r, e
 
 
-@pytest.mark.parametrize("case", CASES)
-def test_recovered(recovered, numbers, case):
-    """One accepted suffix episode: check and record accepted (offline verdict of the regenerated part + every
-    task.yaml phase from the restarted one on), the record reproduces the check's state log, the restore check
-    passes, the bag check passes, episode.json is labelled recovery + phase + suffix + its rollout."""
-    task, forced = CASES[case]
-    phase = forced or "open"
-    out, r, e = accepted(recovered, case)
+def check_suffix(out, r, e, phase):
+    """The accepted suffix episode e of manifest rollout r (recovered from `phase`, into out): check and record
+    accepted, every task.yaml phase from the restarted one on passes, the record reproduces the check's state log,
+    the restore and bag checks pass, the label says recovery + phase + suffix + its rollout. Returns its numbers."""
     restore = R.RESTORE_PHASE[phase]
     assert r["phase"] == phase and r["mode"] == R.REGENERABLE[phase] and r["restore_phase"] == restore
     d = out / e["dir"]
@@ -67,13 +63,21 @@ def test_recovered(recovered, numbers, case):
     assert lab["from_rollout"] == r["source"]["dir"] and lab["action_index_offset"] == r["action_index"]
     plan = load(out / r["plans"][e["plan"]]["dir"] / "plan_report.json")
     jobs = out / e["dir"].split("/")[0] / "jobs"
-    numbers[case] = dict(
+    return dict(
         plans=len(r["plans"]), candidates=len(r["checks"]), accepted=f"{e['plan']} a{e['attempt_id']}",
         planned=f"{plan['planned']}/{plan['attempts']}", plan_s=round(plan["times"]["total_s"], 1),
         restore_mm=round(pr["restore_check"]["vs_source_next_step"]["link_pos_m"][0] * 1000, 4),
-        frames=min(cams.values()), recover_wall_s=recovered["wall"][task],
+        frames=min(cams.values()),
         record_wall_s=round((lambda j: j["finished_at"] - j["started_at"])(
             load(jobs / f"record_ep_0_{e['plan']}_a{e['attempt_id']}" / "result.json")), 1))
+
+
+@pytest.mark.parametrize("case", CASES)
+def test_recovered(recovered, numbers, case):
+    """One accepted suffix episode per case (check_suffix)."""
+    task, forced = CASES[case]
+    out, r, e = accepted(recovered, case)
+    numbers[case] = dict(check_suffix(out, r, e, forced or "open"), recover_wall_s=recovered["wall"][task])
     numbers["recover_all_wall_s"] = recovered["total_s"]
 
 

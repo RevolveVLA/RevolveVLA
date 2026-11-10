@@ -10,6 +10,7 @@ Fixtures are not committed binaries; made on the first run into runs/test_cache/
 it to regenerate): the checkpoint (20 steps of lerobot-train from lerobot/smolvla_base on the training tests'
 cached turn_0 dataset), the starts of seeds 0 (the recovery tests' cached datagen episode) and 1 (planned +
 checked here: starts.py). Outputs: runs/evaluation_tests/<stamp>/; numbers.json there sums up.
+test_evaluation_so101.py: an oracle rollout of a second robot (the mobile SO-101 on the drawer, see its doc).
 
 Needs: `./revolve build evaluation` (+ simulator, training, dataset), the kitchen assets in assets,
 the caches of `./revolve test recovery` (datagen seed 0) and `./revolve test training` (turn_0 dataset), cache/hf
@@ -17,6 +18,7 @@ with lerobot/smolvla_base + SmolVLM2 (the training tests download them), a free 
 """
 import importlib.util
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -24,7 +26,10 @@ import threading
 import time
 from pathlib import Path
 
+
 import pytest
+
+os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]

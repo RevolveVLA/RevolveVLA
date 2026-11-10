@@ -6,12 +6,14 @@ Ported from the earlier pipeline's dummy_policy.py: the relay's ready file is re
 the sim's dir and the ready file written to the client's dir (two containers); frames() and
 contract_io() are copied in (their modules import gz-transport, which this image has not).
 
-  dummy_policy.py <replay dir> <sim out dir> <client out dir> [ready file name] [contract.yaml]
+  dummy_policy.py <replay dir> <sim out dir> <client out dir> <ready file name> <contract.yaml>
 
-Action k = action_player.frames (the dataset frame k of that replay), sent once as
+Action k = action_player.frames (the dataset frame k of that replay: base, arm, gripper opening, one
+column per contract action joint), sent once as
 sensor_msgs/JointState (the contract's action joint names, stamp = the /clock value) on the first
 /clock at or after k x int(1e9 / fps) ns. Touches <client>/<ready file> (default runner_ready) once
-<sim>/relay_ready exists, /clock has a publisher and the action topic a subscriber; writes
+<sim>/relay_ready exists, /clock has a publisher and the action topic a subscriber (ready file name: the
+rollout passes runner_ready); writes
 <client>/dummy_policy.json after the last frame or on SIGTERM.
 """
 import json
@@ -33,7 +35,8 @@ CI, JS = "sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/JointState"
 
 
 def frames(replay, fps=30):
-    """(rows, actions [n, 11]) of a replay's state log on the 1 / fps grid from its start (action_player.py)."""
+    """(rows, actions [n, base + arm + 1]) of a replay's state log on the 1 / fps grid from its start
+    (action_player.py)."""
     s = np.load(Path(replay) / "state_log.npz")
     dt_ns, tick_ns = round(float(s["control_dt"]) * 1e9), int(1e9 / fps)
     n = (len(s["time_s"]) - 1) * dt_ns // tick_ns + 1
@@ -52,11 +55,13 @@ def contract_io(path):
     return images, state[0], act["channel"]["topic"], names
 
 
-def main(replay, sim_out, out, ready="runner_ready", contract="specs/robots/mobile_panda/contract.yaml"):
+def main(replay, sim_out, out, ready, contract):
     sim_out, out = Path(sim_out), Path(out)
     fps = yaml.safe_load(Path(contract).read_text())["fps"]
     _, _, action_topic, names = contract_io(contract)
     rows, A = frames(replay, fps)
+    if A.shape[1] != len(names):
+        raise SystemExit(f"{replay}: {A.shape[1]} action columns, the contract {contract} names {len(names)}")
     tick_ns = int(1e9 / fps)
     rclpy.init()
     node = rclpy.create_node("dummy_policy", parameter_overrides=[Parameter("use_sim_time", value=True)])

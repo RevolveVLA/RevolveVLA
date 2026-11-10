@@ -5,19 +5,24 @@ it was) are generated on the first run into runs/test_cache/recovery/ (git-ignor
 (delete that dir to regenerate them, e.g. after a sim or planner change). Then one recover() per task, all
 at once: fridge from its approach, grasp and open starts + the perturbed open start, drawer from its open
 start (1 episode each); the fridge open item's plan job is polled over the wrapper's HTTP. Outputs:
-runs/recovery_tests/<stamp>/ (git-ignored); numbers.json there sums up the key values.
+runs/recovery_tests/<stamp>/ (git-ignored); numbers.json there sums up the key values. test_recovery_so101.py: the
+same for a second robot (the mobile SO-101 on the drawer; its own fixtures and REVOLVE_ROBOT, see its doc).
 
 Needs: `./revolve build recovery` (+ datagen, simulator), the generated kitchen assets in assets
 (licence-bound, not in git), a free GPU (~3 GB per planner; REVOLVE_GPU_PLANNERS, default 2).
 """
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 
+
 import pytest
+
+os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]

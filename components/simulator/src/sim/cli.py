@@ -2,12 +2,12 @@
 
   cli.py scene-check   --out D [--video]           kitchen scene test (no robot): door/drawer limits, rest
                                                     drift, cup stability (was the earlier `kitchen_test`)
-  cli.py robot-smoke   --out D [--video]           mobile Panda smoke test in the kitchen (`kitchen_robot_test`)
-  cli.py can-demo      --out D [--video]           the Panda can-on-plate demo
+  cli.py robot-smoke   --out D [--video]           the robot's smoke test in the kitchen (`kitchen_robot_test`)
+  cli.py can-demo      --out D [--video]           the fixed-arm can-on-plate demo (can_demo/, its own robot)
   cli.py episode       --name fridge|drawer --task T --out D [--video]
                        scripted episode (`episode <name>`), fed through the live phase validator: its own
                        checks + per-phase verdicts from specs/tasks/T/task.yaml + phase_states/
-  cli.py replay        --plan RUN --attempt A [--task T] --out D [--cameras HZ] [--feed 1khz|30hz] [--no-bag]
+  cli.py replay        --plan RUN --attempt A [--task T] --out D [--cameras HZ] [--feed 1khz|30hz] [--no-bag] [--video]
                        one AutoMoMa plan attempt: offline verdict + per-phase verdicts + phase_states/
                        + state_log.npz + MCAP bag (bag/, bag.json, bag_check.json)
   cli.py restore-check --source D0 --phase P --out D
@@ -26,6 +26,8 @@
 
 Exit code = verdict (0 pass). Progress lines `PROGRESS {json}` feed the wrapper's /status.
 Paths are absolute or relative to the repo root ($REPO). Outputs go to --out (under runs/).
+The robot is $REVOLVE_ROBOT (the experiment's `robot:`; the launchers pass it in): its spec, its gz model
+(robots/<robot>/model.py, put in the worlds' placeholder `robot` include) and its code (robots/<robot>/).
 """
 import argparse
 import fcntl
@@ -47,6 +49,7 @@ ALLOW = r"huge value in CTRL at ACTUATOR [0-9]+\. The simulation is unstable\. T
 CAMERA_RE = re.compile(r"\n\s*<!-- Fixed scene camera.*?\n    </model>", re.S)
 SENSORS_RE = re.compile(r"\n\s*<plugin filename=\"gz-sim-sensors-system\".*?</plugin>", re.S)
 EPISODE_CAM = {"fridge": ("2.9 -2.6 2.6 0 0.44 2.33", "1.1"), "drawer": ("-0.6 -1.2 1.7 0 0.414 2.274", "0.9")}
+SMOKE_STATUS, SKILL_STATUS = "/robot/status", "/robot_skill/status"     # smoke_system / skill_system
 
 
 def progress(**kw):
@@ -74,24 +77,27 @@ def _generate(dst, make):
 
 
 def models(r):
-    """runs/models: mobile_panda with the training cameras (robot.yaml camera_model), and plain/ (no
-    cameras: the robot smoke world's model://mobile_panda, the can demo's model://panda)."""
-    fd = str(spec.path(r.robot.franka_description))
-    gen = [sys.executable, str(SIM / "gen_panda_sdf.py"), fd]
+    """runs/models: the robot's gz model with the training cameras (robot.yaml camera_model) and
+    plain/<model> (no cameras: the robot smoke world's), from robots/<implementation>/model.py and the robot's
+    `description`."""
+    import importlib
+    import gen_camera_model
+    import robots
+    rb = robots.load(r.robot.name)
+    gen = importlib.import_module(f"robots.{rb.implementation}.model").main
+    desc = spec.path(r.robot.description)
     cam = spec.path(r.robot.camera_model).parent
-    _generate(cam, lambda d: (subprocess.run([*gen, str(d), "--mobile"], check=True),
-                              subprocess.run([sys.executable, str(SIM / "gen_camera_model.py"), str(d), r.robot.name],
-                                             check=True)))
+    _generate(cam, lambda d: (gen(rb, desc, d), gen_camera_model.main(d, r.robot.name)))
     plain = cam.parent / "plain"
-    _generate(plain / "mobile_panda", lambda d: subprocess.run([*gen, str(d), "--mobile"], check=True))
-    _generate(plain / "panda", lambda d: subprocess.run([*gen, str(d)], check=True))
+    _generate(plain / r.robot.model, lambda d: gen(rb, desc, d))
     return cam, plain
 
 
 # ------------------------------------------------------------------ worlds
-def world_copy(src, out, video, module=None, robot_uri=None, rtf=None, camera=None):
+def world_copy(src, out, video, module=None, robot=None, rtf=None, camera=None):
     """<out>/world.sdf: src with the scene camera kept (video) or dropped with the Sensors system (render
-    off), the Python system swapped for `module`, the robot include pointed at robot_uri, the RTF set."""
+    off), the Python system swapped for `module`, the placeholder robot include (name and uri `robot`) made
+    the robot's: robot = (gz model name, model uri), the RTF set."""
     w = Path(src).read_text()
     if video:
         if camera:
@@ -105,8 +111,10 @@ def world_copy(src, out, video, module=None, robot_uri=None, rtf=None, camera=No
     if module:
         w, n = re.subn(r"<module_name>[a-z_]+</module_name>", f"<module_name>{module}</module_name>", w)
         assert n == 1, f"{src}: {n} python systems"
-    if robot_uri:
-        w = w.replace("<uri>model://mobile_panda</uri>", f"<uri>{robot_uri}</uri>")
+    if robot:
+        w, n = re.subn(r"<name>robot</name>", f"<name>{robot[0]}</name>", w)
+        w, m = re.subn(r"<uri>model://robot</uri>", f"<uri>{robot[1]}</uri>", w)
+        assert n == m == 1, f"{src}: {n} / {m} placeholder robot includes"
     if rtf is not None:
         w, n = re.subn(r"<real_time_factor>[0-9.]+</real_time_factor>", f"<real_time_factor>{rtf}</real_time_factor>", w)
         assert n == 1
@@ -124,8 +132,8 @@ def run_gz(out, resource, driver, env=None, render=False, wait_level=False, side
     e = dict(os.environ, GZ_SIM_RESOURCE_PATH=resource, KITCHEN_ASSETS="partnet",
              GZ_SIM_SYSTEM_PLUGIN_PATH=f"{SIM}:{os.environ.get('GZ_SIM_SYSTEM_PLUGIN_PATH', '')}",
              GZ_PARTITION=f"revolve_{os.getpid()}_{random.randrange(1 << 30)}",
-             GZ_MUJOCO_NOSLIP_ITERATIONS=os.environ.get("GZ_MUJOCO_NOSLIP_ITERATIONS", "10"),
-             **(env or {}))
+             GZ_MUJOCO_NOSLIP_ITERATIONS=os.environ.get("GZ_MUJOCO_NOSLIP_ITERATIONS", "10"))
+    e.update(env or {})
     if render:      # the GPU EGL vendor file (no NVIDIA one in the image), Mesa as fallback; NVENC for the MP4
         e.setdefault("__EGL_VENDOR_LIBRARY_FILENAMES",
                      f"{SIM.parent / 'egl' / '10_nvidia.json'}:/usr/share/glvnd/egl_vendor.d/50_mesa.json")
@@ -217,34 +225,17 @@ def robot_smoke(a):
     out.mkdir(parents=True, exist_ok=True)
     r = task_of(a)
     _, plain = models(r)
-    world_copy(spec.WORLDS / "kitchen_partnet_robot.sdf", out, a.video)
+    world_copy(spec.WORLDS / "kitchen_partnet_robot.sdf", out, a.video, robot=(r.robot.model, f"model://{r.robot.model}"))
     progress(stage="gz", what="robot-smoke")
     rc = run_gz(out, f"{plain}:{spec.resource_path(r)}",
-                kitchen_driver(out, "/mobile_panda/status", "MOBILE_PANDA_SMOKE", 600, a.video),
+                kitchen_driver(out, SMOKE_STATUS, "ROBOT_SMOKE", 600, a.video),
                 env=dict(KITCHEN_TEST_OUT=str(out / "kitchen_test.json")), render=a.video)
-    return legacy_result(out, rc, "MOBILE_PANDA_SMOKE")
+    return legacy_result(out, rc, "ROBOT_SMOKE")
 
 
 def can_demo(a):
-    out = rpath(a.out)
-    out.mkdir(parents=True, exist_ok=True)
-    r = task_of(a)
-    _, plain = models(r)
-    w = (spec.WORLDS / "can_on_plate.sdf").read_text()
-    if not a.video:
-        w = SENSORS_RE.sub("", CAMERA_RE.sub("", w))
-    (out / "world.sdf").write_text(w)
-    progress(stage="gz", what="can-demo")
-    rc = run_gz(out, str(plain), [sys.executable, str(SIM / "pick_place.py"),
-                                  *(["--video", str(out / "video.mp4")] if a.video else [])], render=a.video)
-    log = (out / "driver.log").read_text()
-    m = re.search(r"DONE (SUCCESS|FAILED).*", log)
-    d = re.search(r"([0-9.]+) cm from", m.group(0)) if m else None
-    res = dict(label="CAN_DEMO", pass_=rc == 0, done=m.group(0) if m else None,
-               distance_cm=float(d.group(1)) if d else None)
-    (out / "result_sim.json").write_text(json.dumps(res, indent=1))
-    print(f"CAN_DEMO {'PASS' if rc == 0 else 'FAIL'}: {res['done']}")
-    return rc
+    from can_demo import demo
+    return demo.run(a, sys.modules[__name__])
 
 
 def phase_run(out, r, label, video=False, cameras=0, camera=None, timeout=840):
@@ -253,14 +244,14 @@ def phase_run(out, r, label, video=False, cameras=0, camera=None, timeout=840):
     cam_model, _ = models(r)
     render = bool(video or cameras)
     world_copy(spec.path(r.scene.world), out, render, module="phase_replay_system",
-               robot_uri=str(cam_model), rtf=spec.SIM["real_time_factor"], camera=camera)
+               robot=(r.robot.model, str(cam_model)), rtf=spec.SIM["real_time_factor"], camera=camera)
     if cameras and not video:     # the training cameras render, the scene camera does not
         w = (out / "world.sdf").read_text()
         (out / "world.sdf").write_text(CAMERA_RE.sub("", w))
     side = [sys.executable, str(SIM / "capture.py"), str(cam_model), str(out), str(cameras)] if cameras else None
     progress(stage="gz", what=label)
-    # model://mobile_panda/meshes of the generated model resolve through its parent (as output/models did)
-    rc = run_gz(out, f"{cam_model.parent}:{spec.resource_path(r)}", kitchen_driver(out, "/mobile_panda_skill/status", label, timeout,
+    # model://<model>/meshes of the generated model resolve through its parent (as output/models did)
+    rc = run_gz(out, f"{cam_model.parent}:{spec.resource_path(r)}", kitchen_driver(out, SKILL_STATUS, label, timeout,
                                                            video and not cameras),
                 env=dict(REPLAY_DIR=str(out), REPLAY_RTF=str(spec.SIM["real_time_factor"]),
                          KITCHEN_TEST_OUT=str(out / "gz_result.json"), SKILL="automoma_replay",
@@ -277,26 +268,29 @@ EPISODE_TASK = {"fridge": "open_fridge_door", "drawer": "open_drawer"}
 
 
 def episode(a):
+    r = spec.task(a.task or EPISODE_TASK[a.name])
     import live_validate
     out = rpath(a.out)
     if out.exists():
         shutil.rmtree(out)
-    r = spec.task(a.task or EPISODE_TASK[a.name])
     models(r)
-    os.environ["GZ_SIM_RESOURCE_PATH"] = spec.resource_path(r)     # kitchen_episodes reads the manifests
+    os.environ["GZ_SIM_RESOURCE_PATH"] = spec.resource_path(r)     # the scripted episode reads the manifests
     live_validate.prepare_scripted(a.name, out, r.task.name)
     return phase_run(out, r, f"EPISODE_{a.name.upper()}", video=a.video, camera=EPISODE_CAM[a.name])
 
 
 def replay(a):
-    import live_validate
     out = rpath(a.out)
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)
     t0 = time.time()
     plan = rpath(a.plan)
-    r = spec.task(a.task or json.loads((plan / "handoff.json").read_text())["plugins"]["task"])
+    names = json.loads((plan / "handoff.json").read_text())["plugins"]
+    r = spec.task(a.task or names["task"])
+    if names.get("robot", r.robot.name) != r.robot.name:
+        raise SystemExit(f"{plan}: planned for robot {names['robot']}, this run's robot is {r.robot.name}")
+    import live_validate
     cam, _ = models(r)
     os.environ["SIM_ROBOT_MODEL"] = str(cam / "model.sdf")
     os.environ["GZ_SIM_RESOURCE_PATH"] = f"{cam.parent}:{spec.resource_path(r)}"   # the clearance precheck reads models
@@ -304,7 +298,8 @@ def replay(a):
     if live_validate.prepare_plan(plan, a.attempt, out, r.task.name, a.feed) != 0:
         print("spawn in collision: rejected before gz")
         return 1
-    rc = phase_run(out, r, "REPLAY", cameras=a.cameras, timeout=600)
+    cam_pose = EPISODE_CAM["drawer" if r.task.object.hold.part == "drawer" else "fridge"] if a.video else None
+    rc = phase_run(out, r, "REPLAY", video=a.video, cameras=a.cameras, camera=cam_pose, timeout=600)
     if rc in (0, 1) and not a.no_bag:
         progress(stage="bag")
         subprocess.run([sys.executable, str(SIM / "bag.py"), "write", str(out)], check=True)
@@ -338,14 +333,15 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
     + policy_episode.py make (grasp pose / segment); thresholds and budgets from the task spec."""
     import numpy as np
     import live_validate
-    import mobile_panda as mp
-    import panda_plan as pp
+    import robots
     import sdf
+    from robots.base import CONTROL_DT, ActionSeq
+    rb = robots.load(r.robot.name)
     start, out = Path(start), Path(out)
     ep = json.loads((start / "episode.json").read_text())
     slive = json.loads((start / "live.json").read_text())
     t, ro = r.task, r.task.rollout
-    a = mp.ActionSeq.load(start / "actions.npz")[0]
+    a = ActionSeq.load(start / "actions.npz")[0]
     spawn = dict(base=a.base.tolist(), arm=a.arm.tolist(), grip=float(a.grip))
     rest = None
     if restore:
@@ -369,7 +365,7 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
                               settle_s=pb.grasp_settle_s, window_s=window, moved_eps=si(pb.joint_moved_eps)))
     cam, _ = models(r)
     robot = sdf.Model(cam / "model.sdf")
-    base = np.array(r.robot.gz_base_limits, float)
+    base = rb.base_limits
     contract = yaml_load(spec.SPECS / "robots" / r.robot.name / r.robot.contract)
     cl = dict(plan_run=ep["plan_run"], attempt_id=ep["attempt_id"], grasp_id=ep["grasp_id"], task=t.name,
               prompt=t.prompt, start_dir=str(start), scene=r.scene.name, world=r.scene.world,
@@ -378,10 +374,10 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
               fps=contract["fps"], budget_s=float(budget_s if budget_s is not None else ro.budget_s),
               after_success_s=ro.after_success_s if after_success_s is None else after_success_s,
               wait_s=float(wait_s if wait_s is not None else ro.wait_s),
-              # action order: base x, y, yaw, panda_joint1-7, gripper; velocity: the first 10
-              limits=dict(lower=[*-base, *pp.LOWER, mp.GRIP_CLOSED], upper=[*base, *pp.UPPER, mp.GRIP_OPEN],
-                          velocity=[mp.BASE_V_MAX, mp.BASE_V_MAX, mp.BASE_W_MAX] +
-                                   [robot.joints[f"panda_joint{i}"]["velocity"] for i in range(1, 8)]),
+              # action order: base x, y, yaw, the arm joints, gripper; velocity: base + arm
+              limits=dict(lower=[*-base, *rb.lower, rb.gripper.closed_m], upper=[*base, *rb.upper, rb.gripper.open_m],
+                          velocity=[rb.base_v_max, rb.base_v_max, rb.base_w_max] +
+                                   [robot.joints[n]["velocity"] for n in rb.arm_joints]),
               subtasks=["closed_loop"], event_subtask=["closed_loop"], restore=rest)
     (out / "closed_loop.json").write_text(json.dumps(cl, indent=1, default=float))
     grasp = np.asarray(slive["grasp_pose_world"], float)
@@ -394,7 +390,7 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
     (out / "live.json").write_text(json.dumps(live, indent=1))
     # recovery's input (components/recovery/recover.py source()): task, seed, the start's plan ids, policy_rollout
     (out / "episode.json").write_text(json.dumps(dict(
-        task=t.name, prompt=t.prompt, seed=seed, control_dt=mp.CONTROL_DT, plan_run=ep["plan_run"],
+        task=t.name, prompt=t.prompt, seed=seed, control_dt=CONTROL_DT, plan_run=ep["plan_run"],
         attempt_id=ep["attempt_id"], grasp_id=ep["grasp_id"], object_joint=ep["object_joint"],
         hold=ep["hold"], thresholds=th, policy_rollout=dict(start=str(start), restored_from=rest,
                                                              budget_s=cl["budget_s"], wait_s=cl["wait_s"],
@@ -421,7 +417,7 @@ def rollout(a):
     progress(stage="prepare", seed=a.seed, restore=a.restore)
     cl = rollout_spec(start, out, r, a.seed, restore, a.budget_s, a.wait_s, a.after_success_s)
     cam, _ = models(r)
-    world_copy(spec.path(r.scene.world), out, True, module="closed_loop_system", robot_uri=str(cam),
+    world_copy(spec.path(r.scene.world), out, True, module="closed_loop_system", robot=(r.robot.model, str(cam)),
                rtf=r.task.rollout.real_time_factor)
     w = (out / "world.sdf").read_text()       # the training cameras render, the scene camera does not
     (out / "world.sdf").write_text(CAMERA_RE.sub("", w))
@@ -432,7 +428,7 @@ def rollout(a):
     driver = ["bash", "-c", f'for i in $(seq {ROLLOUT_WAIT_CLIENT_S * 10}); do ok=1; for f in {ready}; do [[ -f $f ]] || ok=0; '
               f'done; (( ok )) && break; sleep 0.1; done; (( ok )) || {{ echo "Timed out waiting for {ready}"; exit 4; }}; '
               f'echo "client ready: unpausing"; exec "$@"', "driver",
-              *kitchen_driver(out, "/mobile_panda_skill/status", "ROLLOUT", a.wall_s)]
+              *kitchen_driver(out, SKILL_STATUS, "ROLLOUT", a.wall_s)]
     progress(stage="gz", what="rollout", budget_s=cl["budget_s"], wait_s=cl["wait_s"])
     rc = run_gz(out, f"{cam.parent}:{spec.resource_path(r)}", driver,
                 env=dict(REPLAY_DIR=str(out), CL_DIR=str(out), REPLAY_RTF=str(r.task.rollout.real_time_factor),
@@ -465,6 +461,8 @@ def main(argv=None):
     p["replay"].add_argument("--cameras", type=int, default=0, help="training camera rate Hz (0 = render off)")
     p["replay"].add_argument("--feed", default="1khz", choices=("1khz", "30hz"))
     p["replay"].add_argument("--no-bag", action="store_true")
+    p["replay"].add_argument("--video", action="store_true",
+                             help="render the scene camera into <out>/video.mp4 (GPU; with --cameras 0)")
     p["restore-check"].add_argument("--source", required=True)
     p["restore-check"].add_argument("--phase", required=True)
     p["rollout"].add_argument("--start", required=True)

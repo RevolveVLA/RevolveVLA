@@ -4,6 +4,7 @@ import json
 
 import pytest
 import yaml
+from revolve_common import specs
 
 from conftest import REPO
 
@@ -13,6 +14,7 @@ import progress as P
 
 CONTRACT = yaml.safe_load((REPO / "specs/robots/mobile_panda/contract.yaml").read_text())
 ROBOT = yaml.safe_load((REPO / "specs/robots/mobile_panda/robot.yaml").read_text())
+JOINTS = specs.load(REPO / "specs/robots/mobile_panda/robot.yaml").joints   # state / action derived
 PROMPT = "open the fridge door"
 
 
@@ -57,8 +59,8 @@ def test_contract_features_match_robot():
     assert want == {"observation.images.wrist": (480, 480, 3), "observation.images.overhead_left": (480, 480, 3),
                     "observation.images.overhead_right": (480, 480, 3), "observation.state": (12,), "action": (11,)}
     # the contract's selects are the robot spec's joints
-    assert [s.removeprefix("position.") for s in CONTRACT["observations"]["observation.state"]["select"]] == ROBOT["joints"]["state"]
-    assert [s.removeprefix("position.") for s in CONTRACT["actions"]["action"]["select"]] == ROBOT["joints"]["action"]
+    assert [s.removeprefix("position.") for s in CONTRACT["observations"]["observation.state"]["select"]] == JOINTS.state
+    assert [s.removeprefix("position.") for s in CONTRACT["actions"]["action"]["select"]] == JOINTS.action
     assert len(ROBOT["cameras"]) == sum(k.startswith("observation.images.") for k in want)
 
 

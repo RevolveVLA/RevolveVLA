@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 import yaml
 
@@ -12,9 +14,36 @@ def test_found_every_kind():
     assert kinds == {"experiments", "tasks", "robots", "scenes"}
 
 
-@pytest.mark.parametrize("path", ALL, ids=lambda p: str(p.relative_to(SPECS)))
-def test_every_spec_loads(path):
-    assert specs.load(path) is not None
+ROBOTS = sorted(d.name for d in (SPECS / "robots").iterdir() if d.is_dir())
+CASES = [(p, rb) for p in ALL for rb in (ROBOTS if p.relative_to(SPECS).parts[0] == "tasks" else [None])]
+
+
+@pytest.mark.parametrize("path, robot", CASES, ids=lambda x: str(x.relative_to(SPECS)) if isinstance(x, Path) else str(x))
+def test_every_spec_loads(path, robot):
+    """Every spec loads; a robot-free task for every robot."""
+    assert specs.load(path, robot=robot) is not None
+
+
+def test_task_is_robot_free_and_takes_per_robot_settings(monkeypatch):
+    t = SPECS / "tasks" / "open_drawer" / "task.yaml"
+    monkeypatch.delenv(specs.ROBOT_ENV, raising=False)
+    with pytest.raises(specs.SpecError, match="robot-free"):
+        specs.load(t)
+    panda, so101 = specs.load(t, robot="mobile_panda"), specs.load(t, robot="mobile_so101")
+    assert panda.task.planner["base_retract"][0] == 1.0 and so101.task.planner["base_retract"][0] == 1.02
+    assert panda.task.planner["grasp"] == so101.task.planner["grasp"] and panda.task.phases == so101.task.phases
+    monkeypatch.setenv(specs.ROBOT_ENV, "mobile_so101")
+    assert specs.load(t).robot.name == "mobile_so101"
+    r = specs.load_experiment(SPECS / "experiments" / "drawer_so101_datagen.yaml")
+    assert (r.robot.name, r.task.name, r.task.planner["base_retract"][0]) == ("mobile_so101", "open_drawer", 1.02)
+    assert specs.load_experiment(SPECS / "experiments" / "drawer_mini.yaml").robot.name == "mobile_panda"
+
+
+def test_robot_joints_derive_state_and_action():
+    for rb in ROBOTS:
+        r = specs.load(SPECS / "robots" / rb / "robot.yaml")
+        assert r.joints.state == [*r.joints.base, *r.joints.arm, *r.joints.gripper]
+        assert r.joints.action == [*r.joints.base, *r.joints.arm, "gripper"]
 
 
 def test_experiment_resolves_task_robot_scene():
@@ -86,7 +115,10 @@ def test_unknown_task_or_robot(specs_copy):
     edit(p, lambda d: d.update(task="open_oven"))
     with pytest.raises(specs.SpecError, match="task 'open_oven'"):
         specs.load(p)
-    t = specs_copy / "tasks" / "open_drawer" / "task.yaml"
-    edit(t, lambda d: d.update(robot="spot"))
+    edit(p, lambda d: d.update(task="open_fridge_door", robot="spot"))
     with pytest.raises(specs.SpecError, match="robot 'spot'"):
-        specs.load(t)
+        specs.load(p)
+    t = specs_copy / "tasks" / "open_drawer" / "task.yaml"
+    edit(t, lambda d: d.update(robots={"spot": {}}))
+    with pytest.raises(specs.SpecError, match="no robot 'spot'"):
+        specs.load(t, robot="mobile_panda")

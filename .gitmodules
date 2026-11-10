@@ -16,3 +16,7 @@
 	path = ThirdParty/franka_description
 	url = https://github.com/frankaemika/franka_description.git
 	shallow = true
+[submodule "ThirdParty/so_arm100"]
+	path = ThirdParty/so_arm100
+	url = https://github.com/TheRobotStudio/SO-ARM100.git
+	shallow = true

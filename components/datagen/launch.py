@@ -23,6 +23,7 @@ from docker.types import DeviceRequest
 
 from revolve_common import gpu
 from revolve_common import job as J
+from revolve_common import specs
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = os.environ.get("REVOLVE_DATAGEN_IMAGE", "revolve-datagen:latest")
@@ -57,7 +58,7 @@ def start(args, job_dir, timeout=1800.0, linger_s=0.0, env=None, network=None, i
         detach=True, user=f"{os.getuid()}:{os.getgid()}", working_dir="/repo", labels={LABEL: component, "revolve.job": jid},
         environment={"HOME": "/cache", "REPO": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
                      "PYTHONPATH": "".join(f"{p}:" for p in pythonpath) + "/repo/common:/repo/components/datagen/src/datagen:/repo/components/simulator/src/sim:"
-                                   "/opt/curobo/install:/opt/automoma", **(env or {})},
+                                   "/opt/curobo/install:/opt/automoma", **specs.robot_env(), **(env or {})},
         volumes={str(REPO): {"bind": "/repo", "mode": "ro"}, str(REPO / "runs"): {"bind": "/repo/runs", "mode": "rw"},
                  str(REPO / "cache"): {"bind": "/cache", "mode": "rw"},
                  str(INSTALL): {"bind": "/opt/curobo/install", "mode": "ro"},

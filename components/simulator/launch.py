@@ -23,6 +23,7 @@ from docker.types import DeviceRequest
 
 from revolve_common import gpu as gpu_health
 from revolve_common import job as J
+from revolve_common import specs
 
 REPO = Path(__file__).resolve().parents[2]
 IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
@@ -85,7 +86,7 @@ def start(args, job_dir, gpu=False, timeout=1200.0, linger_s=0.0, env=None, netw
         labels={LABEL: "simulator", "revolve.job": jid, **(labels or {})},
         environment={"HOME": "/tmp", "REPO": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
                      "PYTHONPATH": "/repo/common:/repo/components/simulator/src/sim:/opt/gz_ws/install/lib/python",
-                     **genv, **(env or {})},
+                     **specs.robot_env(), **genv, **(env or {})},
         volumes={str(REPO): {"bind": "/repo", "mode": "ro"}, str(REPO / "runs"): {"bind": "/repo/runs", "mode": "rw"},
                  str(INSTALL): {"bind": "/opt/gz_ws/install", "mode": "ro"}, **gvols},
         device_requests=[DeviceRequest(count=-1, capabilities=[["gpu"]])] if gpu else None,

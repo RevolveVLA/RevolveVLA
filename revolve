@@ -40,9 +40,14 @@ def not_implemented(what):
 def cmd_validate(a):
     from revolve_common import specs
     rc = 0
-    for p in a.spec:
+    jobs = []
+    for p in a.spec:       # a robot-free task without $REVOLVE_ROBOT: validated for every robot
+        task = Path(p).resolve().parent.parent.name == "tasks" and not os.environ.get(specs.ROBOT_ENV)
+        robots = sorted(d.name for d in (specs.find_root(p) / "robots").iterdir() if d.is_dir()) if task else [None]
+        jobs += [(p, rb) for rb in robots]
+    for p, rb in jobs:
         try:
-            r = specs.load(p)
+            r = specs.load(p, robot=rb)
         except specs.SpecError as e:
             print(e, file=sys.stderr)
             rc = 1

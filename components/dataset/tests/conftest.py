@@ -13,12 +13,16 @@ Needs: `./revolve build dataset`.
 """
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+
 import pytest
+
+os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]

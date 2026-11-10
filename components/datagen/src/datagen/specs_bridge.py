@@ -41,9 +41,16 @@ def generator():
     return yaml.safe_load((HERE / "generator.yaml").read_text())
 
 
-def round_blocks(task):
-    """The generator's per-task round blocks (starts, timing, pull) -> {KEY: block} for ROUND_<KEY> env."""
-    return dict(generator().get("tasks", {}).get(task, {}))
+def round_blocks(task, robot=None):
+    """The generator's per-task round blocks (starts, timing, pull) -> {KEY: block} for ROUND_<KEY> env, with
+    the task's `robots.<robot>` blocks over them (null drops a block); robot: default $REVOLVE_ROBOT."""
+    t = dict(generator().get("tasks", {}).get(task, {}))
+    for k, v in t.pop("robots", {}).get(robot or os.environ.get(specs.ROBOT_ENV), {}).items():
+        if v is None:
+            t.pop(k, None)
+        else:
+            t[k] = v
+    return t
 
 
 def load(kind, name):

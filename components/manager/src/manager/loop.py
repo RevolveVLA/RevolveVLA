@@ -124,6 +124,7 @@ class Manager:
     def __init__(self, spec_path):
         self.spec = Path(spec_path).resolve()
         self.r = specs.load_experiment(self.spec)
+        os.environ[specs.ROBOT_ENV] = self.r.robot.name      # the experiment's robot: every step container gets it
         self.e = self.r.experiment
         self.paths = P.Paths(REPO / "runs" / self.e.name)
         self.dk = docker.from_env()

@@ -18,7 +18,9 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, "/repo/components/dataset/src/dataset")
+sys.path.insert(0, "/repo/common")
 import labels as L  # noqa: E402
+from revolve_common import policy_io  # noqa: E402
 
 REPO_ID = "revolve/dataset"
 
@@ -45,7 +47,11 @@ def values(root, ep_dirs):
         z = np.load(Path(ep) / "state_log.npz")
         state = np.stack(rows["observation.state"].to_numpy())
         action = np.stack(rows["action"].to_numpy())
-        log = np.column_stack([z["robot_joint_pos"], z["action_base"], z["action_arm"], z["action_grip"]])
+        # every step in the policy format (policy_io): measured twist + arm/gripper joints, commanded twist + targets
+        dt = float(z["control_dt"])
+        base = z["robot_joint_pos"][:, :3]
+        log = np.column_stack([policy_io.measured_twist(base, fps, dt), z["robot_joint_pos"][:, 3:],
+                               policy_io.command_twist(z["action_base"], fps, dt), z["action_arm"], z["action_grip"]])
         got = np.column_stack([state, action])
         err = np.array([np.abs(log - g).max(axis=1) for g in got])        # frames x steps
         step = err.argmin(axis=1)

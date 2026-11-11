@@ -25,19 +25,25 @@ observations:
     channel: {topic: /cameras/overhead_right/image/compressed, type: sensor_msgs/msg/CompressedImage}
     align: {strategy: hold, timeline: receive}
     apply: [resize: [480, 480]]
-  # base x, y [m] (world), yaw [rad] (unwrapped), the 5 arm joints [rad], the jaw angle [rad]
+  # base vx, vy [m/s], wz [rad/s] in the robot frame, measured over the last 1/30 s (Odometry twist, child frame
+  # base_link), then the 5 arm joints [rad], the jaw angle [rad]. No world-frame base pose.
   observation.state:
-    channel: {topic: /joint_states, type: sensor_msgs/msg/JointState}
-    align: {strategy: hold, timeline: receive}
-    select: [position.base_x, position.base_y, position.base_yaw,
-             position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
-             position.wrist_roll, position.gripper]
+    - channel: {topic: /odom, type: nav_msgs/msg/Odometry}
+      align: {strategy: hold, timeline: receive}
+      select: [twist.twist.linear.x, twist.twist.linear.y, twist.twist.angular.z]
+    - channel: {topic: /joint_states, type: sensor_msgs/msg/JointState}
+      align: {strategy: hold, timeline: receive}
+      select: [position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+               position.wrist_roll, position.gripper]
 
 actions:
-  # whole-body position targets: base x, y, yaw, the 5 arm joints, gripper = per-finger opening [m]
+  # base vx, vy [m/s], wz [rad/s] in the robot frame (the sim integrates it into the base target), then the
+  # the 5 arm joints as absolute position targets [rad], gripper = per-finger opening [m]
   action:
-    channel: {topic: /action, type: sensor_msgs/msg/JointState}
-    align: {strategy: hold, timeline: receive}
-    select: [position.base_x, position.base_y, position.base_yaw,
-             position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
-             position.wrist_roll, position.gripper]
+    - channel: {topic: /cmd_vel, type: geometry_msgs/msg/Twist}
+      align: {strategy: hold, timeline: receive}
+      select: [linear.x, linear.y, angular.z]
+    - channel: {topic: /action, type: sensor_msgs/msg/JointState}
+      align: {strategy: hold, timeline: receive}
+      select: [position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+               position.wrist_roll, position.gripper]

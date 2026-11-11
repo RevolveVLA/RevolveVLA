@@ -14,7 +14,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
 
-from . import metrics
+from . import metrics, policy_io
 
 OPS = ("lt", "le", "gt", "ge", "eq")
 
@@ -203,6 +203,18 @@ class Joints(Strict):
     def action(self) -> list[str]:
         """Order of the whole-body action: base, arm, `gripper` = the opening per contact link [m]."""
         return [*self.base, *self.arm, "gripper"]
+
+    @computed_field
+    @property
+    def policy_state(self) -> list[str]:
+        """observation.state (the contract): the base twist in the robot frame, arm, gripper joints (policy_io)."""
+        return [*policy_io.BASE_TWIST, *self.arm, *self.gripper]
+
+    @computed_field
+    @property
+    def policy_action(self) -> list[str]:
+        """action (the contract): the commanded base twist in the robot frame, arm targets, gripper opening."""
+        return [*policy_io.BASE_TWIST, *self.arm, "gripper"]
 
 
 class Camera(Strict):
@@ -468,8 +480,8 @@ def spec_path(root, kind, name):
 
 
 def resolve_task(task, root, robot_name):
-    """(the task as robot_name runs it, the robot, the scene); the robot's contract must name the robot's
-    state and action joints in its observation.state / action selects."""
+    """(the task as robot_name runs it, the robot, the scene); the robot's contract must carry the robot's
+    policy state and action (policy_io: base twist + joints) in its observation.state / action sources."""
     for r in task.robots:
         if not (Path(root) / "robots" / r / FILES["robots"]).is_file():
             raise SpecError(f"task {task.name}: robots.{r}: no robot {r!r}")
@@ -478,12 +490,14 @@ def resolve_task(task, root, robot_name):
     contract = Path(root) / "robots" / robot.name / robot.contract
     if not contract.is_file():
         raise SpecError(f"robot {robot.name}: contract {contract} missing")
-    c = read_yaml(contract)
-    sel = {k: [x.removeprefix("position.") for x in v["select"]]
-           for k, v in {**c.get("observations", {}), **c.get("actions", {})}.items() if "select" in v}
-    for key, want in (("observation.state", robot.joints.state), ("action", robot.joints.action)):
-        if sel.get(key) != want:
-            raise SpecError(f"robot {robot.name}: contract {key} select {sel.get(key)} != the robot's joints {want}")
+    try:
+        lay = policy_io.contract_layout(read_yaml(contract))
+    except (ValueError, KeyError, TypeError) as e:
+        raise SpecError(f"robot {robot.name}: contract {contract}: {e}") from None
+    for key, want in (("observation.state", robot.joints.policy_state), ("action", robot.joints.policy_action)):
+        got = policy_io.names(lay[key]) if key in lay else None
+        if got != want:
+            raise SpecError(f"robot {robot.name}: contract {key} {got} != the robot's policy {key} {want}")
     return task.for_robot(robot.name), robot, scene
 
 

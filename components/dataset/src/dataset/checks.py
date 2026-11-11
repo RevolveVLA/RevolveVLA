@@ -31,11 +31,14 @@ def sim_s(episode: dict) -> float:
 
 
 def contract_features(contract: dict) -> dict:
-    """{key: shape} the Rosetta contract makes: images (h, w, 3) from their resize, vectors (len(select),)."""
+    """{key: shape} the Rosetta contract makes: images (h, w, 3) from their resize, vectors (the selects of the
+    key's sources together: a multi-source key concatenates them)."""
     out = {}
     for key, spec in {**contract.get("observations", {}), **contract.get("actions", {})}.items():
-        size = next((a["resize"] for a in spec.get("apply", []) if isinstance(a, dict) and "resize" in a), None)
-        out[key] = (int(size[0]), int(size[1]), 3) if size else (len(spec["select"]),)
+        srcs = spec if isinstance(spec, list) else [spec]
+        size = next((a["resize"] for s in srcs for a in s.get("apply", []) if isinstance(a, dict) and "resize" in a),
+                    None)
+        out[key] = (int(size[0]), int(size[1]), 3) if size else (sum(len(s["select"]) for s in srcs),)
     return out
 
 

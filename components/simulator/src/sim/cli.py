@@ -366,6 +366,7 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
     cam, _ = models(r)
     robot = sdf.Model(cam / "model.sdf")
     base = rb.base_limits
+    vmax = np.array([rb.base_v_max, rb.base_v_max, rb.base_w_max])
     contract = yaml_load(spec.SPECS / "robots" / r.robot.name / r.robot.contract)
     cl = dict(plan_run=ep["plan_run"], attempt_id=ep["attempt_id"], grasp_id=ep["grasp_id"], task=t.name,
               prompt=t.prompt, start_dir=str(start), scene=r.scene.name, world=r.scene.world,
@@ -374,10 +375,11 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
               fps=contract["fps"], budget_s=float(budget_s if budget_s is not None else ro.budget_s),
               after_success_s=ro.after_success_s if after_success_s is None else after_success_s,
               wait_s=float(wait_s if wait_s is not None else ro.wait_s),
-              # action order: base x, y, yaw, the arm joints, gripper; velocity: base + arm
-              limits=dict(lower=[*-base, *rb.lower, rb.gripper.closed_m], upper=[*base, *rb.upper, rb.gripper.open_m],
-                          velocity=[rb.base_v_max, rb.base_v_max, rb.base_w_max] +
-                                   [robot.joints[n]["velocity"] for n in rb.arm_joints]),
+              # the policy action: base twist vx, vy, wz (robot frame), the arm joints, gripper; velocity: base + arm;
+              # base: the integrated base target's +- limits (x, y, yaw)
+              limits=dict(lower=[*-vmax, *rb.lower, rb.gripper.closed_m], upper=[*vmax, *rb.upper, rb.gripper.open_m],
+                          velocity=[*vmax] + [robot.joints[n]["velocity"] for n in rb.arm_joints], base=[*base]),
+              state_names=list(rb.state_names),
               subtasks=["closed_loop"], event_subtask=["closed_loop"], restore=rest)
     (out / "closed_loop.json").write_text(json.dumps(cl, indent=1, default=float))
     grasp = np.asarray(slive["grasp_pose_world"], float)

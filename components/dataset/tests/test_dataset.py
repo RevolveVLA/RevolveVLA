@@ -118,8 +118,12 @@ def test_features_match_contract(runs):
     for key, spec in CONTRACT["observations"].items():
         if key.startswith("observation.images."):
             assert f[key]["dtype"] == "video" and f[key]["shape"] == [480, 480, 3]
-    assert f["observation.state"]["names"] == ["position." + j for j in JOINTS.state]
-    assert f["action"]["names"] == ["position." + j for j in JOINTS.action]
+    # multi-source keys (Rosetta prefixes each source's names with its topic): the base twist in the robot frame
+    # + joint positions, no world-frame base pose
+    twist = ["linear.x", "linear.y", "angular.z"]
+    assert f["observation.state"]["names"] == ["odom.twist.twist." + t for t in twist] + \
+        ["joint_states.position." + j for j in JOINTS.policy_state[3:]]
+    assert f["action"]["names"] == ["cmd_vel." + t for t in twist] + ["action.position." + j for j in JOINTS.policy_action[3:]]
     assert f["observation.state"]["shape"] == [12] and f["action"]["shape"] == [11]
     assert info["fps"] == CONTRACT["fps"] and info["robot_type"] == CONTRACT["robot_type"] and info["codebase_version"] == "v3.0"
     assert (RUN / "joint" / "turn_0" / "dataset" / "meta" / "rosetta_contract.yaml").read_text() == \

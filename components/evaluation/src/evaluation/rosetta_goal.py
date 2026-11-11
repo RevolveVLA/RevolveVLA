@@ -6,7 +6,8 @@ Jazzy, Rosetta sourced from ThirdParty/rosetta/install) beside the runner node:
 
 1. Waits for the /run_policy action server, then touches <out>/runner_ready.
 2. Waits for /clock (the sim was unpaused), then sends {prompt, max_duration_s}.
-3. Records the goal's feedback (published_actions, queue_depth) and every message on the contract's action topic,
+3. Records the goal's feedback (published_actions, queue_depth) and every message on the contract action's last
+   source topic (one message per frame),
    each with the /clock time it arrived at, and saves the first message of each observation topic stamped at or
    after the goal's acceptance to <out>/obs_first.npz (JPEG bytes, joint positions by name, stamps): what the
    policy's first observation is sampled from.
@@ -42,8 +43,10 @@ def main(out, prompt, max_duration_s, done_file, contract):
     out, done_file = Path(out), Path(done_file)
     c = yaml.safe_load(Path(contract).read_text())
     (act,) = c["actions"].values()
-    action_topic = act["channel"]["topic"]
-    obs_topics = {k: o["channel"] for k, o in c["observations"].items()}
+    action_topic = act[-1]["channel"]["topic"]        # the action's last source: one message per frame
+    # observation key (+ ".<topic>" per source of a multi-source key) -> channel
+    obs_topics = {(k if not isinstance(o, list) else f"{k}.{src['channel']['topic'].strip('/')}"): src["channel"]
+                  for k, o in c["observations"].items() for src in (o if isinstance(o, list) else [o])}
     rclpy.init()
     node = rclpy.create_node("eval_goal")
     lock = threading.Lock()

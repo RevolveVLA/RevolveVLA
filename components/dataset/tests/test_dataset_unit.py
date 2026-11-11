@@ -4,7 +4,7 @@ import json
 
 import pytest
 import yaml
-from revolve_common import specs
+from revolve_common import policy_io, specs
 
 from conftest import REPO
 
@@ -58,9 +58,11 @@ def test_contract_features_match_robot():
     want = C.contract_features(CONTRACT)
     assert want == {"observation.images.wrist": (480, 480, 3), "observation.images.overhead_left": (480, 480, 3),
                     "observation.images.overhead_right": (480, 480, 3), "observation.state": (12,), "action": (11,)}
-    # the contract's selects are the robot spec's joints
-    assert [s.removeprefix("position.") for s in CONTRACT["observations"]["observation.state"]["select"]] == JOINTS.state
-    assert [s.removeprefix("position.") for s in CONTRACT["actions"]["action"]["select"]] == JOINTS.action
+    # the contract's sources are the robot spec's policy state / action: base twist in the robot frame + joints,
+    # no world-frame base pose
+    assert policy_io.names(policy_io.state_sources(CONTRACT)) == JOINTS.policy_state
+    assert policy_io.names(policy_io.action_sources(CONTRACT)) == JOINTS.policy_action
+    assert not {"base_x", "base_y", "base_yaw"} & {*JOINTS.policy_state, *JOINTS.policy_action}
     assert len(ROBOT["cameras"]) == sum(k.startswith("observation.images.") for k in want)
 
 

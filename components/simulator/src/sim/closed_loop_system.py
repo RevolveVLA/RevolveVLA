@@ -11,17 +11,23 @@ budget) and live.json (policy mode; "restore" for a retry from a saved phase sta
 step 0 with the spawn = that state's commanded action). Everything else is the base classes'
 (controller, physics and contact checks, per-step state_log.npz, DONE line).
 
-  in   /closed_loop/action  gz.msgs.Actuators, position = the robot's action (robot.yaml joints.action):
-       base x, y, yaw (world frame, yaw unwrapped), the arm joints, gripper (opening per contact link, m);
-       sent at the contract rate (30 Hz sim time). The newest one is the target until the next one: between
-       ticks, on a stall and after the source stops.
-  out  /closed_loop/state   gz.msgs.Actuators every 1 ms step, header stamp n x dt: position and velocity
+  in   /closed_loop/action  gz.msgs.Actuators, position = the policy action (robot.yaml joints.policy_action,
+       revolve_common.policy_io): base twist vx, vy [m/s], wz [rad/s] in the robot frame, the arm joints
+       (absolute), gripper (opening per contact link, m); sent at the contract rate (30 Hz sim time). The newest
+       one is in effect until the next one: between ticks, on a stall and after the source stops.
+  out  /closed_loop/base_twist  gz.msgs.Actuators every 1 ms step (before the state), header stamp n x dt:
+       position = the base joints (world x, y, yaw), velocity = the measured twist in the robot frame
+       (policy_io.measured_twist over the logged base, the dataset's).
+       /closed_loop/state   gz.msgs.Actuators every 1 ms step, header stamp n x dt: position and velocity
        of the robot joints at the start of step n (state_log robot_joint_names order).
 
-Target -> Action: clamped to the joint and base limits; feed-forward velocity = (new - previous
-target) / max(their sim spacing, 1 / fps), clamped to the velocity limits, zeroed once the target is
-older than 2 ticks; grip force = the robot's gripper.force_n (every plan's). Before the first action the
-spawn is the target. Non-finite or wrong-length messages are counted and dropped.
+Base: the commanded twist (clamped to the base v_max / w_max) is integrated every step into the base target
+(world x, y, yaw, from the spawn; policy_io.integrate, clamped to the base limits); its feed-forward velocity is
+the twist in the world frame. The twist drops to zero once the newest message is older than 2 ticks.
+Arm and gripper: position targets clamped to the joint limits; arm feed-forward velocity = (new - previous
+target) / max(their sim spacing, 1 / fps), clamped to the velocity limits, zeroed once the target is older
+than 2 ticks; grip force = the robot's gripper.force_n (every plan's). Before the first action the spawn is
+the target. Non-finite or wrong-length messages are counted and dropped.
 
 Success (hold_check.py): the expert's hold check on plan-free windows, evaluated at every release of the
 gripper target once the object joint has reached the threshold; the first passing release is the success.
@@ -51,10 +57,11 @@ import phases as ph
 import robots
 import skill_system as sks
 import smoke_system as smoke
+from revolve_common import policy_io
 from robots.base import CONTROL_DT, ActionSeq
 
 CL_DIR = Path(os.environ.get("CL_DIR", "."))
-ACTION_TOPIC, STATE_TOPIC = "/closed_loop/action", "/closed_loop/state"
+ACTION_TOPIC, STATE_TOPIC, TWIST_TOPIC = "/closed_loop/action", "/closed_loop/state", "/closed_loop/base_twist"
 DT = CONTROL_DT
 
 
@@ -81,6 +88,8 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         lim = ep["limits"]
         self.fps = float(ep["fps"])
         self.lo, self.hi, self.vlim = (np.array(lim[k], float) for k in ("lower", "upper", "velocity"))
+        self.base_lim = np.array(lim["base"], float)
+        self.base_cmd = np.array(ep["spawn"]["base"], float)     # the integrated base target (world)
         self.log["action_index"] = np.full(n, -1, np.int32)
         self.inbox, self.rejected = None, 0     # newest message from the transport thread: (count, values)
         self.rx_count, self.taken = 0, 0
@@ -93,6 +102,7 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         self.log["handle_in_tcp"] = np.zeros((n, 3))
         self.run = dict(success_t=None, success=None, last=None, releases=[], max=(-math.inf, 0.0))
         self.state_pub = self.node.advertise(STATE_TOPIC, Actuators)
+        self.twist_pub = self.node.advertise(TWIST_TOPIC, Actuators)
         if not self.node.subscribe(Actuators, ACTION_TOPIC, self.on_action):
             self.say(f"could not subscribe to {ACTION_TOPIC}")
         self.say(f"closed loop: spawn {np.round(ep['spawn']['base'], 3).tolist()}, budget {ep['budget_s']} s from "
@@ -108,19 +118,20 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         self.inbox = (self.rx_count, v)
 
     def set_target(self, n):
-        """Row min(n, last) of self.seq = the Action for step n from the newest accepted message."""
+        """Row min(n, last) of self.seq = the Action for step n from the newest accepted message: the base target
+        integrated one step at the commanded twist, the arm and gripper targets."""
         msg = self.inbox
         if msg is not None and msg[0] != self.taken and self.ending is None:
             self.taken = msg[0]
             v = np.clip(msg[1], self.lo, self.hi)
             k = self.n_ff
             if self.target is None:
-                ff = np.zeros(k)
+                ff = np.zeros(k - 3)
                 self.first_step = n
                 self.sc.info["budget"] = (n + 1) * DT + self.ep["budget_s"]
             else:
                 spacing = max((n - self.target[1]) * DT, 1.0 / self.fps)
-                ff = np.clip((v[:k] - self.target[0][:k]) / spacing, -self.vlim, self.vlim)
+                ff = np.clip((v[3:k] - self.target[0][3:k]) / spacing, -self.vlim[3:], self.vlim[3:])
             self.target = (v, n, ff)
             self.rx_step.append(n)
             self.rx_values.append(v)
@@ -128,10 +139,14 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
             return
         v, n0, ff = self.target
         k = self.n_ff
+        twist = v[:3]
         if (n - n0) * DT > 2.0 / self.fps + 1e-9:
-            ff = np.zeros(k)
+            ff, twist = np.zeros(k - 3), np.zeros(3)
+        b = policy_io.integrate(self.base_cmd, twist, DT)
+        self.base_cmd = np.clip(b, -self.base_lim, self.base_lim)
         s, r = self.seq, min(n, len(self.seq) - 1)
-        s.base[r], s.base_vel[r], s.arm[r], s.arm_vel[r], s.grip[r] = v[:3], ff[:3], v[3:k], ff[3:k], v[k]
+        s.base[r], s.base_vel[r] = self.base_cmd, policy_io.world_velocity(self.base_cmd[2], twist)
+        s.arm[r], s.arm_vel[r], s.grip[r] = v[3:k], ff, v[k]
         if n < self.n_total:
             self.log["action_index"][n] = len(self.rx_step) - 1
 
@@ -143,8 +158,14 @@ class ClosedLoopSystem(prs.PhaseReplaySystem):
         super().pre_update(info, ecm)           # applies row n, logs the state at the start of step n
         if n < self.n_total:
             self.log["handle_in_tcp"][n] = self.handle_in_tcp(ecm)[:3, 3]
-            msg = Actuators()
             ns = n * 1_000_000
+            base = self.log["robot_joint_pos"][:, :3]
+            tw = Actuators()
+            tw.header.stamp.sec, tw.header.stamp.nsec = ns // 10**9, ns % 10**9
+            tw.position.extend(base[n])
+            tw.velocity.extend(policy_io.measured_twist_at(base, n, self.fps, DT))
+            self.twist_pub.publish(tw)
+            msg = Actuators()
             msg.header.stamp.sec, msg.header.stamp.nsec = ns // 10**9, ns % 10**9
             msg.position.extend(self.log["robot_joint_pos"][n])
             msg.velocity.extend(self.log["robot_joint_vel"][n])

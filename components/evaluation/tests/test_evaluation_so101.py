@@ -47,7 +47,7 @@ def test_so101_oracle_passes_every_phase(oracle):
     rec, relay = load(d / "rollout.json"), load(d / "relay.json")
     sent = load(d / "client" / "dummy_policy.json")
     contract = yaml.safe_load((REPO / "specs" / "robots" / ROBOT / "contract.yaml").read_text())
-    assert len(contract["actions"]["action"]["select"]) == 9
+    assert sum(len(src["select"]) for src in contract["actions"]["action"]) == 9     # base twist + 5 arm + gripper
     assert rec["actions_accepted"] > 100 and relay["actions_dropped"] == 0 and rec["end_reason"] == "success"
     assert 0 <= relay["actions"] - rec["actions_accepted"] <= 2 and sent["sent"] >= relay["actions"]
     assert len(relay["images"]) == 3 and min(relay["images"].values()) > 100

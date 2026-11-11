@@ -16,6 +16,9 @@ $REVOLVE_ROBOT's spec: /action joint names = its joints.action, the final state'
 
 The task object's joint (the fridge door hinge or the drawer slide, state log door_*) goes on the
 task's topic, episode.json joint_topic: /fridge/joint_states or /drawer/joint_states.
+The policy's base twist (revolve_common.policy_io, at the robot contract's fps) goes per step on /odom
+(nav_msgs/Odometry: pose = the base joints in the world, twist = the measured twist in base_link) and /cmd_vel
+(geometry_msgs/Twist: the commanded twist of the step's base target).
 
 Stamps are sim time from the spawn: header stamp = log time = n x control_dt for step n. Row n
 of state_log.npz is the state at the start of step n and the action applied during it, so the
@@ -40,6 +43,7 @@ from rosbags.typesys import Stores, get_typestore
 from ruamel.yaml import YAML
 
 JS, PS, STR = "sensor_msgs/msg/JointState", "geometry_msgs/msg/PoseStamped", "std_msgs/msg/String"
+ODOM, TWIST = "nav_msgs/msg/Odometry", "geometry_msgs/msg/Twist"
 CI = "sensor_msgs/msg/CompressedImage"
 JPEG_QUALITY = 90
 PROMPT = "lerobot.operator_prompt"   # Rosetta reads the task string from this custom_data key
@@ -60,7 +64,15 @@ def robot():
 
 def per_step(obj):
     """Per-step topics; obj = the object joint's topic."""
-    return {"/joint_states": JS, "/action": JS, obj: JS, "/base_pose": PS, "/tcp_pose": PS}
+    return {"/joint_states": JS, "/action": JS, obj: JS, "/base_pose": PS, "/tcp_pose": PS, "/odom": ODOM,
+            "/cmd_vel": TWIST}
+
+
+def fps():
+    """The robot contract's frame rate (the policy twist's difference interval is one frame)."""
+    import spec
+    r = robot()
+    return float(YAML(typ="safe").load((spec.SPECS / "robots" / r.name / r.contract).read_text())["fps"])
 
 
 def episode(replay):
@@ -110,9 +122,12 @@ def jpeg(png):
     return b.getvalue()
 
 
-def content(s, obj):
-    """Per-step arrays of each topic, from state_log.npz (the writer's source, the check's reference)."""
-    n = len(s["time_s"])
+def content(s, obj, hz):
+    """Per-step arrays of each topic, from state_log.npz (the writer's source, the check's reference); hz: the
+    contract fps of the policy twists."""
+    from revolve_common import policy_io
+    n, dt = len(s["time_s"]), float(s["control_dt"])
+    base = s["robot_joint_pos"][:, :3]
     sub, ev = s["subtask_labels"][s["subtask"]], s["event_labels"][s["event"]]
     contacts = np.stack([s["contact_left_finger_handle"], s["contact_right_finger_handle"],
                          s["contact_other_robot"], s["contact_robot_max_depth_m"]], 1).astype(float)
@@ -126,6 +141,8 @@ def content(s, obj):
                                s["action_grip_force"][:, None]])),
         obj: (s["door_pos"][:, None], s["door_vel"][:, None], np.zeros((n, 0))),
         "/base_pose": s["base_link_pose"], "/tcp_pose": s["tcp_pose"],
+        "/odom": (base, policy_io.measured_twist(base, hz, dt)),
+        "/cmd_vel": policy_io.command_twist(s["action_base"], hz, dt),
         "/subtask": [json.dumps({"subtask": str(x)}) for x in sub],
         "/event": [json.dumps({"event": str(x)}) for x in ev],
         "/contacts": [json.dumps({"left_finger_handle": bool(c[0]), "right_finger_handle": bool(c[1]),
@@ -146,7 +163,7 @@ def write(replay):
     if (str(s["plan_run"]), int(s["attempt_id"])) != (v["plan_run"], v["attempt_id"]):
         sys.exit("state_log and verdict.json name different attempts")
     obj = object_topic(replay)
-    PER_STEP, c = per_step(obj), content(s, obj)
+    PER_STEP, c = per_step(obj), content(s, obj, fps())
     cap, fr = capture(replay), frames(replay, n * dt_ns)
     IMAGES = {image_topic(cam): CI for cam in fr}
     with ThreadPoolExecutor(4) as pool:      # Pillow releases the GIL while it codes
@@ -158,6 +175,12 @@ def write(replay):
     Time, Header = T["builtin_interfaces/msg/Time"], T["std_msgs/msg/Header"]
     JointState, String = T[JS], T[STR]
     Pose, Point, Quat = T["geometry_msgs/msg/Pose"], T["geometry_msgs/msg/Point"], T["geometry_msgs/msg/Quaternion"]
+    Twist, Vec = T[TWIST], T["geometry_msgs/msg/Vector3"]
+    PoseCov, TwistCov = T["geometry_msgs/msg/PoseWithCovariance"], T["geometry_msgs/msg/TwistWithCovariance"]
+    cov = np.zeros(36)
+
+    def twist(v):
+        return Twist(linear=Vec(x=float(v[0]), y=float(v[1]), z=0.0), angular=Vec(x=0.0, y=0.0, z=float(v[2])))
     names = {"/joint_states": [str(x) for x in s["robot_joint_names"]], "/action": robot().joints.action,
              obj: [str(s["door_joint"]).split("::")[-1]]}
     changed = {t: [0] + [k for k in range(1, n) if c[t][k] != c[t][k - 1]] for t in ON_CHANGE}
@@ -196,6 +219,13 @@ def write(replay):
                 x, y, z, qw, qx, qy, qz = (float(a) for a in c[t][k])
                 put(t, T[PS](header=Header(stamp=stamp, frame_id="world"),
                              pose=Pose(position=Point(x=x, y=y, z=z), orientation=Quat(x=qx, y=qy, z=qz, w=qw))), ns)
+            (x, y, yaw), tw = c["/odom"][0][k], c["/odom"][1][k]
+            put("/odom", T[ODOM](header=Header(stamp=stamp, frame_id="world"), child_frame_id="base_link",
+                                 pose=PoseCov(pose=Pose(position=Point(x=float(x), y=float(y), z=0.0),
+                                                        orientation=Quat(x=0.0, y=0.0, z=float(np.sin(yaw / 2)),
+                                                                         w=float(np.cos(yaw / 2)))), covariance=cov),
+                                 twist=TwistCov(twist=twist(tw), covariance=cov)), ns)
+            put("/cmd_vel", twist(c["/cmd_vel"][k]), ns)
             while j < len(on_change) and on_change[j][0] == k:
                 put(on_change[j][1], String(data=c[on_change[j][1]][k]), ns)
                 j += 1
@@ -250,7 +280,7 @@ def check(bag, replay=None):
     n, dt = len(s["time_s"]), float(s["control_dt"])
     dt_ns = round(dt * 1e9)
     obj = object_topic(replay)
-    PER_STEP, ref = per_step(obj), content(s, obj)
+    PER_STEP, ref = per_step(obj), content(s, obj, fps())
     cap = capture(replay)
     IMAGES = {image_topic(cam): cam for cam in (cap["cameras"] if cap else [])}
     checks = []
@@ -271,6 +301,11 @@ def check(bag, replay=None):
             elif con.msgtype == PS:
                 p, q = m.pose.position, m.pose.orientation
                 got[con.topic].append((p.x, p.y, p.z, q.w, q.x, q.y, q.z))
+            elif con.msgtype == ODOM:
+                p, q, tw = m.pose.pose.position, m.pose.pose.orientation, m.twist.twist
+                got[con.topic].append(((p.x, p.y, 2 * np.arctan2(q.z, q.w)), (tw.linear.x, tw.linear.y, tw.angular.z)))
+            elif con.msgtype == TWIST:
+                got[con.topic].append((m.linear.x, m.linear.y, m.angular.z))
             elif con.msgtype == CI:
                 got[con.topic].append((m.header.frame_id, m.format, bytes(m.data[:2]) + bytes(m.data[-2:])))
             else:
@@ -282,14 +317,15 @@ def check(bag, replay=None):
     add("mcap_storage", meta["storage_identifier"] == "mcap" and all(x.endswith(".mcap") for x in
                                                                        meta["relative_file_paths"]),
         meta["storage_identifier"], "rosbag2 storage plugin")
-    bad = [t for t, i in topics.items() if (i["type"] != CI if t in IMAGES else i["type"] not in (JS, PS, STR)
+    bad = [t for t, i in topics.items() if (i["type"] != CI if t in IMAGES else i["type"] not in (JS, PS, STR, ODOM, TWIST)
            or any(w in t.lower() for w in ("image", "camera", "cam", "video")))]
     if not IMAGES:
         add("no_camera_data", not bad and set(topics) == set(got), dict(bad=bad, topics=sorted(topics)),
-            "only JointState, PoseStamped and String topics, none named image/camera/video")
+            "only JointState, PoseStamped, Odometry, Twist and String topics, none named image/camera/video")
     else:
         add("state_and_camera_topics", not bad and set(topics) == set(got), dict(bad=bad, topics=sorted(topics)),
-            "JointState, PoseStamped and String topics plus one CompressedImage topic per camera in capture.json")
+            "JointState, PoseStamped, Odometry, Twist and String topics plus one CompressedImage topic per camera "
+            "in capture.json")
         per = {}
         for t, cam in IMAGES.items():
             c = cap["cameras"][cam]
@@ -335,8 +371,13 @@ def check(bag, replay=None):
     for t in ("/joint_states", "/action", obj):
         diffs[t] = all(np.array_equal(np.array([m[i] for m in got[t]]).reshape(r_.shape), r_, equal_nan=True)
                        for i, r_ in enumerate(ref[t])) if len(got[t]) == n else False
-    for t in ("/base_pose", "/tcp_pose"):
+    for t in ("/base_pose", "/tcp_pose", "/cmd_vel"):
         diffs[t] = len(got[t]) == n and np.array_equal(np.array(got[t]), ref[t])
+    # the odometry yaw goes through a quaternion: within float rounding, wrapped; the twist exactly
+    diffs["/odom"] = len(got["/odom"]) == n and np.array_equal(np.array([m[1] for m in got["/odom"]]), ref["/odom"][1]) \
+        and np.allclose(np.array([m[0][:2] for m in got["/odom"]]), ref["/odom"][0][:, :2], rtol=0, atol=0) \
+        and np.allclose(np.angle(np.exp(1j * (np.array([m[0][2] for m in got["/odom"]]) - ref["/odom"][0][:, 2]))), 0,
+                        rtol=0, atol=1e-9)
     for t in ON_CHANGE:   # forward-fill the on-change messages back to one per step
         fill, last, it = [], None, iter(got[t])
         nxt = next(it, None)

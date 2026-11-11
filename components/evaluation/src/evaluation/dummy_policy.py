@@ -3,15 +3,15 @@ paced on /clock, where Rosetta's policy runner would publish a policy's actions.
 client container (revolve-dataset: ROS 2 Jazzy + Rosetta, the one the Rosetta runner uses), so its
 actions take the same DDS path across the rollout's internal network to the sim's ros_relay.py.
 Ported from the earlier pipeline's dummy_policy.py: the relay's ready file is read from
-the sim's dir and the ready file written to the client's dir (two containers); frames() and
-contract_io() are copied in (their modules import gz-transport, which this image has not).
+the sim's dir and the ready file written to the client's dir (two containers).
 
   dummy_policy.py <replay dir> <sim out dir> <client out dir> <ready file name> <contract.yaml>
 
-Action k = action_player.frames (the dataset frame k of that replay: base, arm, gripper opening, one
-column per contract action joint), sent once as
-sensor_msgs/JointState (the contract's action joint names, stamp = the /clock value) on the first
-/clock at or after k x int(1e9 / fps) ns. Touches <client>/<ready file> (default runner_ready) once
+Action k = revolve_common.policy_io.episode_actions: the dataset frame k of that replay in the policy format
+(the commanded base twist in the robot frame, the arm targets, the gripper opening; the dataset's values), sent
+once per contract action source in contract order, as Rosetta's runner does (geometry_msgs/Twist: the twist;
+sensor_msgs/JointState: the source's joint names, stamp = the /clock value) on the first /clock at or after
+k x int(1e9 / fps) ns. Touches <client>/<ready file> (default runner_ready) once
 <sim>/relay_ready exists, /clock has a publisher and the action topic a subscriber (ready file name: the
 rollout passes runner_ready); writes
 <client>/dummy_policy.json after the last frame or on SIGTERM.
@@ -26,54 +26,52 @@ from pathlib import Path
 import numpy as np
 import rclpy
 import yaml
+from geometry_msgs.msg import Twist
 from rclpy.parameter import Parameter
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
 
-CI, JS = "sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/JointState"
+sys.path.insert(0, os.environ.get("REVOLVE_COMMON", "/repo/common"))
+from revolve_common import policy_io as P  # noqa: E402
 
 
 def frames(replay, fps=30):
-    """(rows, actions [n, base + arm + 1]) of a replay's state log on the 1 / fps grid from its start
-    (action_player.py)."""
-    s = np.load(Path(replay) / "state_log.npz")
-    dt_ns, tick_ns = round(float(s["control_dt"]) * 1e9), int(1e9 / fps)
-    n = (len(s["time_s"]) - 1) * dt_ns // tick_ns + 1
-    rows = np.arange(n) * tick_ns // dt_ns
-    return rows, np.hstack([s["action_base"], s["action_arm"], s["action_grip"][:, None]])[rows]
+    """(rows, actions [n, policy action]) of a replay's state log on the 1 / fps grid from its start."""
+    return P.episode_actions(np.load(Path(replay) / "state_log.npz"), fps)
 
 
-def contract_io(path):
-    """(image topics, state topic, action topic, action joint names) from a Rosetta contract (ros_relay.py)."""
-    c = yaml.safe_load(Path(path).read_text())
-    obs = [v["channel"] for v in c["observations"].values()]
-    images = [o["topic"] for o in obs if o["type"] == CI]
-    state = [o["topic"] for o in obs if o["type"] == JS]
-    (act,) = c["actions"].values()
-    names = [s.removeprefix("position.") for s in act["select"]]
-    return images, state[0], act["channel"]["topic"], names
+def message(src, values, stamp):
+    if src.type == P.TWIST:
+        m = Twist()
+        m.linear.x, m.linear.y, m.angular.z = (float(x) for x in values)
+        return m
+    js = JointState(name=list(src.names), position=[float(x) for x in values])
+    js.header.stamp = stamp
+    return js
 
 
 def main(replay, sim_out, out, ready, contract):
     sim_out, out = Path(sim_out), Path(out)
-    fps = yaml.safe_load(Path(contract).read_text())["fps"]
-    _, _, action_topic, names = contract_io(contract)
+    c = yaml.safe_load(Path(contract).read_text())
+    fps, srcs = c["fps"], P.action_sources(c)
+    names = P.names(srcs)
     rows, A = frames(replay, fps)
     if A.shape[1] != len(names):
         raise SystemExit(f"{replay}: {A.shape[1]} action columns, the contract {contract} names {len(names)}")
+    cuts = np.cumsum([0] + [len(s.names) for s in srcs])
     tick_ns = int(1e9 / fps)
     rclpy.init()
     node = rclpy.create_node("dummy_policy", parameter_overrides=[Parameter("use_sim_time", value=True)])
-    pub = node.create_publisher(JointState, action_topic, QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE))
+    qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+    pubs = [node.create_publisher(Twist if s.type == P.TWIST else JointState, s.topic, qos) for s in srcs]
     sent, k, done = [], [0], threading.Event()
 
     def on_clock(msg):
         t_ns = msg.clock.sec * 10**9 + msg.clock.nanosec
         while k[0] < len(A) and k[0] * tick_ns <= t_ns:
-            js = JointState(name=names, position=[float(x) for x in A[k[0]]])
-            js.header.stamp = msg.clock
-            pub.publish(js)
+            for i, (src, pub) in enumerate(zip(srcs, pubs)):
+                pub.publish(message(src, A[k[0]][cuts[i]:cuts[i + 1]], msg.clock))
             sent.append((k[0], t_ns))
             k[0] += 1
         if k[0] == len(A):
@@ -83,15 +81,16 @@ def main(replay, sim_out, out, ready, contract):
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: done.set())
     threading.Thread(target=rclpy.spin, args=(node,), daemon=True).start()
-    while not ((sim_out / "relay_ready").exists() and node.count_publishers("/clock") and pub.get_subscription_count()) \
-            and not done.wait(0.05):
+    while not ((sim_out / "relay_ready").exists() and node.count_publishers("/clock")
+               and all(p.get_subscription_count() for p in pubs)) and not done.wait(0.05):
         pass
     (out / ready).touch()
-    print(f"dummy policy: {len(A)} frames at {fps} Hz on {action_topic} from {replay}; relay connected", flush=True)
+    print(f"dummy policy: {len(A)} frames at {fps} Hz on {[s.topic for s in srcs]} from {replay}; relay connected",
+          flush=True)
     done.wait()
     late = [t - kk * tick_ns for kk, t in sent]
     (out / "dummy_policy.json").write_text(json.dumps(dict(
-        replay=str(replay), fps=fps, frames=len(A), sent=len(sent), action_topic=action_topic, names=names,
+        replay=str(replay), fps=fps, frames=len(A), sent=len(sent), action_topics=[s.topic for s in srcs], names=names,
         send_clock_ns=[t for _, t in sent],
         lateness_ms=dict(max=max(late) / 1e6 if late else None, mean=sum(late) / len(late) / 1e6 if late else None))))
     print(f"dummy policy: sent {len(sent)} of {len(A)} frames", flush=True)

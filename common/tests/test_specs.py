@@ -44,6 +44,9 @@ def test_robot_joints_derive_state_and_action():
         r = specs.load(SPECS / "robots" / rb / "robot.yaml")
         assert r.joints.state == [*r.joints.base, *r.joints.arm, *r.joints.gripper]
         assert r.joints.action == [*r.joints.base, *r.joints.arm, "gripper"]
+        # the policy (contract): base twist in the robot frame, never the world-frame base pose
+        assert r.joints.policy_state == ["base_vx", "base_vy", "base_wz", *r.joints.arm, *r.joints.gripper]
+        assert r.joints.policy_action == ["base_vx", "base_vy", "base_wz", *r.joints.arm, "gripper"]
 
 
 def test_experiment_resolves_task_robot_scene():

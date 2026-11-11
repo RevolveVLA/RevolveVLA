@@ -39,6 +39,17 @@ def test_task_is_robot_free_and_takes_per_robot_settings(monkeypatch):
     assert specs.load_experiment(SPECS / "experiments" / "drawer_mini.yaml").robot.name == "mobile_panda"
 
 
+def test_datagen_variant_is_optional_and_forwarded(monkeypatch):
+    assert specs.load_experiment(SPECS / "experiments" / "fridge_mini.yaml").experiment.datagen.variant is None
+    r = specs.load_experiment(SPECS / "experiments" / "fridge_panda_f1.yaml")
+    assert (r.robot.name, r.experiment.datagen.variant) == ("mobile_panda", "drive_seq")
+    monkeypatch.setenv(specs.ROBOT_ENV, "mobile_panda")
+    monkeypatch.delenv(specs.VARIANT_ENV, raising=False)
+    assert specs.robot_env() == {specs.ROBOT_ENV: "mobile_panda"}
+    monkeypatch.setenv(specs.VARIANT_ENV, "drive_seq")
+    assert specs.robot_env() == {specs.ROBOT_ENV: "mobile_panda", specs.VARIANT_ENV: "drive_seq"}
+
+
 def test_robot_joints_derive_state_and_action():
     for rb in ROBOTS:
         r = specs.load(SPECS / "robots" / rb / "robot.yaml")

@@ -1,0 +1,24 @@
+# Mobile Panda on the fridge with the F1 policy format (state: base twist vx, vy, wz + arm and finger joints; action:
+# base twist + absolute arm joints + gripper) and sequenced folded drive-in demos (datagen variant drive_seq,
+# generator.yaml: drive with the arm folded, unfold with the base still, whole-body pull). One turn: generate (skips the
+# accepted train seeds) -> starts (held-out + probe) -> dataset -> train SmolVLA 20k steps on the GPU machine (the 10k
+# checkpoint is copied back to turn_0/ckpt_010000/ while it trains on) -> eval of the final checkpoint on the held-out
+# seeds; eval_probe is skipped (max_turns 1). Run: ./revolve run fridge_panda_f1.
+name: fridge_panda_f1
+robot: mobile_panda
+task: open_fridge_door
+max_turns: 1
+seeds: {train: [0, 49], probe: [200, 203], heldout: [100, 109]}   # probe: start poses only (eval_probe skipped)
+datagen: {episodes_per_seed: 1, workers: 2, variant: drive_seq}
+recovery: {episodes_per_failure: 3, phases: [approach, grasp, open]}   # unused (one turn)
+training:
+  policy: smolvla
+  base: lerobot/smolvla_base
+  mode: from_base
+  steps: 20000
+  batch_size: 64
+  save_every: 10000                # also saves step 10000 -> turn_0/ckpt_010000/ during training
+  backend: gpu_machine
+  backends: {gpu_machine: {scratch: ~/revolve_scratch}}
+eval: {rollouts_per_seed: 1, retries: 0}
+stall_timeout_s: 900

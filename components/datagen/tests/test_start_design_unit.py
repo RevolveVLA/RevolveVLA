@@ -1,7 +1,9 @@
 """start_design's `mode: reach` and `mode: drive` starts blocks (host only, no docker): parsing, the per-seed sample
 (deterministic, in range), the attempts (attempt 0 = the sample, the rest small jitters), the turn about the first
-joint axis, the drive block's far start box, the optional keys and the opt-in datagen variants."""
+joint axis, the drive block's far start box, and the train / held-out seeds of the experiment that uses it (disjoint,
+distinct samples)."""
 import math
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,7 @@ import specs_bridge
 import start_design as S
 from revolve_common import specs
 
+REPO = Path(__file__).resolve().parents[3]
 BLOCK = dict(mode="reach", grasp_m=[-0.10, 0.10], d_m=[0.68, 0.76], yaw_half_deg=8.0, jitter_m=0.01, jitter_deg=1.0)
 DRIVE = dict(BLOCK, mode="drive", back_m=[1.0, 1.6], side_m=[-0.3, 0.3], heading_half_deg=20.0, slowdown=2.0)
 
@@ -128,3 +131,12 @@ def test_turn_about_keeps_the_pivot():
     starts = S.reach_starts(3, 5, S.parse_starts(BLOCK), lambda d: (0.39 + 0.23 + d, 0.0, math.pi), pivot)
     assert [st.grasp_id for st in starts] == [0] * 5 and starts[0].dx == S.reach_sample(3, S.parse_starts(BLOCK)).d
 
+
+def test_train_and_heldout_seeds_disjoint():
+    e = specs.load(REPO / "specs" / "experiments" / "drawer_so101_xl_f1.yaml")
+    seeds = e.experiment.seeds
+    train, held = set(seeds.train.seeds()), set(seeds.heldout.seeds())
+    assert train == set(range(50)) and held == set(range(100, 110)) and not train & held
+    spec = S.parse_starts(BLOCK)
+    samples = {S.reach_sample(s, spec) for s in train | held}
+    assert len(samples) == 60            # every seed its own (start, grasp)

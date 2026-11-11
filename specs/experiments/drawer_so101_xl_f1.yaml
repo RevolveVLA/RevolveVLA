@@ -1,0 +1,24 @@
+# Mobile SO-101 XL on the drawer with the F1 policy format (state: base twist vx, vy, wz + arm joints; action: base
+# twist + absolute arm joints, no world base pose) and the F1b folded drive-in demos (datagen generator.yaml: the
+# robot's `mode: drive` starts block). One turn: generate 50 train seeds -> starts (held-out + probe) -> dataset ->
+# train SmolVLA 20k steps on the GPU machine (the 10k checkpoint is copied back to turn_0/ckpt_010000/ while it trains
+# on) -> eval of the final checkpoint on the held-out seeds; eval_probe is skipped (max_turns 1: no recovery follows).
+# Run: ./revolve run drawer_so101_xl_f1 (gpu_machine host: $REVOLVE_GPU_MACHINE_HOST).
+name: drawer_so101_xl_f1
+robot: mobile_so101_xl
+task: open_drawer
+max_turns: 1
+seeds: {train: [0, 49], probe: [200, 203], heldout: [100, 109]}   # probe: start poses only (eval_probe skipped)
+datagen: {episodes_per_seed: 1, workers: 2}
+recovery: {episodes_per_failure: 3, phases: [approach, grasp, open]}   # unused (one turn)
+training:
+  policy: smolvla
+  base: lerobot/smolvla_base
+  mode: from_base                  # turn 0 trains from the base in every mode
+  steps: 20000
+  batch_size: 64
+  save_every: 10000                # also saves step 10000 -> turn_0/ckpt_010000/ during training
+  backend: gpu_machine
+  backends: {gpu_machine: {scratch: ~/revolve_scratch}}
+eval: {rollouts_per_seed: 1, retries: 0}
+stall_timeout_s: 900

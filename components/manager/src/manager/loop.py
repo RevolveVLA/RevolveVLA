@@ -51,6 +51,14 @@ def say(msg):
     print(f"{time.strftime('%H:%M:%S')} manager: {msg}", flush=True)
 
 
+def set_variant_env(e):
+    """$REVOLVE_DATAGEN_VARIANT = the experiment's datagen.variant (every step container gets it), unset without."""
+    if e.datagen.variant:
+        os.environ[specs.VARIANT_ENV] = e.datagen.variant
+    else:
+        os.environ.pop(specs.VARIANT_ENV, None)
+
+
 def container_kw(env=None):
     """The manager's and the steps' container settings (see the module doc)."""
     home = pwd.getpwuid(os.getuid()).pw_dir
@@ -125,6 +133,7 @@ class Manager:
         self.spec = Path(spec_path).resolve()
         self.r = specs.load_experiment(self.spec)
         os.environ[specs.ROBOT_ENV] = self.r.robot.name      # the experiment's robot: every step container gets it
+        set_variant_env(self.r.experiment)
         self.e = self.r.experiment
         self.paths = P.Paths(REPO / "runs" / self.e.name)
         self.dk = docker.from_env()

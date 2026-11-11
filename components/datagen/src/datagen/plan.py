@@ -29,6 +29,18 @@ handoff.json then holds a "starts" record and each attempt its "cluster".
 A `mode: reach` block (start_design.ReachSpec) plans the seed's one sampled grasp from its sampled base
 (attempt 0) and small jitters of it (the other attempts), the same pinned start IK; the "starts" record
 holds the sample and each attempt's d, turn and base.
+A `mode: drive` block (start_design.DriveSpec) plans as a reach block, then per planned attempt a cuRobo MotionGen
+drive-in (whole-body cspace, plan_single_js, scene + closed object; cuRobo's default trajopt) from the attempt's far
+start (start_design.drive_start, the arm at robot.yaml arm.folded) to the staging pose replay.py spawns at without
+one (the pull start moved replay.standoff_m back along the hand axis); an attempt without a drive-in fails.
+handoff.npz then adds reach_world (A, R, 3 + arm DoF) world base + arm at reach_dt (A,) s (the planner's step),
+reach_len (A,) valid rows (recovery's reach format), and the "starts" record each attempt's far start and the
+replay slowdown.
+A drive block with `sequence: drive_then_arm` plans each drive-in in two MotionGen parts instead (plan_sequenced): the
+base alone (the arm locked folded) from the far start to the pull start's base, then, after a pause, the arm alone (the
+base locked where the drive ended) from folded to the pre-grasp (the pull start's TCP standoff back along the hand axis;
+host IK seeded with the pull start's arm). reach_world holds drive, pause and unfold at one step; handoff.npz adds
+reach_split (A,) (the row the unfold starts after) and pregrasp_arm (A, arm DoF), which replay.py goes in from by arm.
 A mint round's plan dir holds plan_request.json (start_design.read_plan_request): the stop rule's
 cluster of each attempt and centre seed of each cluster. The attempts then start from those clusters
 and centres, and the "starts" record adds "centre_seeds".
@@ -76,6 +88,8 @@ def pick_pairs(S, G, k):
 
 
 LBFGS_FUSED_HISTORIES = (5, 6, 7, 15, 27, 31)   # cuRobo lbfgs_step_kernel.cu compiled history sizes
+DRIVE_IN_MAX_DT = 0.5   # s: the drive-in MotionGen's trajopt step cap (32 steps: up to 15.5 s)
+SEQUENCE_PAUSE_S = 0.5  # s (plan time, x the slowdown in the replay): drive_then_arm's still base before the unfold
 IK_SEEDS_STARTS = 1000  # IK seeds per attempt with a starts block (start IK: the arm joints, base locked)
 
 
@@ -263,6 +277,173 @@ def convert_12d(pipe, merged, nq):
     return conv
 
 
+def plan_drive_in(planner, robot_cfg, rows, starts, samples, traj, nq, folded, standoff, obj, jn):
+    """{attempt: (world rows (R, nq), planner dt)} of the planned attempts' drive-ins: MotionGen plan_single_js in
+    the whole-body cspace (scene + the closed object, cuRobo's default trajopt as recovery's reach) from the far
+    start (start_design.drive_start of the attempt's reach base, arm folded) to the staging pose (trajopt row 0
+    moved standoff back along the hand axis in the floor plane). A failed drive-in fails its attempt. Updates rows."""
+    from curobo.types.state import JointState
+    from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+    mg, _ = drive_motion_gen(planner, robot_cfg, jn)
+    out = {}
+    for r in rows:
+        a = r["attempt_id"]
+        st = starts[a]
+        sb = start_design.drive_start((st.x, st.y, st.yaw), samples[a])
+        r["drive_start_obj"] = list(sb)
+        if not r["success"]:
+            continue
+        q0 = torch.as_tensor(traj[a, 0, :nq], dtype=torch.float32, device="cuda")[None]
+        Rz = frames.quat_wxyz_to_R(mg.ik_solver.fk(q0).ee_pose.quaternion.cpu().numpy()[0])[:, 2]
+        axy = Rz[:2] / np.linalg.norm(Rz[:2])
+        stage = q0.clone()
+        stage[0, :2] -= torch.tensor(standoff * axy, dtype=torch.float32, device="cuda")
+        start = torch.tensor([*sb, *folded], dtype=torch.float32, device="cuda")[None]
+        res = mg.plan_single_js(JointState.from_position(start), JointState.from_position(stage),
+                                MotionGenPlanConfig(max_attempts=4, enable_graph=True))
+        ok = bool(res.success.item()) if res.success is not None else False
+        r.update(drive_in_success=ok, drive_in_status=str(res.status))
+        if ok:
+            p = res.get_interpolated_plan().position.cpu().numpy().astype(np.float64)
+            pw = p.copy()
+            pw[:, :3] = frames.base_to_world(p[:, :3], obj)
+            out[a] = (pw, float(res.interpolation_dt))
+            r.update(drive_in_steps=len(p), drive_in_dt_s=float(res.interpolation_dt),
+                     drive_in_s=float(res.interpolation_dt) * (len(p) - 1),
+                     drive_in_base_m=float(np.linalg.norm(np.diff(p[:, :2], axis=0), axis=1).sum()),
+                     drive_in_end_err=float(np.abs(p[-1] - stage.cpu().numpy()[0]).max()))
+        else:
+            r["success"] = False
+        print(f"attempt {a}: drive-in {'ok' if ok else 'FAILED'} {r['drive_in_status']}"
+              + (f" {r['drive_in_s']:.2f} s, {r['drive_in_base_m']:.2f} m" if ok else "") +
+              f" from {np.round(sb, 3).tolist()}")
+    del mg
+    planner.free_cuda_cache()
+    return out
+
+
+def drive_motion_gen(planner, robot_cfg, jn, lock=None):
+    """(MotionGen, its robot cfg) in the whole-body cspace with the scene and the closed object, DRIVE_IN_MAX_DT, and
+    the joints of lock {name: value} locked as well (the cspace is the rest)."""
+    from curobo.wrap.reacher.motion_gen import MotionGenConfig
+    if lock:
+        robot_cfg = copy.deepcopy(robot_cfg)
+        robot_cfg["kinematics"]["lock_joints"] = {**robot_cfg["kinematics"]["lock_joints"], **lock}
+    traj_cfg = planner.cfg.setdefault("traj", {})
+    grad = traj_cfg.pop("gradient_trajopt_file", None)
+    # a drive-in is long (>= 1 m of base at v_max): cuRobo's default trajopt step cap (0.15 s x 32 steps) ends it in
+    # DT_EXCEPTION, so this MotionGen allows DRIVE_IN_MAX_DT
+    load = MotionGenConfig.load_from_robot_config
+    MotionGenConfig.load_from_robot_config = staticmethod(
+        lambda *a, **k: load(*a, **{"maximum_trajectory_dt": DRIVE_IN_MAX_DT, **k}))
+    try:
+        mg = planner.init_motion_gen(robot_cfg, fixed_base=False, collision_role="ik", enable_collision=True)
+    finally:
+        MotionGenConfig.load_from_robot_config = load
+        if grad is not None:
+            traj_cfg["gradient_trajopt_file"] = grad
+    if lock:        # a short cspace (3 base joints): its IK L-BFGS history has no fused kernel (see PinnedStartIK)
+        for opt in mg.ik_solver.solver.optimizers:
+            if getattr(opt, "use_cuda_kernel", False) and getattr(opt, "history", 5) not in LBFGS_FUSED_HISTORIES:
+                opt.use_cuda_kernel = False
+    planner._update_world_collision(mg, {jn: 0.0}, True, include_object_mesh=True)
+    return mg, robot_cfg
+
+
+def plan_sequenced(planner, robot_cfg, rows, starts, samples, traj, nq, folded, standoff, obj, jn, rb):
+    """{attempt: (world rows (R, nq), dt, split row, pre-grasp arm)} of the planned attempts' drive_then_arm drive-ins:
+    (1) MotionGen in the base cspace (arm locked folded) from the far start (start_design.drive_start) to the pull
+    start's base; (2) SEQUENCE_PAUSE_S still; (3) MotionGen in the arm cspace (base locked at the drive's end) from
+    folded to the pre-grasp: the pull start's TCP (cuRobo FK) standoff back along the hand axis in the floor plane, the
+    robot's IK seeded with the pull start's arm. The unfold is resampled onto the drive's step. A failed part fails
+    its attempt. Updates rows."""
+    from curobo.types.state import JointState
+    from curobo.wrap.reacher.motion_gen import MotionGenPlanConfig
+    names = robot_cfg["kinematics"]["cspace"]["joint_names"]
+    base_n, arm_n = names[:3], names[3:nq]
+    folded = np.asarray(folded, float)
+    dev = dict(dtype=torch.float32, device="cuda")
+    js = lambda x: JointState.from_position(torch.tensor(np.asarray(x, float)[None], **dev))
+    cfg = MotionGenPlanConfig(max_attempts=4, enable_graph=True)
+    row, todo = {r["attempt_id"]: r for r in rows}, {}
+    for r in rows:
+        st = starts[r["attempt_id"]]
+        r["drive_start_obj"] = list(start_design.drive_start((st.x, st.y, st.yaw), samples[r["attempt_id"]]))
+        if r["success"]:
+            todo[r["attempt_id"]] = r["drive_start_obj"]
+
+    def result(res):
+        ok = bool(res.success.item()) if res.success is not None else False
+        p = res.get_interpolated_plan().position.cpu().numpy().astype(np.float64) if ok else None
+        return ok, str(res.status), p, float(res.interpolation_dt) if ok else None
+
+    drives = {}
+    if todo:
+        mg, _ = drive_motion_gen(planner, robot_cfg, jn, dict(zip(arm_n, folded.tolist())))
+        for a, sb in todo.items():
+            b0 = traj[a, 0, :3]
+            ok, status, p, dt = result(mg.plan_single_js(js(sb), js(b0), cfg))
+            row[a].update(drive_in_success=ok, drive_in_status=status)
+            if ok:
+                drives[a] = (p, dt)
+                row[a].update(drive_s=dt * (len(p) - 1), drive_base_m=float(np.linalg.norm(np.diff(p[:, :2], axis=0),
+                                                                                           axis=1).sum()),
+                              drive_end_err=float(np.abs(p[-1] - b0).max()))
+            else:
+                row[a]["success"] = False
+            print(f"attempt {a}: drive (arm folded) {'ok' if ok else 'FAILED'} {status}"
+                  + (f" {row[a]['drive_s']:.2f} s, {row[a]['drive_base_m']:.2f} m" if ok else "")
+                  + f" from {np.round(sb, 3).tolist()}")
+        del mg
+        planner.free_cuda_cache()
+    out = {}
+    if drives:
+        locks = dict(robot_cfg["kinematics"]["lock_joints"])
+        mg, lcfg = drive_motion_gen(planner, robot_cfg, jn, dict(zip(base_n, next(iter(drives.values()))[0][-1])))
+        fk = planner.motion_gen.ik_solver.fk
+        for a, (p1, dt) in drives.items():
+            r = row[a]
+            q0 = traj[a, 0, :nq]
+            ee = fk(torch.as_tensor(q0[None], **dev)).ee_pose
+            Rt = frames.quat_wxyz_to_R(ee.quaternion.cpu().numpy()[0].astype(np.float64))
+            axy = Rt[:2, 2] / np.linalg.norm(Rt[:2, 2])
+            pre = ee.position.cpu().numpy()[0].astype(np.float64) - standoff * np.array([*axy, 0.0])
+            qp, ep, er = rb.ik(pre, Rt, q0[3:], q0[:3])
+            r.update(pregrasp_ik_err=[float(ep), float(er)],
+                     pregrasp_fk_vs_planner_m=float(np.linalg.norm(rb.fk(q0[3:], q0[:3])[0][:3, 3]
+                                                                   - ee.position.cpu().numpy()[0])))
+            if ep > 1e-3 or er > 1e-2:
+                r.update(success=False, unfold_success=False, unfold_status="pregrasp IK failed")
+                print(f"attempt {a}: pre-grasp IK FAILED ({ep:.4f} m, {er:.4f} rad)")
+                continue
+            lcfg_a = copy.deepcopy(lcfg)
+            mg.update_locked_joints({**locks, **dict(zip(base_n, map(float, p1[-1])))}, lcfg_a)
+            ok, status, p2, dt2 = result(mg.plan_single_js(js(folded), js(qp), cfg))
+            r.update(unfold_success=ok, unfold_status=status)
+            print(f"attempt {a}: unfold (base still) {'ok' if ok else 'FAILED'} {status}"
+                  + (f" {dt2 * (len(p2) - 1):.2f} s" if ok else ""))
+            if not ok:
+                r["success"] = False
+                continue
+            t2 = np.arange(len(p2)) * dt2
+            tg = np.minimum(np.arange(int(np.ceil(t2[-1] / dt - 1e-9)) + 1) * dt, t2[-1])
+            q2 = np.stack([np.interp(tg, t2, p2[:, i]) for i in range(p2.shape[1])], 1)
+            n_p = int(round(SEQUENCE_PAUSE_S / dt))
+            full = np.vstack([np.hstack([p1, np.tile(folded, (len(p1), 1))]),
+                              np.tile(np.r_[p1[-1], folded], (n_p, 1)),
+                              np.hstack([np.tile(p1[-1], (len(q2) - 1, 1)), q2[1:]])])
+            split = len(p1) + n_p - 1          # the last row before the arm moves
+            pw = full.copy()
+            pw[:, :3] = frames.base_to_world(full[:, :3], obj)
+            out[a] = (pw, dt, split, qp)
+            r.update(unfold_s=float(t2[-1]), unfold_end_err=float(np.abs(p2[-1] - qp).max()))
+            r.update(drive_in_steps=len(full), drive_in_dt_s=dt, drive_in_s=dt * (len(full) - 1),
+                     drive_in_base_m=r["drive_base_m"], drive_in_end_err=max(r["drive_end_err"], r["unfold_end_err"]))
+        del mg
+        planner.free_cuda_cache()
+    return out
+
+
 def main(out, sel):
     out = Path(out).resolve()          # AutoMoMa joins relative urdf paths onto /opt/automoma
     if (out / "handoff.json").exists():
@@ -274,12 +455,16 @@ def main(out, sel):
     if names["robot"] != r.robot.name:
         raise SystemExit(f"plan.py: robot={names['robot']} but $REVOLVE_ROBOT names {r.robot.name}")
     rd, sc, task, gen = (plugins.load(k, names[k]) for k in ("robot", "scene", "task", "generator"))
+    standoff = r.task.replay.standoff_m           # the replay's staging distance (a drive-in's goal)
     rb = gen_assets.gz_robot(rd)
     arm = tuple(float(x) for x in rb.ready)      # the starts' nominal arm (generator starts nominal_arm: ready)
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
-    reach = isinstance(spec, start_design.ReachSpec)
+    reach = isinstance(spec, start_design.ReachSpec)     # a drive block is a reach block plus a far start
+    drive = isinstance(spec, start_design.DriveSpec)
+    if drive and rd["arm"].get("folded") is None:
+        raise SystemExit(f"starts mode drive: robot {rd['name']} has no arm.folded in its robot.yaml")
     if reach:
         if (out / start_design.REQUEST_FILE).exists():
             raise SystemExit(f"{start_design.REQUEST_FILE} needs a clustered starts block, not mode reach")
@@ -330,8 +515,10 @@ def main(out, sel):
         # The base that puts the sampled grasp at reach d (facing the object), turned about the arm's first joint.
         grasp_obj = np.array(A["object"]["grasps"][0]["pose_obj"][:3])
         pivot = rb.first_joint_xy()
+        bearing = None if spec.bearing_deg is None else np.radians(spec.bearing_deg)
         starts = start_design.reach_starts(
-            seed, attempts, spec, lambda d: rb.base_for_reach(grasp_obj, start_design.FACING_YAW_OBJ, d=d), pivot)
+            seed, attempts, spec, lambda d: rb.base_for_reach(grasp_obj, start_design.FACING_YAW_OBJ, bearing, d=d),
+            pivot)
 
     from automoma.core.types import TrajResult
     from automoma.planning.pipeline import PlanningPipeline
@@ -439,6 +626,18 @@ def main(out, sel):
                  base_yaw_world=[float(w[:, 2].min()), float(w[:, 2].max())],
                  base_start_world=w[0, :3].tolist(), base_end_world=w[-1, :3].tolist(),
                  **{f"door_final_{unit}": float(door[r["attempt_id"], -1])})
+    drive_in, sequenced = {}, {}
+    if drive:
+        t = now()
+        args = (planner, robot_cfg, rows, starts, start_design.drive_attempts(seed, attempts, spec),
+                traj, nq, [float(x) for x in rd["arm"]["folded"]], standoff, obj, jn)
+        if spec.sequence == "drive_then_arm":
+            sequenced = plan_sequenced(*args, rb)
+            drive_in = {a: v[:2] for a, v in sequenced.items()}
+        else:
+            drive_in = plan_drive_in(*args)
+        T["drive_in_s"] = now() - t
+
     smi.terminate()
     smi.wait()
     smi_log.seek(0)
@@ -446,10 +645,21 @@ def main(out, sel):
 
     jnames = robot_cfg["kinematics"]["cspace"]["joint_names"]
     success = np.array([r["success"] for r in rows])
+    arrays = {}
+    if drive:
+        n = max([len(v[0]) for v in drive_in.values()], default=1)
+        rw, rl, rdt = np.zeros((len(rows), n, nq)), np.zeros(len(rows), int), np.zeros(len(rows))
+        for a, (pw, dt) in drive_in.items():
+            rw[a, :len(pw)], rl[a], rdt[a] = pw, len(pw), dt
+        arrays = dict(reach_world=rw, reach_len=rl, reach_dt=rdt)
+        if spec.sequence == "drive_then_arm":
+            arrays.update(reach_split=np.zeros(len(rows), int), pregrasp_arm=np.zeros((len(rows), rb.dof)))
+            for a, (_, _, split, qp) in sequenced.items():
+                arrays["reach_split"][a], arrays["pregrasp_arm"][a] = split, qp
     np.savez_compressed(
         out / "handoff.npz", joint_names=np.array(jnames), traj_robot_obj=traj, traj_robot_world=world,
         door_angle=door, tcp_world=tcp_world, success=success,
-        attempt_id=np.arange(len(rows)), grasp_id=np.array([r["grasp_id"] for r in rows]))
+        attempt_id=np.arange(len(rows)), grasp_id=np.array([r["grasp_id"] for r in rows]), **arrays)
     handoff = {
         "format": {
             "files": {"handoff.npz": "numpy arrays below, one row per attempt",
@@ -474,13 +684,29 @@ def main(out, sel):
         "grasps": {g: {k: v[k] for k in (ax, "pose_obj", "T_handle_grasp")}
                    for g, v in A["object"]["grasps"].items()},
         "attempts_detail": rows}
+    if drive:
+        handoff["format"]["reach_world"] = (f"(A, R, {nq}) the drive-in: world base + arm from the far start (arm "
+                                            "folded) to the staging pose, at reach_dt (A,) s, reach_len (A,) rows")
+        if spec.sequence == "drive_then_arm":
+            handoff["format"]["reach_world"] += (": drive (arm folded), pause, unfold (base still) to the pre-grasp; "
+                                                 "reach_split (A,) the last row before the unfold, pregrasp_arm (A, "
+                                                 f"{rb.dof}) the pre-grasp arm (pull start's base)")
     if reach:
         handoff["starts"] = {
-            "mode": "reach", "facing_yaw_obj": start_design.FACING_YAW_OBJ, "spec": vars(spec),
+            "mode": "drive" if drive else "reach", "facing_yaw_obj": start_design.FACING_YAW_OBJ, "spec": vars(spec),
             "sample": {f"grasp_{ax}": sample.grasp, "d_m": sample.d, "dyaw_deg": float(np.degrees(sample.dyaw))},
             "grasp_obj": grasp_obj.tolist(), "first_joint_xy": pivot.tolist(),
             "attempts": [{"attempt_id": st.attempt_id, "d_m": st.dx, "dyaw_deg": float(np.degrees(st.dyaw)),
                           "base_obj": [st.x, st.y, st.yaw]} for st in starts]}
+        if drive:
+            dr = start_design.drive_attempts(seed, attempts, spec)
+            handoff["starts"].update(
+                folded_arm=[float(x) for x in rd["arm"]["folded"]], slowdown=spec.slowdown, standoff_m=standoff,
+                sequence=spec.sequence,
+                drive_sample={"back_m": dr[0].back, "side_m": dr[0].side, "heading_deg": float(np.degrees(dr[0].heading))})
+            for at, d in zip(handoff["starts"]["attempts"], dr):
+                at.update(back_m=d.back, side_m=d.side, heading_deg=float(np.degrees(d.heading)),
+                          start_obj=next(r_["drive_start_obj"] for r_ in rows if r_["attempt_id"] == at["attempt_id"]))
     elif spec is not None:
         centres = (start_design.cluster_centres(centre_seed, spec, box) if request is None
                    else start_design.request_centres(request[1], spec, box))

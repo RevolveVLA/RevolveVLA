@@ -28,6 +28,7 @@ base:
   limits: [3.0, 3.0, 25.132741228718345]
 arm:
   ready: [0.0, -1.57, 1.57, 0.0, 0.0]   # folded, forearm forward, tool horizontal (closing vertical)
+  folded: [0.0, -1.70, 1.60, 1.30, 0.0]   # fully folded rest (a `drive` start), as mobile_so101_xl
   kp: [60.0, 60.0, 40.0, 20.0, 10.0]
   damping: [1.5, 1.5, 1.0, 0.6, 0.3]
   # above the STS3215 stall torque (2.94 N m at 12 V) so the feed-forward of the numerical damping does not

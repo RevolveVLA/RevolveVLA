@@ -41,15 +41,27 @@ def generator():
     return yaml.safe_load((HERE / "generator.yaml").read_text())
 
 
-def round_blocks(task, robot=None):
+def round_blocks(task, robot=None, variant=None):
     """The generator's per-task round blocks (starts, timing, pull) -> {KEY: block} for ROUND_<KEY> env, with
-    the task's `robots.<robot>` blocks over them (null drops a block); robot: default $REVOLVE_ROBOT."""
+    the task's `robots.<robot>` blocks over them (null drops a block), then those of `variants.<variant>.robots.
+    <robot>`; robot: default $REVOLVE_ROBOT, variant: default $REVOLVE_DATAGEN_VARIANT (unset: none). A variant
+    the task does not define for the robot is an error."""
+    robot = robot or os.environ.get(specs.ROBOT_ENV)
+    variant = variant or os.environ.get(specs.VARIANT_ENV) or None
     t = dict(generator().get("tasks", {}).get(task, {}))
-    for k, v in t.pop("robots", {}).get(robot or os.environ.get(specs.ROBOT_ENV), {}).items():
-        if v is None:
-            t.pop(k, None)
-        else:
-            t[k] = v
+    variants = t.pop("variants", {})
+    over = [t.pop("robots", {}).get(robot, {})]
+    if variant is not None:
+        if robot not in variants.get(variant, {}).get("robots", {}):
+            raise ValueError(f"datagen variant {variant!r}: generator.yaml tasks.{task}.variants has no "
+                             f"{variant}.robots.{robot}")
+        over.append(variants[variant]["robots"][robot])
+    for o in over:
+        for k, v in o.items():
+            if v is None:
+                t.pop(k, None)
+            else:
+                t[k] = v
     return t
 
 

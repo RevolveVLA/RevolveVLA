@@ -4,7 +4,7 @@ an accepted check the camera replay that records the episode (MCAP bag), until t
 episodes_per_seed accepted episodes or its planned attempts run out. `workers` seeds at a time.
 
   python components/datagen/generate.py --task T --seeds 0-9 --out runs/<exp>/turn_0/data \
-      [--episodes-per-seed 1] [--workers 2] [--attempts N]
+      [--episodes-per-seed 1] [--workers 2] [--attempts N] [--variant NAME]
   generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER) -> manifest
 
 Layout under out/ (ported from the earlier pipeline's plans/ check/ record/ stages):
@@ -245,6 +245,15 @@ class Generation:
         return e
 
 
+def set_variant(variant, task):
+    """$REVOLVE_DATAGEN_VARIANT = variant (the launchers pass it on to every job), checked against generator.yaml."""
+    import os
+    from revolve_common import specs
+    if variant:
+        os.environ[specs.VARIANT_ENV] = variant
+        specs_bridge.round_blocks(task)          # raises for a variant the task does not define for the robot
+
+
 def generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None):
     kw = {} if say is None else dict(say=say)
     return Generation(task, seeds, out, episodes_per_seed, workers, attempts, jobs, **kw).run()
@@ -259,7 +268,10 @@ def main(argv=None):
     ap.add_argument("--episodes-per-seed", type=int, default=1)
     ap.add_argument("--workers", type=int, default=2, help="seeds at a time (= planners on the GPU at once)")
     ap.add_argument("--attempts", type=int, default=None, help="trajopt problems per plan run (generator.yaml)")
+    ap.add_argument("--variant", default=None, help="generator.yaml tasks.<task>.variants.<name> (an experiment's "
+                                                     "datagen.variant): sets $REVOLVE_DATAGEN_VARIANT for the jobs")
     a = ap.parse_args(argv)
+    set_variant(a.variant, a.task)
     m = generate(a.task, parse_seeds(a.seeds), a.out, a.episodes_per_seed, a.workers, a.attempts)
     return 1 if any(r["state"] == "error" for r in m["seeds"].values()) else 0
 

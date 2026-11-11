@@ -32,6 +32,9 @@ base:
   limits: [3.0, 3.0, 25.132741228718345]
 arm:
   ready: [0.0, -1.57, 1.57, 0.0, 0.0]   # folded, forearm forward, tool horizontal (closing vertical)
+  # fully folded rest (a `drive` start): upper arm back, forearm folded over it, wrist down, the jaws in front of
+  # the chassis
+  folded: [0.0, -1.70, 1.60, 1.30, 0.0]
   # mobile_so101's x16 (gravity torque grows ~s^4), damping x22.6 (s^4.5: its damping ratio at inertia x s^5)
   kp: [960.0, 960.0, 640.0, 320.0, 160.0]
   damping: [34.0, 34.0, 22.6, 13.6, 6.8]

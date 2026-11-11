@@ -260,7 +260,9 @@ class Base(Strict):
 
 
 class Arm(Strict):
-    ready: list[float]               # the rest / IK-preference configuration [rad]
+    ready: list[float]               # the IK-preference configuration [rad]
+    # the fully folded rest pose [rad] (in the joint limits, clear of the chassis): a `drive` start's arm
+    folded: list[float] | None = None
     kp: list[float]
     damping: list[float]             # SDF <damping> [N m s/rad], fed forward by the controller
     tau_max: list[float]
@@ -316,7 +318,7 @@ class Robot(Strict):
         if self.implementation is None:
             self.implementation = self.name
         n = len(self.joints.arm)
-        for k in ("ready", "kp", "damping", "tau_max", "armature"):
+        for k in ("ready", "folded", "kp", "damping", "tau_max", "armature"):
             if getattr(self.arm, k) is not None and len(getattr(self.arm, k)) != n:
                 raise ValueError(f"arm.{k}: {len(getattr(self.arm, k))} values for {n} arm joints")
         return self
@@ -373,6 +375,9 @@ class Seeds(Strict):
 class Datagen(Strict):
     episodes_per_seed: int = Field(ge=1)
     workers: int = Field(ge=1)
+    # optional: a named variant of the datagen generator's per-task blocks (generator.yaml tasks.<task>.variants),
+    # passed to every job as $REVOLVE_DATAGEN_VARIANT; default: the task's own blocks
+    variant: str | None = None
 
 
 class Recovery(Strict):
@@ -423,6 +428,7 @@ class Resolved(BaseModel):
 
 # ------------------------------------------------------------------ loader
 ROBOT_ENV = "REVOLVE_ROBOT"          # the robot of task-level loads (the CLI sets it from the experiment)
+VARIANT_ENV = "REVOLVE_DATAGEN_VARIANT"   # an experiment's datagen.variant (unset: none)
 KINDS = {"experiments": Experiment, "tasks": Task, "robots": Robot, "scenes": Scene}
 FILES = {"tasks": "task.yaml", "robots": "robot.yaml", "scenes": "scene.yaml"}
 
@@ -432,9 +438,9 @@ class SpecError(ValueError):
 
 
 def robot_env():
-    """{REVOLVE_ROBOT: its value} when set: what a launcher passes on to a job's container."""
-    v = os.environ.get(ROBOT_ENV)
-    return {ROBOT_ENV: v} if v else {}
+    """{REVOLVE_ROBOT: its value} (and {REVOLVE_DATAGEN_VARIANT: its value}) when set: what a launcher passes on to
+    a job's container."""
+    return {k: os.environ[k] for k in (ROBOT_ENV, VARIANT_ENV) if os.environ.get(k)}
 
 
 def read_yaml(path):

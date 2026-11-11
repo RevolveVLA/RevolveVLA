@@ -1,13 +1,16 @@
-"""start_design's `mode: reach` starts block (host only, no docker): parsing, the per-seed sample (deterministic,
-in range), the attempts (attempt 0 = the sample, the rest small jitters) and the turn about the first joint axis."""
+"""start_design's `mode: reach` and `mode: drive` starts blocks (host only, no docker): parsing, the per-seed sample
+(deterministic, in range), the attempts (attempt 0 = the sample, the rest small jitters), the turn about the first
+joint axis, the drive block's far start box, the optional keys and the opt-in datagen variants."""
 import math
 
 import pytest
 
 import specs_bridge
 import start_design as S
+from revolve_common import specs
 
 BLOCK = dict(mode="reach", grasp_m=[-0.10, 0.10], d_m=[0.68, 0.76], yaw_half_deg=8.0, jitter_m=0.01, jitter_deg=1.0)
+DRIVE = dict(BLOCK, mode="drive", back_m=[1.0, 1.6], side_m=[-0.3, 0.3], heading_half_deg=20.0, slowdown=2.0)
 
 
 def test_parse():
@@ -24,8 +27,74 @@ def test_parse():
 
 def test_xl_block_is_data():
     blocks = specs_bridge.round_blocks("open_drawer", "mobile_so101_xl")
-    assert S.parse_starts(blocks["starts"]) == S.parse_starts(BLOCK)
+    assert S.parse_starts(blocks["starts"]) == S.parse_starts(DRIVE)
     assert "starts" not in specs_bridge.round_blocks("open_drawer", "mobile_so101")
+
+
+def test_parse_drive():
+    spec = S.parse_starts(DRIVE)
+    assert isinstance(spec, S.DriveSpec) and isinstance(spec, S.ReachSpec)
+    assert (spec.back_m, spec.side_m, spec.heading_half_deg, spec.slowdown) == ((1.0, 1.6), (-0.3, 0.3), 20.0, 2.0)
+    assert spec.window_half_deg == 21.0          # the start heading and its jitter bound the base yaw
+    for bad in (dict(DRIVE, back_m=[0.0, 1.6]), dict(DRIVE, back_m=[1.6, 1.0]), dict(DRIVE, side_m=[0.3]),
+                dict(DRIVE, heading_half_deg=60), dict(DRIVE, slowdown=0.5), {k: v for k, v in DRIVE.items() if k != "back_m"},
+                dict(DRIVE, mode="fly")):
+        with pytest.raises(ValueError):
+            S.parse_starts(bad)
+
+
+def test_optional_bearing_and_sequence():
+    """bearing_deg and sequence are optional (defaults: the robot's reach bearing, simultaneous) and checked."""
+    spec = S.parse_starts(DRIVE)
+    assert spec.bearing_deg is None and spec.sequence == "simultaneous"
+    spec = S.parse_starts(dict(DRIVE, bearing_deg=40.0, sequence="drive_then_arm"))
+    assert spec.bearing_deg == 40.0 and spec.sequence == "drive_then_arm"
+    assert S.parse_starts(dict(BLOCK, bearing_deg=-20)).bearing_deg == -20.0
+    for bad in (dict(DRIVE, sequence="arm_first"), dict(DRIVE, bearing_deg=120), dict(BLOCK, sequence="drive_then_arm")):
+        with pytest.raises(ValueError):
+            S.parse_starts(bad)
+
+
+def test_variant_blocks_are_opt_in(monkeypatch):
+    """A datagen variant (generator.yaml tasks.<task>.variants) applies only when named; unknown ones fail."""
+    monkeypatch.delenv(specs.VARIANT_ENV, raising=False)
+    default = specs_bridge.round_blocks("open_fridge_door", "mobile_panda")
+    assert isinstance(S.parse_starts(default["starts"]), S.StartsSpec)
+    seq = S.parse_starts(specs_bridge.round_blocks("open_fridge_door", "mobile_panda", "drive_seq")["starts"])
+    assert isinstance(seq, S.DriveSpec) and seq.sequence == "drive_then_arm" and seq.grasp_m == (0.965, 1.085)
+    monkeypatch.setenv(specs.VARIANT_ENV, "drive_seq")
+    assert specs_bridge.round_blocks("open_fridge_door", "mobile_panda")["starts"]["sequence"] == "drive_then_arm"
+    assert specs_bridge.round_blocks("open_fridge_door", "mobile_panda")["timing"] == default["timing"]
+    for task, robot in (("open_drawer", "mobile_panda"), ("open_fridge_door", "mobile_so101_xl")):
+        with pytest.raises(ValueError):
+            specs_bridge.round_blocks(task, robot)
+
+
+def test_drive_sample_box_and_attempts():
+    spec = S.parse_starts(DRIVE)
+    h = math.radians(20.0)
+    got = []
+    for seed in range(300):
+        d = S.drive_sample(seed, spec)
+        assert d == S.drive_sample(seed, spec)
+        assert 1.0 <= d.back <= 1.6 and -0.3 <= d.side <= 0.3 and -h <= d.heading <= h
+        # the reach part (grasp, d, turn) is the reach block's sample of the seed
+        assert S.reach_sample(seed, spec) == S.reach_sample(seed, S.parse_starts(BLOCK))
+        att = S.drive_attempts(seed, 5, spec)
+        assert att[0] == d and all(abs(a.back - d.back) <= 0.01 + 1e-12 and abs(a.side - d.side) <= 0.01 + 1e-12
+                                   and abs(a.heading - d.heading) <= math.radians(1) + 1e-12 for a in att[1:])
+        got.append(d)
+    # the box is covered to its edges
+    assert min(x.back for x in got) < 1.02 and max(x.back for x in got) > 1.58
+    assert min(x.side for x in got) < -0.28 and max(x.side for x in got) > 0.28
+    assert min(x.heading for x in got) < -0.95 * h and max(x.heading for x in got) > 0.95 * h
+
+
+def test_drive_start_is_behind_the_reach_base():
+    reach = (1.40, 0.05, math.pi + 0.1)          # facing the cabinet (-x), turned 0.1 rad
+    st = S.drive_start(reach, S.DriveSample(back=1.2, side=0.25, heading=math.radians(-15)))
+    # facing -x: back = +x, left of the facing = -y; the heading from the facing, not from the reach turn
+    assert st == pytest.approx((2.60, -0.20, math.pi - math.radians(15)))
 
 
 def test_same_seed_same_sample():

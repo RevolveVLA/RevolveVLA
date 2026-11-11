@@ -16,6 +16,13 @@ point along the task's grasp axis, the reach distance d of Robot.base_for_reach 
 base turn about the arm's first joint axis (the first joint turns back by the same angle, so the arm keeps its
 pose: the only base freedom a 5-DoF arm has at a fixed grasp, besides d). Attempt 0 is the sample; the other
 attempts jitter d by up to jitter_m and the turn by up to jitter_deg, never the grasp.
+
+A block with `mode: drive` (DriveSpec) is a reach block (the grasp and the base at the grasp, as above) plus a far
+start the robot drives in from with its arm folded (robot.yaml arm.folded): per seed the start base is back_m behind
+the reach base (away from the object, along the facing), side_m sideways and turned heading_half_deg from the facing
+(three more seeded generators). Attempts after the first jitter the start by jitter_m / jitter_deg too.
+Optional keys: `bearing_deg` (reach and drive: the grasp direction left of the arm's forward axis at the unturned
+base, default robot.yaml reach.bearing_rad) and `sequence` (drive: SEQUENCES).
 """
 import json
 import math
@@ -68,6 +75,8 @@ class ReachSpec:
     yaw_half_deg: float             # base turn about the arm's first joint axis, +- this
     jitter_m: float                 # attempts after the first: d +- this
     jitter_deg: float               # and the turn +- this
+    bearing_deg: float | None = None    # optional: the grasp this far left of the arm's forward axis at the
+                                        # unturned base (default: robot.yaml reach.bearing_rad)
 
     @property
     def window_half_deg(self):
@@ -83,6 +92,33 @@ class ReachSample:
 
 _REACH_TABLE = {"yaw_half_deg": ("number", 0, 30, False), "jitter_m": ("number", 0, 0.03, False),
                 "jitter_deg": ("number", 0, 3, False)}
+_REACH_OPTIONAL = {"bearing_deg": ("number", -90, 90, False)}
+
+
+@dataclass(frozen=True)
+class DriveSpec(ReachSpec):
+    back_m: tuple[float, float] = (0.0, 0.0)       # start base behind the reach base, along the facing, low / high
+    side_m: tuple[float, float] = (0.0, 0.0)       # sideways (left of the facing +), low / high
+    heading_half_deg: float = 0.0                  # start heading = facing +- this
+    slowdown: float = 1.0                          # the drive-in plan's time steps x this in the replay
+    sequence: str = "simultaneous"                 # optional: drive_then_arm = drive (arm folded), then unfold
+
+    @property
+    def window_half_deg(self):
+        return max(self.yaw_half_deg, self.heading_half_deg) + self.jitter_deg
+
+
+@dataclass(frozen=True)
+class DriveSample:
+    back: float                     # m
+    side: float                     # m
+    heading: float                  # rad, from the facing
+
+
+_DRIVE_TABLE = {"heading_half_deg": ("number", 0, 45, False), "slowdown": ("number", 1, 10, False)}
+# simultaneous: one whole-body drive-in (base and arm unfolding together); drive_then_arm: the base drives with the
+# arm folded and still, then the base stays put while the arm unfolds to the pre-grasp and goes in to the grasp.
+SEQUENCES = ("simultaneous", "drive_then_arm")
 
 
 def _check_value(key, v, table=_TABLE):
@@ -120,22 +156,43 @@ def _check_keys(block, fields, optional, what):
 
 def parse_reach(block: Mapping) -> ReachSpec:
     """The checked ReachSpec of a `mode: reach` starts block."""
-    _check_keys(block, ["mode", *ReachSpec.__dataclass_fields__], {}, "mode reach")
+    fields = ["mode", *(k for k in ReachSpec.__dataclass_fields__ if k not in _REACH_OPTIONAL)]
+    _check_keys(block, fields, _REACH_OPTIONAL, "mode reach")
     for key in _REACH_TABLE:
         _check_value(key, block[key], _REACH_TABLE)
+    if "bearing_deg" in block:
+        _check_value("bearing_deg", block["bearing_deg"], _REACH_OPTIONAL)
     return ReachSpec(_range("grasp_m", block["grasp_m"]), _range("d_m", block["d_m"], positive=True),
-                     float(block["yaw_half_deg"]), float(block["jitter_m"]), float(block["jitter_deg"]))
+                     float(block["yaw_half_deg"]), float(block["jitter_m"]), float(block["jitter_deg"]),
+                     float(block["bearing_deg"]) if "bearing_deg" in block else None)
 
 
-def parse_starts(block: Mapping) -> StartsSpec | ReachSpec:
-    """The checked spec of a starts block: a ReachSpec for `mode: reach`, else a StartsSpec (D0 types and ranges,
-    then feasibility)."""
+def parse_drive(block: Mapping) -> DriveSpec:
+    """The checked DriveSpec of a `mode: drive` starts block."""
+    optional = [*_REACH_OPTIONAL, "sequence"]
+    fields = ["mode", *(k for k in DriveSpec.__dataclass_fields__ if k not in optional)]
+    _check_keys(block, fields, optional, "mode drive")
+    for key in _DRIVE_TABLE:
+        _check_value(key, block[key], _DRIVE_TABLE)
+    sequence = block.get("sequence", SEQUENCES[0])
+    if sequence not in SEQUENCES:
+        raise ValueError(f"starts.sequence: {sequence!r}, want one of {list(SEQUENCES)}")
+    reach = parse_reach({k: block[k] for k in ["mode", *ReachSpec.__dataclass_fields__] if k in block})
+    back = _range("back_m", block["back_m"], positive=True)
+    return DriveSpec(**vars(reach), back_m=back, side_m=_range("side_m", block["side_m"]),
+                     heading_half_deg=float(block["heading_half_deg"]), slowdown=float(block["slowdown"]),
+                     sequence=sequence)
+
+
+def parse_starts(block: Mapping) -> StartsSpec | ReachSpec | DriveSpec:
+    """The checked spec of a starts block: a ReachSpec for `mode: reach`, a DriveSpec for `mode: drive`, else a
+    StartsSpec (D0 types and ranges, then feasibility)."""
     if not isinstance(block, Mapping):
         raise ValueError(f"starts: {type(block).__name__} is not a mapping")
     if "mode" in block:
-        if block["mode"] != "reach":
-            raise ValueError(f"starts.mode: {block['mode']!r}, want 'reach' (or no mode: clustered starts)")
-        return parse_reach(block)
+        if block["mode"] not in ("reach", "drive"):
+            raise ValueError(f"starts.mode: {block['mode']!r}, want 'reach' or 'drive' (or no mode: clustered starts)")
+        return parse_reach(block) if block["mode"] == "reach" else parse_drive(block)
     fields = list(StartsSpec.__dataclass_fields__)
     if set(block) != set(fields):
         raise ValueError(f"starts: sub-keys {sorted(block)}, want {fields}")
@@ -339,6 +396,32 @@ def reach_starts(seed: int, attempts: int, spec: ReachSpec, base_for_reach, pivo
         x, y, yaw = turn_about(base_for_reach(d), pivot_xy, dyaw)
         out.append(Start(a, 0, 0, x, y, yaw, d, 0.0, dyaw))
     return out
+
+
+def drive_sample(seed: int, spec: DriveSpec) -> DriveSample:
+    """The seed's far start relative to its reach base: uniform in the block's box, one seeded generator each."""
+    _nonneg_int(seed, "seed")
+    h = math.radians(spec.heading_half_deg)
+    return DriveSample(float(_rng(seed, 4).uniform(*spec.back_m)), float(_rng(seed, 5).uniform(*spec.side_m)),
+                       float(_rng(seed, 6).uniform(-h, h)))
+
+
+def drive_attempts(seed: int, attempts: int, spec: DriveSpec) -> list[DriveSample]:
+    """The far start per attempt: attempt 0 the seed's sample, the others jittered by up to jitter_m (back, side)
+    and jitter_deg (heading)."""
+    _nonneg_int(attempts, "attempts")
+    s = drive_sample(seed, spec)
+    u = _rng(seed, 7).uniform(-1.0, 1.0, size=(max(attempts - 1, 0), 3))
+    jit = [(0.0, 0.0, 0.0)] + [(spec.jitter_m * a, spec.jitter_m * b, math.radians(spec.jitter_deg) * c) for a, b, c in u]
+    return [DriveSample(s.back + a, s.side + b, s.heading + c) for a, b, c in jit[:attempts]]
+
+
+def drive_start(reach_base, sample: DriveSample, facing: float = FACING_YAW_OBJ) -> tuple[float, float, float]:
+    """The far start base (x, y, yaw) of a reach base: back along -facing, sideways to its left, heading from the
+    facing (not from the reach base's turn)."""
+    x, y, _ = (float(v) for v in reach_base)
+    c, s = math.cos(facing), math.sin(facing)
+    return x - sample.back * c - sample.side * s, y - sample.back * s + sample.side * c, facing + sample.heading
 
 
 def ik_seed(start: Start, arm: tuple[float, ...]) -> tuple[float, ...]:

@@ -24,6 +24,9 @@ base:
   limits: [3.0, 3.0, 25.132741228718345]   # +-3 m, +-8 pi
 arm:
   ready: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  # fully folded rest (a `drive` start): elbow fully tucked (q4 near its limit), hand down above the chassis
+  # (TCP 0.36 m ahead, 0.91 m up). q2 further back makes the link1 / link3 capsules overlap.
+  folded: [0.0, -1.10, 0.0, -2.95, 0.0, 1.85, 0.785]
   # P gains: roughly I*w^2 for w = 25 rad/s, with per-joint inertia estimates; torques clipped to the Panda's limits
   kp: [940.0, 1250.0, 312.0, 437.0, 31.0, 31.0, 6.0]
   damping: [75.0, 100.0, 25.0, 35.0, 2.5, 2.5, 0.5]

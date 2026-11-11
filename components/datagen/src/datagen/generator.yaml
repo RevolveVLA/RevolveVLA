@@ -69,6 +69,19 @@ tasks:
     starts: {clusters: 10, per_cluster: 10, box_m: 0.40, yaw_half_deg: 30, offset_m: 0.03, offset_deg: 3,
              nominal_arm: ready}
     timing: {settle_s: 0.0, close_s: 1.0, grip_settle_s: 0.0, pull_start_s: 0.77, hold_s: 1.7}
+    # Named variants (opt-in: an experiment's datagen.variant, generate.py / starts.py --variant), per robot, over
+    # the blocks above. drive_seq: the folded drive-in demo (`mode: drive`, see open_drawer below) with the grasp
+    # height continuous along the bar handle (grasp_m = TCP z, model frame) and `sequence: drive_then_arm` (drive with
+    # the arm folded, then unfold with the base still, then the whole-body pull). Panda reach: bearing 40 +- 10 deg,
+    # d 0.60-0.70 m (pinned-base IK of grasp + 0.12 m pre-grasp at z 0.965 / 1.025 / 1.085: all reachable with
+    # joint margin >= 0.41 rad there; bearing 0 has no IK, +-10 deg <= 0.09 rad margin).
+    variants:
+      drive_seq:
+        robots:
+          mobile_panda:
+            starts: {mode: drive, grasp_m: [0.965, 1.085], d_m: [0.60, 0.70], yaw_half_deg: 10.0, bearing_deg: 40.0,
+                     jitter_m: 0.01, jitter_deg: 1.0, back_m: [1.0, 1.6], side_m: [-0.3, 0.3], heading_half_deg: 20.0,
+                     slowdown: 2.0, sequence: drive_then_arm}
   open_drawer:
     starts: {clusters: 10, per_cluster: 10, box_m: 0.40, yaw_half_deg: 30, offset_m: 0.03, offset_deg: 3,
              nominal_arm: ready}
@@ -80,8 +93,12 @@ tasks:
     # or a `mode: reach` block (start_design.ReachSpec): per seed one grasp along the bar (grasp_m, model y), the
     # reach d_m of Robot.base_for_reach and a base turn of +-yaw_half_deg about the arm's first joint; attempts
     # after the first jitter d by jitter_m and the turn by jitter_deg.
+    # A `mode: drive` block (start_design.DriveSpec) is a reach block plus a far start the robot drives in from
+    # with its arm folded (robot.yaml arm.folded): back_m behind the reach base, side_m sideways, the heading
+    # +-heading_half_deg from facing the cabinet; the drive-in (a whole-body cuRobo plan to the staging pose)
+    # replays at slowdown x its planned time steps.
     robots:
       mobile_so101: {starts: null}
       mobile_so101_xl:
-        starts: {mode: reach, grasp_m: [-0.10, 0.10], d_m: [0.68, 0.76], yaw_half_deg: 8.0, jitter_m: 0.01,
-                 jitter_deg: 1.0}
+        starts: {mode: drive, grasp_m: [-0.10, 0.10], d_m: [0.68, 0.76], yaw_half_deg: 8.0, jitter_m: 0.01,
+                 jitter_deg: 1.0, back_m: [1.0, 1.6], side_m: [-0.3, 0.3], heading_half_deg: 20.0, slowdown: 2.0}

@@ -45,6 +45,7 @@ def start(arg, resume):
     r = specs.load_experiment(spec)
     exp = r.experiment.name
     os.environ[specs.ROBOT_ENV] = r.robot.name     # the experiment's robot, passed to the manager (container_kw)
+    L.set_variant_env(r.experiment)                # and its datagen variant
     paths = P.Paths(REPO / "runs" / exp)
     have = (paths.exp / "state.json").is_file()
     if resume and not have:

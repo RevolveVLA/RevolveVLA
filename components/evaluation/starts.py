@@ -15,6 +15,7 @@ hand-picked eval rounds; here the seed sets are disjoint by construction, specs.
 
   resolve(task, seeds, out, sources=(), workers=2, jobs=G.DOCKER) -> {seed: start record}
   python components/evaluation/starts.py --task T --seeds 100-103 --out runs/<exp>/starts [--source DATAGEN_OUT ...]
+      [--variant NAME]
 
 sources: datagen output dirs (generate.py: manifest.json + checks/) searched first, e.g. turn 0's data for
 train seeds or a test cache; else plan + check jobs run into <out>/plans/seed_<S>/, <out>/checks/seed_<S>_a<A>/.
@@ -125,7 +126,9 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--source", nargs="*", default=[], help="datagen output dirs to take accepted checks from first")
     ap.add_argument("--workers", type=int, default=2, help="seeds planned at once (GPU planners)")
+    ap.add_argument("--variant", default=None, help="datagen variant (an experiment's datagen.variant), as generate.py")
     a = ap.parse_args(argv)
+    G.set_variant(a.variant, a.task)
     recs = resolve(a.task, G.parse_seeds(a.seeds), a.out, a.source, a.workers)
     for s, r in recs.items():
         print(f"seed {s}: {r['dir']} ({r['source']}), base {np.round(r['spawn']['base'], 3).tolist()}")

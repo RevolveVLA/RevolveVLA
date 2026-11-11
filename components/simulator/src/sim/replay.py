@@ -24,6 +24,16 @@ Episode built from the gz skill building blocks (Plan, Scenario, skills.close) f
   hold      hold_s at the last waypoint, handle grasped (door or drawer open, slip check)
   release   open 1.5 s, base back out retreat_m along the hand axis, hold 0.5 s
 
+A plan with a drive-in (handoff.npz reach_world: a datagen `mode: drive` starts block, plan.py) spawns at its far
+start instead, the arm folded, and replays the drive-in (the planner's rows at reach_dt x the block's slowdown,
+handoff.json starts.slowdown; linear in between) as "drive in", then "drive in settle" (DRIVE_SETTLE_S, min-jerk)
+onto the exact staging pose (the pull start's arm, its base standoff_m back along the hand axis); the episode goes
+on from there as above. The replay budget grows by those two segments.
+A drive_then_arm drive-in (handoff.json starts.sequence, plan.py plan_sequenced: drive with the arm folded, pause,
+unfold with the base still) adds an "unfold" event where the arm starts to move (handoff.npz reach_split), settles
+onto the pull start's base with the pre-grasp arm (pregrasp_arm), and goes in by arm: "approach in" moves the arm
+joints from the pre-grasp to the pull start's (min-jerk), the base still.
+
 With the round's `timing` block (env ROUND_TIMING, core.round_key_env) the replay takes settle_s,
 close_s, grip_settle_s, pull_start_s and hold_s from it, on the 10 ms plan grid (timed_grasp):
 no settle event at 0 s, the pull starts pull_start_s after the close command (the close may run
@@ -52,13 +62,14 @@ from robots.base import CONTROL_DT, PLAN_DT, Plan, wrap
 from validation import spawn_check, verdict
 
 SUBTASKS = ("approach", "grasp", "pull", "hold", "release")
-SUBTASK_START = {"settle": "approach", "grip close": "grasp", "pull": "pull",
+SUBTASK_START = {"drive in": "approach", "settle": "approach", "grip close": "grasp", "pull": "pull",
                  "check door_open": "hold", "check drawer_open": "hold", "release": "release"}
 CLEARANCE_EVERY = 5          # plan rows (10 ms) between clearance samples
 GRASP_CHECK_S = 0.5          # grasp check hold before the pull [s]
 # With a timing block the grasp check is the first plan row of the pull. gz takes the handle's slip
 # reference at the window end, so it must come before the 5-9 mm in-hand transient of the pull start.
 TIMED_GRASP_CHECK_S = PLAN_DT
+DRIVE_SETTLE_S = 0.5         # a drive-in's end -> the exact staging pose [s]
 
 
 def hand_axis_xy(q, base, robot=None):
@@ -73,7 +84,7 @@ def hold_rows(P, rows, label):
         P.rows += [(P.b.copy(), P.q.copy(), P.g, P.f) for _ in range(rows)]
 
 
-def timed_grasp(P, b0, rp, t):
+def timed_grasp(P, approach, rp, t):
     """Settle, approach and close of a timing block t: settle_s, base in over approach_s, the
     gripper closes over close_s, and the pull starts pull_start_s after the close command. A gap
     before the pull holds: 'grip settle' up to grip_settle_s, then 'grip wait'. Returns the
@@ -81,7 +92,7 @@ def timed_grasp(P, b0, rp, t):
     rows carry them."""
     n = lambda s: int(round(s / PLAN_DT))
     hold_rows(P, n(t["settle_s"]), "settle")
-    P.drive(b0, rp["approach_s"], label="approach in")
+    approach()
     k = len(P.rows) + n(t["pull_start_s"])
     P.gripper(P.robot.gripper.closed_m, t["close_s"], label="grip close")
     rest = [r[2] for r in P.rows[k:]]
@@ -89,6 +100,26 @@ def timed_grasp(P, b0, rp, t):
     hold_rows(P, min(n(t["grip_settle_s"]), k - len(P.rows)), "grip settle")
     hold_rows(P, k - len(P.rows), "grip wait")
     return rest
+
+
+def drive_in(P, D, dt, b_stage, q_stage, split=None):
+    """The drive-in rows D (n, 3 + dof; world base, arm) at dt s, linear in between, then a min-jerk settle onto
+    the staging pose (b_stage, q_stage); an "unfold" event after row split when given. Returns the two segments'
+    duration [s]."""
+    t_d = np.arange(len(D)) * dt
+    P.events.append((P.t, "drive in", dict(duration_s=float(t_d[-1]), dt_s=dt)))
+    for ts in np.arange(1, round(t_d[-1] / PLAN_DT) + 1) * PLAN_DT:
+        if split is not None and abs(ts - t_d[split]) < PLAN_DT / 2:
+            P.events.append((P.t, "unfold", dict(duration_s=float(t_d[-1] - t_d[split]))))
+        x = np.array([np.interp(ts, t_d, D[:, i]) for i in range(D.shape[1])])
+        P.b, P.q = x[:3], x[3:]
+        P.rows.append((P.b.copy(), P.q.copy(), P.g, P.f))
+    b1, q1 = P.b.copy(), P.q.copy()
+
+    def blend(s):
+        P.b[:], P.q[:] = b1 + s * (b_stage - b1), q1 + s * (q_stage - q1)
+    P._push(DRIVE_SETTLE_S, "drive in settle", None, blend)
+    return float(t_d[-1]) + DRIVE_SETTLE_S
 
 
 def build(run, attempt, task, robot, timing=None, pull=None):
@@ -107,21 +138,43 @@ def build(run, attempt, task, robot, timing=None, pull=None):
     W = h["traj_robot_world"][k, 4:, :3 + R.dof].copy()     # 32 waypoints: base x, y, yaw, arm
     clipped = float(np.abs(np.clip(W[:, 3:], R.lower, R.upper) - W[:, 3:]).max())
     W[:, 3:] = np.clip(W[:, 3:], R.lower, R.upper)         # cuRobo rounds the limits outwards
-    yaw_offset = wrap(W[0, 2]) - W[0, 2]                   # 2 pi k: spawn yaw in (-pi, pi]
+    drive = "reach_world" in h.files
+    sequenced = drive and meta["starts"].get("sequence") == "drive_then_arm"
+    if drive:                                              # spawn at the drive-in's far start
+        D = h["reach_world"][k][: int(h["reach_len"][k])].copy()
+        D[:, 3:] = np.clip(D[:, 3:], R.lower, R.upper)
+        D[:, 2] += wrap(D[0, 2]) - D[0, 2]                 # spawn yaw in (-pi, pi]
+        yaw_offset = D[-1, 2] + wrap(W[0, 2] - D[-1, 2]) - W[0, 2]   # the pull on the drive-in's branch
+    else:
+        yaw_offset = wrap(W[0, 2]) - W[0, 2]               # 2 pi k: spawn yaw in (-pi, pi]
     W[:, 2] += yaw_offset
     b0, q0 = W[0, :3], W[0, 3:]
 
     sc = sk.Scenario(f"automoma_{run.name}_{attempt}")
-    # spawn: staging base, arm at q0, gripper open (Scenario's own Plan starts at BASE0, READY)
-    sc.P = P = Plan(R, b0 - rp["standoff_m"] * hand_axis_xy(q0, b0, R), q0)
+    stage = b0 - rp["standoff_m"] * hand_axis_xy(q0, b0, R)
+    drive_s = 0.0
+    if sequenced:                                          # in by arm from the pre-grasp, the base at b0
+        q_pre = np.clip(h["pregrasp_arm"][k], R.lower, R.upper)
+        sc.P = P = Plan(R, D[0, :3], D[0, 3:])
+        drive_s = drive_in(P, D, float(h["reach_dt"][k]) * float(meta["starts"]["slowdown"]), b0, q_pre,
+                           split=int(h["reach_split"][k]))
+        approach = functools.partial(P.arm_joints, q0, rp["approach_s"], label="approach in")
+    else:
+        if drive:
+            sc.P = P = Plan(R, D[0, :3], D[0, 3:])
+            drive_s = drive_in(P, D, float(h["reach_dt"][k]) * float(meta["starts"]["slowdown"]), stage, q0)
+        else:
+            # spawn: staging base, arm at q0, gripper open (Scenario's own Plan starts at BASE0, READY)
+            sc.P = P = Plan(R, stage, q0)
+        approach = functools.partial(P.drive, b0, rp["approach_s"], label="approach in")
     pull_grip = []
     if timing is None:
         P.hold(rp["settle_s"], "settle")
-        P.drive(b0, rp["approach_s"], label="approach in")
+        approach()
         sk.close(P)                                        # "grip close" 1.5 s, "grip settle" 0.5 s
         sc.check("grasped", GRASP_CHECK_S, obj=obj)
     else:
-        pull_grip = timed_grasp(P, b0, rp, timing)
+        pull_grip = timed_grasp(P, approach, rp, timing)
     T = max(tm["pull_min_s"], tm["pull_slowdown"] * det["duration_hint_s"])
     if timing is not None:      # the plans repeat their first waypoint: drop that still dt at the pull start
         n0 = int(np.argmax(np.abs(W[1:] - W[0]).max(axis=1) > (pull["repeat_tol"] if pull else 0)))
@@ -140,7 +193,7 @@ def build(run, attempt, task, robot, timing=None, pull=None):
     P.gripper(R.gripper.open_m, 1.5, label="release")
     P.drive(P.b - rp["retreat_m"] * hand_axis_xy(P.q, P.b, R), rp["retreat_s"], label="retreat")
     P.hold(0.5, "done")
-    sc.info = dict(budget=rp["budget_s"])
+    sc.info = dict(budget=rp["budget_s"] + drive_s)
 
     vlim = np.array([R.base_v_max, R.base_v_max, R.base_w_max] +
                     [robot.joints[n]["velocity"] for n in R.arm_joints])
@@ -149,6 +202,13 @@ def build(run, attempt, task, robot, timing=None, pull=None):
                  **{key: det[key] for key in ("grasp_x", "grasp_y", "grasp_z") if key in det},
                  **{f"planned_{part}_final_{unit}": from_si(h["door_angle"][k, -1])},
                  yaw_offset_rad=yaw_offset, arm_clip_max_rad=clipped,
+                 **({"drive_in": dict(duration_s=drive_s, rows=len(D), start_world=D[0].tolist(),
+                                      end_vs_stage=float(np.abs(D[-1] - (np.r_[b0, q_pre] if sequenced
+                                                                         else np.r_[stage, q0])).max()),
+                                      base_m=float(np.linalg.norm(np.diff(D[:, :2], axis=0), axis=1).sum()),
+                                      **({"sequence": "drive_then_arm", "split_row": int(h["reach_split"][k])}
+                                         if sequenced else {}))}
+                    if drive else {}),
                  timing=dict(rule=f"uniform dt over the 32 waypoints, linear in between; pull = max("
                                   f"{tm['pull_min_s']} s, {tm['pull_slowdown']} x duration_hint_s)"
                                   + ("; repeats of the first waypoint dropped" if timing else ""),

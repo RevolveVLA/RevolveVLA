@@ -48,7 +48,8 @@ SIM = spec.HERE
 ALLOW = r"huge value in CTRL at ACTUATOR [0-9]+\. The simulation is unstable\. Time = 0\.0000"
 CAMERA_RE = re.compile(r"\n\s*<!-- Fixed scene camera.*?\n    </model>", re.S)
 SENSORS_RE = re.compile(r"\n\s*<plugin filename=\"gz-sim-sensors-system\".*?</plugin>", re.S)
-EPISODE_CAM = {"fridge": ("2.9 -2.6 2.6 0 0.44 2.33", "1.1"), "drawer": ("-0.6 -1.2 1.7 0 0.414 2.274", "0.9")}
+# drawer: wide enough for a drive-in from up to ~3 m out (the cabinet front and the start box, world x -2.3..0.7)
+EPISODE_CAM = {"fridge": ("2.9 -2.6 2.6 0 0.44 2.33", "1.1"), "drawer": ("0.9 -2.2 2.4 0 0.52 2.22", "1.25")}
 SMOKE_STATUS, SKILL_STATUS = "/robot/status", "/robot_skill/status"     # smoke_system / skill_system
 
 

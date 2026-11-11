@@ -143,7 +143,8 @@ class Manager:
         self.state = P.read(f) or P.new_state(self.e.name, self.spec)
         if self.state["spec_sha256"] != P.sha256(self.spec):
             raise SystemExit(f"{self.spec} changed since this experiment started (state.json spec_sha256); "
-                             f"restore it or start a new experiment under another name")
+                             f"restore it, `./revolve resume {self.e.name} --accept-spec-change` to carry on with it, or "
+                             f"start a new experiment under another name")
 
     def save(self):
         P.save(self.state, self.paths)

@@ -2,7 +2,9 @@
 
   run      builds revolve-manager if missing, starts the manager container (detached) on a NEW experiment;
            its output goes to runs/<exp>/manager.log
-  resume   the same on an existing runs/<exp>/state.json (done steps are kept, running ones re-attached)
+  resume   the same on an existing runs/<exp>/state.json (done steps are kept, running ones re-attached);
+           accept_spec_change: the yaml was edited since the run started (the manager refuses that otherwise):
+           its new sha256 goes into state.json, the old one into spec_changes; done steps are not redone
   status   seed x phase table per turn (first try) + the running step's live progress (training step / loss)
   stop     kills the manager, cancels the running step and every container it started; state "stopped"
 """
@@ -40,7 +42,7 @@ def manager_name(exp):
     return f"revolve-{exp}-manager"
 
 
-def start(arg, resume):
+def start(arg, resume, accept_spec_change=False):
     spec = spec_of(arg)
     r = specs.load_experiment(spec)
     exp = r.experiment.name
@@ -52,6 +54,14 @@ def start(arg, resume):
         raise SystemExit(f"nothing to resume: no {paths.exp / 'state.json'} (use ./revolve run {arg})")
     if not resume and have:
         raise SystemExit(f"{paths.exp} exists: ./revolve resume {exp} (or move it away for a fresh run)")
+    if resume and accept_spec_change:
+        st = P.read(paths.exp / "state.json")
+        new = P.sha256(spec)
+        if st["spec_sha256"] != new:
+            st.setdefault("spec_changes", []).append(dict(old=st["spec_sha256"], new=new,
+                                                          at=time.strftime("%Y-%m-%dT%H:%M:%S%z")))
+            st["spec_sha256"] = new
+            P.save(st, paths)
     dk = docker.from_env()
     m = L.get(dk, manager_name(exp))
     if m is not None and m.status == "running":

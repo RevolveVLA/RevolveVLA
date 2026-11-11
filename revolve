@@ -6,7 +6,9 @@
                                      training, evaluation, manager = unit + integration, integration)
   ./revolve run <experiment>         start an experiment loop (name under specs/experiments/ or a yaml path) in
                                      the manager container, detached; log runs/<exp>/manager.log
-  ./revolve resume <experiment>      restart the manager on runs/<exp>/state.json (re-attaches running steps)
+  ./revolve resume <experiment> [--accept-spec-change]   restart the manager on runs/<exp>/state.json (re-attaches
+                                     running steps); --accept-spec-change: continue after the yaml was edited (done
+                                     steps are kept as they are; the change is logged in state.json spec_changes)
   ./revolve status <experiment>      seed x phase table per turn + the running step's live progress
   ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
   ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
@@ -116,6 +118,8 @@ def main():
     t.add_argument("pytest_args", nargs=argparse.REMAINDER)
     for name in ("run", "resume", "status", "stop"):
         sub.add_parser(name).add_argument("experiment")
+    sub.choices["resume"].add_argument("--accept-spec-change", action="store_true",
+                                       help="the yaml changed since the run started: continue with the new one")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="+")
     a = ap.parse_args()
@@ -128,7 +132,8 @@ def main():
     sys.path[:0] = [str(REPO / "components" / "manager" / "src")]
     from manager import cli
     if a.cmd in ("run", "resume"):
-        return cli.start(a.experiment, resume=a.cmd == "resume")
+        return cli.start(a.experiment, resume=a.cmd == "resume",
+                         accept_spec_change=getattr(a, "accept_spec_change", False))
     return getattr(cli, a.cmd)(a.experiment)
 
 

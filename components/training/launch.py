@@ -1,7 +1,7 @@
 """Host side: run training and serve jobs in revolve-training (docker SDK) under revolve_common.wrapper.
 
   res = train(dataset, out, mode=..., base=..., prev=None, steps=..., batch_size=..., backend="local",
-              settings={})                       # -> out/ = the final checkpoint + train.json
+              settings={}, save_every=None)      # -> out/ = the final checkpoint + train.json (+ out_<step>/)
   res = train_from_spec(training, dataset, out, prev)   # the experiment's training block (specs.Training)
   job = start_train(...); res = finish(job)      # start = non-blocking; /status on job.ip():8000
   job = start_serve(ckpt, job_dir, network)      # policy server on an INTERNAL docker network only
@@ -106,7 +106,7 @@ def _job(job_dir, args, component_args, parser, timeout, linger_s, kw, name=None
 
 
 def start_train(dataset, out, *, mode="finetune_last", base="lerobot/smolvla_base", prev=None, steps, batch_size,
-                backend="local", settings=None, seed=1000, log_freq=10, num_workers=4, job_dir=None,
+                backend="local", settings=None, save_every=None, seed=1000, log_freq=10, num_workers=4, job_dir=None,
                 timeout=4 * 3600.0, linger_s=0.0, network=None) -> Job:
     out = Path(out)
     job_dir = job_dir or out.parent / "jobs" / f"train_{out.name}"
@@ -118,6 +118,8 @@ def start_train(dataset, out, *, mode="finetune_last", base="lerobot/smolvla_bas
             "--num-workers", num_workers, "--settings", json.dumps(settings or {}), "--job", name]
     if prev:
         args += ["--prev", prev]
+    if save_every:
+        args += ["--save-every", save_every]
     kw = _backend_kw(backend, _base_kw(gpu=backend == "local"))
     kw["network"] = network
     return _job(job_dir, args, dict(args=list(map(str, args))), "progress:parse", timeout, linger_s, kw)
@@ -131,7 +133,7 @@ def train_from_spec(training, dataset, out, prev=None, **kw) -> dict:
     """training: the experiment's specs.Training block (mode, base, steps, batch_size, backend, backends)."""
     return train(dataset, out, mode=training.mode, base=training.base, prev=prev, steps=training.steps,
                  batch_size=training.batch_size, backend=training.backend,
-                 settings=training.backends.get(training.backend, {}), **kw)
+                 settings=training.backends.get(training.backend, {}), save_every=training.save_every, **kw)
 
 
 def start_serve(ckpt, job_dir, network, name=None, device="cuda", port=8080, timeout=24 * 3600.0) -> Job:

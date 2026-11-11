@@ -146,10 +146,11 @@ def client_script(policy, out, start, prompt, contract, ckpt=None, server=None, 
 
 
 def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s=None, wait_s=None,
-        after_success_s=None, rtf=0.1, task=None, say=print, gui=False) -> dict:
+        after_success_s=None, rtf=0.1, task=None, say=print, gui=False, video=False) -> dict:
     """One rollout from `start` (a replay-accepted attempt dir, starts.py) into `out` (emptied first). restore:
     (a finished rollout dir, phase) = a retry from its phase_states/<phase>_start.npz. gui: the sim container also
-    shows the gz GUI on the host's X display (simulator launch.py gui_kw; not part of the verdict).
+    shows the gz GUI on the host's X display (simulator launch.py gui_kw; not part of the verdict). video: the
+    sim also renders the scene camera into <out>/video.mp4 (cli.py rollout --video; not part of the verdict).
     -> rollout.json's record."""
     if policy not in POLICIES:
         raise ValueError(f"policy {policy!r}: one of {POLICIES}")
@@ -198,6 +199,7 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
         for k, v in (("--budget-s", budget_s), ("--wait-s", wait_s), ("--after-success-s", after_success_s)):
             args += [k, v] if v is not None else []
         args += ["--gui"] if gui else []
+        args += ["--video"] if video else []
         sim = sim_launch.start(args, out / "jobs" / "sim", gpu=True, timeout=wall + SETUP_S, network=net.name,
                                image=SIM_ROS_IMAGE, name=f"{tag}-sim", labels={LABEL: tag},
                                env={"ROS_DOMAIN_ID": str(domain), "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4",

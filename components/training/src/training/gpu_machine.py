@@ -6,7 +6,8 @@ Per job everything lives in <scratch>/<job>/ and is deleted afterwards, whatever
   venv/, cache/{uv,python,hf,...}     the env, built there from the lock (legacy Machine.ensure_venv), every
                                       cache and HOME pointed inside, so nothing is written outside the job dir
   data/dataset/, init/                the dataset and the previous checkpoint (rsync)
-  out/lerobot/                        lerobot-train's output; the final pretrained_model/ is rsync'd back
+  out/lerobot/                        lerobot-train's output; the final pretrained_model/ is rsync'd back (with
+                                      save_every, each earlier one too while it trains: train.CheckpointCopier)
 Why a venv and not the image (`docker save | docker load`): the env is ~5.5 GB built from PyPI at the
 machine's ~55 MB/s vs ~6 GB of image pushed over the ~17 MB/s link, and the machine's disk had 14 GB free (a
 loaded image plus its tarball would not fit); the venv also needs no docker state outside the job dir.
@@ -104,8 +105,15 @@ def run(p: dict, settings: dict, job: str, on_line=None, stream=T.stream, runner
         token_check = ("venv/bin/python -c 'import huggingface_hub, sys; "
                        "sys.exit(3 if huggingface_hub.get_token() else 0)' || "
                        "{ echo 'train: refused, huggingface_hub finds a token'; exit 3; }; ")
-        rc = stream([*SSH, settings["host"], env + token_check + "exec nice -n 10 venv/bin/"
-                     + " ".join(shlex.quote(a) for a in T.argv(p, args))], dict(os.environ), on_line)
+        ck = f"{s}/out/lerobot/checkpoints"
+
+        def saved():
+            lines = r.sh(f"cd {shlex.quote(ck)} 2>/dev/null && readlink last && ls || true", timeout=60).split()
+            return T.saved_steps(lines[0], lines[1:]) if lines else []
+        with T.CheckpointCopier(p, saved, lambda n, dst: r.rsync(f"{settings['host']}:{ck}/{n}/pretrained_model/",
+                                                                 f"{dst}/")):
+            rc = stream([*SSH, settings["host"], env + token_check + "exec nice -n 10 venv/bin/"
+                         + " ".join(shlex.quote(a) for a in T.argv(p, args))], dict(os.environ), on_line)
         info["train_s"] = round(time.time() - t1, 1)
         if rc:
             return dict(rc=rc, ckpt=None, remote=info)

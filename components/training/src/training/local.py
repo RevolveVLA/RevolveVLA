@@ -10,4 +10,6 @@ def run(p: dict, settings: dict, job: str, on_line=None, stream=T.stream) -> dic
     """-> {"rc", "ckpt" (None: the final checkpoint under p["lerobot_out"])}."""
     T.refuse_token()
     T.progress(phase="train", backend="local")
-    return dict(rc=stream(T.argv(p), dict(os.environ), on_line), ckpt=None)
+    with T.local_copier(p):
+        rc = stream(T.argv(p), dict(os.environ), on_line)
+    return dict(rc=rc, ckpt=None)

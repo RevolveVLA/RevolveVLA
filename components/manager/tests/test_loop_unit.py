@@ -133,3 +133,39 @@ def test_gpu_dies_while_a_step_runs(manager, monkeypatch):
     a = m.state["turns"][0]["steps"]["eval_heldout"]["attempts"]
     assert len(a) == 1 and a[0]["state"] == "gpu_unhealthy" and "requires reset" in a[0]["error"]
     assert dk.containers.made[0].removed                      # the step was cancelled and removed
+
+
+def test_resume_accept_spec_change(tmp_path, monkeypatch):
+    """An edited yaml: the manager refuses it; resume --accept-spec-change records the new sha256 (old one in
+    spec_changes) and keeps the done steps."""
+    from manager import cli
+    name = "mt_accept_spec"
+    (tmp_path / "specs" / "experiments").mkdir(parents=True)
+    for d in ("tasks", "robots", "scenes"):
+        (tmp_path / "specs" / d).symlink_to(REPO / "specs" / d)
+    spec = tmp_path / "specs" / "experiments" / f"{name}.yaml"
+    spec.write_text(SPEC.read_text().replace("name: fridge_mini", f"name: {name}"))
+    paths = P.Paths(REPO / "runs" / name)
+    st = P.new_state(name, spec)
+    st["turns"][0]["steps"]["generate"]["state"] = "done"
+    paths.exp.mkdir(parents=True, exist_ok=True)
+    try:
+        P.save(st, paths)
+        spec.write_text(spec.read_text().replace("steps: 2000", "steps: 3000"))
+        monkeypatch.setattr(L.docker, "from_env", lambda: types.SimpleNamespace(containers=FakeContainers()))
+        with pytest.raises(SystemExit, match="--accept-spec-change"):
+            L.Manager(spec)
+        runs = []
+        fake = types.SimpleNamespace(containers=types.SimpleNamespace(
+            get=lambda n: (_ for _ in ()).throw(docker.errors.NotFound(n)), run=lambda *a, **kw: runs.append(a)),
+            images=types.SimpleNamespace(get=lambda i: None))
+        monkeypatch.setattr(cli.docker, "from_env", lambda: fake)
+        monkeypatch.setattr(L, "container_kw", lambda env=None: {})
+        assert cli.start(str(spec), resume=True, accept_spec_change=True) == 0 and len(runs) == 1
+        new = P.read(paths.exp / "state.json")
+        assert new["spec_sha256"] == P.sha256(spec) and new["spec_changes"][0]["old"] == st["spec_sha256"]
+        assert new["turns"][0]["steps"]["generate"]["state"] == "done"
+        L.Manager(spec)                                  # accepted: no refusal now
+    finally:
+        import shutil
+        shutil.rmtree(paths.exp, ignore_errors=True)

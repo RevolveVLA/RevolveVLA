@@ -83,6 +83,25 @@ def test_finalize_moves_last_step(tmp_path):
     assert json.loads((out / "train.json").read_text())["losses"] == [[2, 1.0], [4, 0.5]]
 
 
+def test_save_every_copies_earlier_checkpoints_locally(tmp_path):
+    p = T.plan(mode="from_base", dataset="/d", out=str(tmp_path / "ckpt"), base="b", steps=4, batch_size=1, save_every=2)
+    assert p["args"]["save_freq"] == 2
+    assert T.plan(mode="from_base", dataset="/d", out="/o", base="b", steps=4, batch_size=1)["args"]["save_freq"] == 4
+    ck = Path(p["lerobot_out"]) / "checkpoints"
+    with T.local_copier(p, every_s=3600) as c:
+        assert c.saved() == []                     # nothing saved yet
+        ckpt(ck / "000002" / "pretrained_model")
+        (ck / "last").symlink_to("000002")
+        ckpt(ck / "000004" / "pretrained_model")   # being written: `last` does not point at it yet
+        c.poll()
+        assert (tmp_path / "ckpt_000002" / "model.safetensors").is_file() and c.done == {"000002"}
+        os.remove(ck / "last")
+        (ck / "last").symlink_to("000004")
+    assert not (tmp_path / "ckpt_000004").exists()  # the final step is finalize()'s
+    assert T.saved_steps("garbage", ["000002"]) == [] and not T.local_copier(T.plan(
+        mode="from_base", dataset="/d", out="/o", base="b", steps=4, batch_size=1)).on
+
+
 class FakeRunner:
     """subprocess.run stand-in: records ssh / rsync calls; `fail` = substring of a command that exits 1."""
 
@@ -101,6 +120,8 @@ class FakeRunner:
             out = self.cleanup + "\n"
         elif "out/lerobot/checkpoints |" in text:
             out = "000020\n"
+        elif "readlink last" in text:              # CheckpointCopier: `last` -> 000010, then the listing
+            out = "000010\n000010\nlast\n"
         return subprocess.CompletedProcess(cmd, 0, out, "")
 
 
@@ -128,6 +149,20 @@ def test_gpu_machine_round_trip_commands(tmp_path):
     clean = run.calls[-1][-1]
     assert "pkill -TERM -f '[/]home/u/revolve_scratch/exp_turn_1/'" in clean and f"rm -rf -- {s}" in clean
     assert "rmdir /home/u/revolve_scratch" in clean
+
+
+def test_gpu_machine_save_every_fetches_intermediate_checkpoints(tmp_path):
+    run = FakeRunner()
+    p = T.plan(mode="from_base", dataset=str(tmp_path / "ds"), out=str(tmp_path / "ckpt"), base="b", steps=20,
+               batch_size=2, save_every=10)
+    streamed = []
+    res = G.run(p, {"host": "u@h"}, "j", stream=lambda cmd, env, on_line: streamed.append(cmd) or 0, runner=run)
+    s = "/home/u/revolve_scratch/j"
+    assert res["rc"] == 0 and (tmp_path / "ckpt_000010").is_dir() and not (tmp_path / "ckpt_000010.partial").exists()
+    rs = [c for c in run.calls if c[0] == "rsync" and "000010" in c[-2]]
+    assert len(rs) == 1 and rs[0][-2:] == [f"u@h:{s}/out/lerobot/checkpoints/000010/pretrained_model/",
+                                           f"{tmp_path}/ckpt_000010.partial/"]
+    assert "--save_freq=10" in streamed[1][-1]
 
 
 def test_gpu_machine_cleans_up_on_failure_and_cancel(tmp_path):

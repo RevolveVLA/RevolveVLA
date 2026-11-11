@@ -50,7 +50,9 @@ every held-out seed passes every phase on the first try, or max_turns.
   they have one. REVOLVE_GPU_PREFLIGHT=0 turns it off.
 - runs/<exp>/state.json (atomic) is written before each step container starts. A restarted manager re-attaches to a
   running step container, or reads the result.json of one that finished while it was down; done steps never rerun.
-  The experiment yaml must not change between run and resume (sha256 checked).
+  The experiment yaml must not change between run and resume (sha256 checked); after a deliberate edit,
+  `./revolve resume <exp> --accept-spec-change` records the new sha256 (old one in state.json spec_changes) and
+  carries on: done steps are kept, the pending ones use the edited yaml.
 
 ## Outputs
 runs/<exp>/: state.json, summary.json (per turn: step states / attempts / wall, held-out and probe seed x phase tables,

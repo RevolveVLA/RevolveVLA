@@ -1,7 +1,7 @@
 """Training component entrypoints, run under revolve_common.wrapper in revolve-training (launch.py):
 
   entry.py train --backend local|gpu_machine|modal --dataset D --out O --mode M --base B [--prev P]
-                 --steps N --batch-size B [--seed S] [--log-freq F] [--settings JSON] [--job NAME]
+                 --steps N --batch-size B [--save-every N] [--seed S] [--log-freq F] [--settings JSON] [--job NAME]
       train.plan() (retrain mode -> init weights + episodes), the backend runs lerobot-train (its output is on
       our stdout, parsed by progress:parse), train.finalize() moves the final checkpoint to O (+ train.json).
   entry.py serve --ckpt C [--host H] [--port 8080] [--device cuda] [--fps 30]
@@ -40,7 +40,8 @@ def cmd_train(a) -> int:
     t0 = time.time()
     try:
         p = T.plan(dataset=a.dataset, out=a.out, mode=a.mode, base=a.base, prev=a.prev, steps=a.steps,
-                   batch_size=a.batch_size, seed=a.seed, log_freq=a.log_freq, num_workers=a.num_workers, job=a.job)
+                   batch_size=a.batch_size, seed=a.seed, log_freq=a.log_freq, num_workers=a.num_workers, job=a.job,
+                   save_every=a.save_every)
     except ValueError as e:
         print(f"train: {e}", flush=True)
         return 2
@@ -89,6 +90,8 @@ def main(argv=None) -> int:
     t.add_argument("--prev", default=None)
     t.add_argument("--steps", type=int, required=True)
     t.add_argument("--batch-size", type=int, required=True)
+    t.add_argument("--save-every", type=int, default=None,
+                   help="also save every N steps; each earlier checkpoint is copied to <out>_<step>/ during training")
     t.add_argument("--seed", type=int, default=1000)
     t.add_argument("--log-freq", type=int, default=10)
     t.add_argument("--num-workers", type=int, default=4)

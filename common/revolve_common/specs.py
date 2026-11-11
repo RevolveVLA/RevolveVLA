@@ -391,6 +391,7 @@ class Training(Strict):
     mode: Literal["finetune_last", "from_base", "finetune_recovery_only"] = "finetune_last"
     steps: int = Field(ge=1)
     batch_size: int = Field(ge=1)
+    save_every: int | None = Field(default=None, ge=1)    # also save every N steps -> turn_<k>/ckpt_<step>/
     backend: Literal["local", "gpu_machine", "modal"]
     backends: dict[str, dict[str, Any]] = {}
 

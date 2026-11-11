@@ -14,7 +14,7 @@
                        restore D0's phase_states/<P>_start.npz and run on: state vs the source within
                        task.live tolerances, per-phase verdicts from P on
   cli.py rollout       --start D0 --out D [--seed S] [--restore D1:PHASE] [--budget-s X] [--wait-s X]
-                       [--after-success-s X] [--wall-s X] [--client-dir D/client] [--gui]
+                       [--after-success-s X] [--wall-s X] [--client-dir D/client] [--gui] [--video]
                        a closed-loop policy rollout (needs revolve-simulator-ros): the robot spawned at the
                        start D0 (a replay-accepted attempt: episode.json, actions.npz row 0, live.json), or
                        restored from D1's phase_states/PHASE_start.npz (a retry); closed_loop_system follows
@@ -420,10 +420,12 @@ def rollout(a):
     progress(stage="prepare", seed=a.seed, restore=a.restore)
     cl = rollout_spec(start, out, r, a.seed, restore, a.budget_s, a.wait_s, a.after_success_s)
     cam, _ = models(r)
+    cam_pose = EPISODE_CAM["drawer" if r.task.object.hold.part == "drawer" else "fridge"] if a.video else None
     world_copy(spec.path(r.scene.world), out, True, module="closed_loop_system", robot=(r.robot.model, str(cam)),
-               rtf=r.task.rollout.real_time_factor)
-    w = (out / "world.sdf").read_text()       # the training cameras render, the scene camera does not
-    (out / "world.sdf").write_text(CAMERA_RE.sub("", w))
+               rtf=r.task.rollout.real_time_factor, camera=cam_pose)
+    if not a.video:                           # the training cameras render, the scene camera does not
+        w = (out / "world.sdf").read_text()
+        (out / "world.sdf").write_text(CAMERA_RE.sub("", w))
     contract = spec.SPECS / "robots" / r.robot.name / r.robot.contract
     relay = ["bash", "-c", 'source /opt/ros/jazzy/setup.bash && exec python3 "$@"', "relay",
              str(SIM / "ros_relay.py"), str(out), str(contract), str(cam)]
@@ -431,7 +433,7 @@ def rollout(a):
     driver = ["bash", "-c", f'for i in $(seq {ROLLOUT_WAIT_CLIENT_S * 10}); do ok=1; for f in {ready}; do [[ -f $f ]] || ok=0; '
               f'done; (( ok )) && break; sleep 0.1; done; (( ok )) || {{ echo "Timed out waiting for {ready}"; exit 4; }}; '
               f'echo "client ready: unpausing"; exec "$@"', "driver",
-              *kitchen_driver(out, SKILL_STATUS, "ROLLOUT", a.wall_s)]
+              *kitchen_driver(out, SKILL_STATUS, "ROLLOUT", a.wall_s, a.video)]
     progress(stage="gz", what="rollout", budget_s=cl["budget_s"], wait_s=cl["wait_s"])
     rc = run_gz(out, f"{cam.parent}:{spec.resource_path(r)}", driver,
                 env=dict(REPLAY_DIR=str(out), CL_DIR=str(out), REPLAY_RTF=str(r.task.rollout.real_time_factor),
@@ -477,6 +479,8 @@ def main(argv=None):
     p["rollout"].add_argument("--wall-s", type=float, default=3600.0, help="wall-clock limit from the unpause")
     p["rollout"].add_argument("--client-dir", default=None, help="default: <out>/client")
     p["rollout"].add_argument("--gui", action="store_true", help="also show the gz GUI on $DISPLAY (launch.py gui)")
+    p["rollout"].add_argument("--video", action="store_true",
+                             help="also render the scene camera into <out>/video.mp4 (not part of the verdict)")
     a = ap.parse_args(argv)
     return cmds[a.cmd](a)
 

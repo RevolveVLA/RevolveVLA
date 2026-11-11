@@ -21,7 +21,10 @@ train.json (mode, init, episodes, step, model_sha256, losses, backend, remote ti
 training.mode): `finetune_last` (previous checkpoint's weights, full merged dataset; base on turn 0), `from_base`,
 `finetune_recovery_only` (previous weights, `--dataset.episodes` = the dataset component's
 `labels.select(source="recovery")`). Weights carry over through `policy.pretrained_path` (fresh optimizer and
-schedule, as legacy; never `--resume`). steps / batch_size from the yaml; save only the final checkpoint.
+schedule, as legacy; never `--resume`). steps / batch_size from the yaml; save only the final checkpoint, unless
+`training.save_every: N` (-> `--save_freq`): then each earlier checkpoint's pretrained_model files are copied to
+`<out>_<step>/` (e.g. `turn_0/ckpt_010000/`) as soon as LeRobot has written it, while the training goes on
+(backends local and gpu_machine; not modal).
 
 ## Backends
 - local: the container gets the GPU. RTX 5060 8 GB: batch 2 uses 1.9 GB, 0.15 s/step.

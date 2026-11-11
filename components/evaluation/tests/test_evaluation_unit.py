@@ -208,6 +208,13 @@ def test_gui_forces_parallel_1_and_reaches_the_runner(tmp):
     assert s["parallel"] == 2 and {c["budget"]["gui"] for c in calls} == {False}
 
 
+def test_video_reaches_the_runner(tmp):
+    s, calls = ev(tmp, {}, video=True)
+    assert {c["budget"]["video"] for c in calls} == {True}
+    s, calls = ev(tmp / "plain", {})
+    assert {c["budget"]["video"] for c in calls} == {False}
+
+
 def test_gui_display_env_and_mounts(tmp, monkeypatch):
     L, seen = R.sim_launch, []
 

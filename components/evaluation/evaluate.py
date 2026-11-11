@@ -7,7 +7,7 @@ factor (rollout.wall_limit) instead of 285 s.
 
   python components/evaluation/evaluate.py --task T --ckpt runs/<exp>/turn_<k>/ckpt --seeds 100-103 \
       --set heldout --out runs/<exp>/turn_<k>/eval --starts runs/<exp>/starts [--rollouts-per-seed 1] \
-      [--retries 0] [--parallel N] [--policy smolvla|oracle] [--source DATAGEN_OUT ...] [--gui]
+      [--retries 0] [--parallel N] [--policy smolvla|oracle] [--source DATAGEN_OUT ...] [--gui] [--video]
   evaluate(task, ckpt, seeds, out, set_name, starts_dir, ...) -> eval_summary dict
 
 Per seed: its start (starts.py: the first replay-accepted attempt of the seed's plan run, cached in starts_dir),
@@ -16,6 +16,7 @@ A rollout that fails phase P is retried up to `retries` times (experiment eval.r
 runs again from the failed attempt's phase_states/P_start.npz (restored in step 0). A stack error (no verdict)
 is re-run once. `parallel` rollouts at a time (default: what the GPU memory holds, default_parallel).
 --gui: watch the rollouts in the gz GUI on the host's X display (DISPLAY + XAUTHORITY); forces parallel 1.
+--video: each rollout also records the scene camera into <rollout dir>/video.mp4 (not part of the verdict).
 
 Layout under out/<set>/:
   <seed>_r<i>/            the first try (the recovery input: phase_report.json, phase_states/, episode.json, ...)
@@ -103,13 +104,13 @@ def done(rec):
 class Evaluation:
     def __init__(self, task, ckpt, seeds, out, set_name, starts_dir, policy="smolvla", rollouts_per_seed=1, retries=0,
                  parallel=None, sources=(), budget_s=None, wait_s=None, after_success_s=None, rtf=None,
-                 runner=None, gui=False, say=lambda m: print(m, flush=True)):
+                 runner=None, gui=False, video=False, say=lambda m: print(m, flush=True)):
         self.task, self.ckpt, self.seeds, self.policy = task, ckpt, list(seeds), policy
         self.out = Path(out).resolve() / set_name
         self.set, self.starts_dir, self.sources = set_name, Path(starts_dir), list(sources)
         self.rps, self.retries = rollouts_per_seed, retries
         self.parallel = 1 if gui else parallel or default_parallel(policy)    # one GUI window at a time
-        self.gui = gui
+        self.gui, self.video = gui, video
         self.budget = dict(budget_s=budget_s, wait_s=wait_s, after_success_s=after_success_s)
         self.rtf = rtf or measured_rtf(self.parallel)
         self.rtfs, self.lock = [], threading.Lock()
@@ -159,7 +160,7 @@ class Evaluation:
             with self.lock:
                 rtf = min(self.rtfs) if self.rtfs else self.rtf
             rec = self.runner(start, d, seed=seed, policy=self.policy, ckpt=self.ckpt, restore=restore, rtf=rtf,
-                              task=self.task, say=self.say, gui=self.gui, **self.budget)
+                              task=self.task, say=self.say, gui=self.gui, video=self.video, **self.budget)
             if rec.get("rtf"):
                 with self.lock:
                     self.rtfs.append(rec["rtf"])
@@ -247,12 +248,13 @@ def main(argv=None):
     ap.add_argument("--budget-s", type=float, default=None, help="override task.yaml rollout.budget_s (tests)")
     ap.add_argument("--wait-s", type=float, default=None)
     ap.add_argument("--gui", action="store_true", help="show the gz GUI on $DISPLAY (one rollout at a time)")
+    ap.add_argument("--video", action="store_true", help="record the scene camera into <rollout dir>/video.mp4")
     a = ap.parse_args(argv)
     if a.policy == "smolvla" and not a.ckpt:
         ap.error("--ckpt is required for --policy smolvla")
     s = evaluate(a.task, Path(a.ckpt).resolve() if a.ckpt else None, S.G.parse_seeds(a.seeds), a.out, a.set, a.starts,
                  policy=a.policy, rollouts_per_seed=a.rollouts_per_seed, retries=a.retries, parallel=a.parallel,
-                 sources=a.source, budget_s=a.budget_s, wait_s=a.wait_s, gui=a.gui)
+                 sources=a.source, budget_s=a.budget_s, wait_s=a.wait_s, gui=a.gui, video=a.video)
     return 1 if s["errors"] else 0
 
 

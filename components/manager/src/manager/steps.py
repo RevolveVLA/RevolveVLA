@@ -48,7 +48,7 @@ def train(p):
     t = specs.Training.model_validate(p["training"])
     job = tl.start_train(Path(p["dataset"]), Path(p["out"]), mode=t.mode, base=t.base,
                          prev=Path(p["prev"]) if p["prev"] else None, steps=t.steps, batch_size=t.batch_size,
-                         backend=t.backend, settings=t.backends.get(t.backend, {}))
+                         backend=t.backend, settings=t.backends.get(t.backend, {}), save_every=t.save_every)
     last = None
     while True:
         job.container.reload()

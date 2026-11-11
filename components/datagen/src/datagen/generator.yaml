@@ -75,8 +75,13 @@ tasks:
     timing: {settle_s: 0.0, close_s: 1.0, grip_settle_s: 0.0, pull_start_s: 0.84, hold_s: 1.7}
     pull: {repeat_tol: 1.0e-5}
     # Per robot, keyed by the robot spec name (over the blocks above; null drops one). A 5-DoF arm gets no
-    # starts block: a start IK with the base locked at a drawn start (start_design.py) has no solution off
-    # its plane, so its attempts take AutoMoMa's whole-body IK (base free, retract = task.yaml base_retract).
+    # clustered starts block: a start IK with the base locked at a drawn start (start_design.py) has no solution
+    # off its plane, so its attempts take AutoMoMa's whole-body IK (base free, retract = task.yaml base_retract),
+    # or a `mode: reach` block (start_design.ReachSpec): per seed one grasp along the bar (grasp_m, model y), the
+    # reach d_m of Robot.base_for_reach and a base turn of +-yaw_half_deg about the arm's first joint; attempts
+    # after the first jitter d by jitter_m and the turn by jitter_deg.
     robots:
       mobile_so101: {starts: null}
-      mobile_so101_xl: {starts: null}
+      mobile_so101_xl:
+        starts: {mode: reach, grasp_m: [-0.10, 0.10], d_m: [0.68, 0.76], yaw_half_deg: 8.0, jitter_m: 0.01,
+                 jitter_deg: 1.0}

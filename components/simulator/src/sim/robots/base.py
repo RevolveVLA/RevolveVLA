@@ -169,6 +169,11 @@ class Robot:
         """Base-frame (x, y) the reach distance d of base_for_reach is measured from."""
         return np.array([self.mount[0], 0.0])
 
+    def first_joint_xy(self):
+        """Base-frame (x, y) of the arm's first joint axis (vertical: turning the base about it and the first
+        joint back by the same angle leaves the rest of the arm where it was)."""
+        return self.fk(self.ready, (0.0, 0.0, 0.0))[2][0][:2].copy()
+
     def base_for_reach(self, p, heading, bearing=None, d=None):
         """Base pose (x, y, yaw) facing `heading` that puts the TCP target p at horizontal distance d
         from the reach origin, `bearing` [rad] left of the arm's forward axis (defaults: robot.yaml reach)."""

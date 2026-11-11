@@ -10,6 +10,12 @@ belongs to cluster a mod clusters and plans grasp cluster mod 5; its start is th
 a base offset of 1 cm to `offset_m` and a yaw offset of 1 deg to `offset_deg`, drawn from the plan
 run's seed. Centres and offsets come from separate seeded generators, never from numpy's or
 random's global state (plan.py seeds numpy globally for AutoMoMa).
+
+A block with `mode: reach` (ReachSpec) draws one (grasp, reach, yaw) sample per plan seed instead: the grasp
+point along the task's grasp axis, the reach distance d of Robot.base_for_reach (base facing the object) and a
+base turn about the arm's first joint axis (the first joint turns back by the same angle, so the arm keeps its
+pose: the only base freedom a 5-DoF arm has at a fixed grasp, besides d). Attempt 0 is the sample; the other
+attempts jitter d by up to jitter_m and the turn by up to jitter_deg, never the grasp.
 """
 import json
 import math
@@ -55,8 +61,32 @@ class Start:
     dyaw: float
 
 
-def _check_value(key, v):
-    kind, low, high, low_excluded = _TABLE[key]
+@dataclass(frozen=True)
+class ReachSpec:
+    grasp_m: tuple[float, float]    # TCP along the task's grasp axis (model frame), low / high
+    d_m: tuple[float, float]        # reach distance (Robot.base_for_reach d), low / high
+    yaw_half_deg: float             # base turn about the arm's first joint axis, +- this
+    jitter_m: float                 # attempts after the first: d +- this
+    jitter_deg: float               # and the turn +- this
+
+    @property
+    def window_half_deg(self):
+        return self.yaw_half_deg + self.jitter_deg
+
+
+@dataclass(frozen=True)
+class ReachSample:
+    grasp: float                    # m along the grasp axis
+    d: float                        # m
+    dyaw: float                     # rad, the base turn (+ = counter-clockwise)
+
+
+_REACH_TABLE = {"yaw_half_deg": ("number", 0, 30, False), "jitter_m": ("number", 0, 0.03, False),
+                "jitter_deg": ("number", 0, 3, False)}
+
+
+def _check_value(key, v, table=_TABLE):
+    kind, low, high, low_excluded = table[key]
     if isinstance(v, bool) or not isinstance(v, (int, float)) or (kind == "int" and not isinstance(v, int)):
         raise ValueError(f"starts.{key}: {v!r} is not {'an int' if kind == 'int' else 'a number'}")
     if not math.isfinite(v):
@@ -71,10 +101,41 @@ def _check_feasible(spec):
                          f"yaw_half_deg {spec.yaw_half_deg} < offset_deg {spec.offset_deg}")
 
 
-def parse_starts(block: Mapping) -> StartsSpec:
-    """The checked StartsSpec of a starts block (D0 types and ranges, then feasibility)."""
+def _range(key, v, positive=False):
+    if not (isinstance(v, (list, tuple)) and len(v) == 2):
+        raise ValueError(f"starts.{key}: {v!r} is not a [low, high] pair")
+    for x in v:
+        if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x):
+            raise ValueError(f"starts.{key}: {x!r} is not a finite number")
+    if v[0] > v[1] or (positive and v[0] <= 0):
+        raise ValueError(f"starts.{key}: {v!r} is not low <= high" + (" with low > 0" if positive else ""))
+    return float(v[0]), float(v[1])
+
+
+def _check_keys(block, fields, optional, what):
+    if not set(fields) <= set(block) <= set(fields) | set(optional):
+        raise ValueError(f"starts ({what}): sub-keys {sorted(block)}, want {fields}"
+                         + (f" (optional {sorted(optional)})" if optional else ""))
+
+
+def parse_reach(block: Mapping) -> ReachSpec:
+    """The checked ReachSpec of a `mode: reach` starts block."""
+    _check_keys(block, ["mode", *ReachSpec.__dataclass_fields__], {}, "mode reach")
+    for key in _REACH_TABLE:
+        _check_value(key, block[key], _REACH_TABLE)
+    return ReachSpec(_range("grasp_m", block["grasp_m"]), _range("d_m", block["d_m"], positive=True),
+                     float(block["yaw_half_deg"]), float(block["jitter_m"]), float(block["jitter_deg"]))
+
+
+def parse_starts(block: Mapping) -> StartsSpec | ReachSpec:
+    """The checked spec of a starts block: a ReachSpec for `mode: reach`, else a StartsSpec (D0 types and ranges,
+    then feasibility)."""
     if not isinstance(block, Mapping):
         raise ValueError(f"starts: {type(block).__name__} is not a mapping")
+    if "mode" in block:
+        if block["mode"] != "reach":
+            raise ValueError(f"starts.mode: {block['mode']!r}, want 'reach' (or no mode: clustered starts)")
+        return parse_reach(block)
     fields = list(StartsSpec.__dataclass_fields__)
     if set(block) != set(fields):
         raise ValueError(f"starts: sub-keys {sorted(block)}, want {fields}")
@@ -91,7 +152,7 @@ def _no_constant(name):
     raise ValueError(f"starts: {name} is not JSON")
 
 
-def starts_from_env(environ: Mapping[str, str]) -> StartsSpec | None:
+def starts_from_env(environ: Mapping[str, str]) -> StartsSpec | ReachSpec | None:
     """The spec of ROUND_STARTS (D0 round_key_env), None without it. Reads no other key."""
     try:
         text = environ["ROUND_STARTS"]
@@ -128,9 +189,9 @@ def in_box(x: float, y: float, centre: tuple[float, float], box_m: float) -> boo
     return abs(x - centre[0]) <= box_m / 2 + _EPS and abs(y - centre[1]) <= box_m / 2 + _EPS
 
 
-def yaw_window_rad(spec: StartsSpec, facing: float = FACING_YAW_OBJ) -> tuple[float, float]:
-    """(low, high) base yaw [rad] of the start and the goal IK."""
-    h = math.radians(spec.yaw_half_deg)
+def yaw_window_rad(spec: StartsSpec | ReachSpec, facing: float = FACING_YAW_OBJ) -> tuple[float, float]:
+    """(low, high) base yaw [rad] of the start and the goal IK (a reach block: the turn plus its jitter)."""
+    h = math.radians(spec.window_half_deg if isinstance(spec, ReachSpec) else spec.yaw_half_deg)
     return facing - h, facing + h
 
 
@@ -238,6 +299,45 @@ def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box
         c = clusters[a]
         cx, cy, cyaw = centres[c]
         out.append(Start(a, c, grasp_of_cluster(c), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
+    return out
+
+
+def reach_sample(seed: int, spec: ReachSpec) -> ReachSample:
+    """The seed's (grasp, d, turn): uniform in the block's ranges, one seeded generator each."""
+    _nonneg_int(seed, "seed")
+    h = math.radians(spec.yaw_half_deg)
+    return ReachSample(float(_rng(seed, 0).uniform(*spec.grasp_m)), float(_rng(seed, 1).uniform(*spec.d_m)),
+                       float(_rng(seed, 2).uniform(-h, h)))
+
+
+def reach_attempts(seed: int, attempts: int, spec: ReachSpec) -> list[tuple[float, float]]:
+    """(d, turn [rad]) per attempt: attempt 0 the seed's sample, the others jittered by up to jitter_m / jitter_deg."""
+    _nonneg_int(attempts, "attempts")
+    s = reach_sample(seed, spec)
+    u = _rng(seed, 3).uniform(-1.0, 1.0, size=(max(attempts - 1, 0), 2))
+    jit = [(0.0, 0.0)] + [(spec.jitter_m * a, math.radians(spec.jitter_deg) * b) for a, b in u]
+    return [(s.d + dd, s.dyaw + dy) for dd, dy in jit[:attempts]]
+
+
+def turn_about(base, pivot_xy, dyaw: float) -> tuple[float, float, float]:
+    """Base (x, y, yaw) turned by dyaw about the point at base-frame pivot_xy (that point stays put)."""
+    x, y, yaw = (float(v) for v in base)
+    px, py = (float(v) for v in pivot_xy)
+
+    def r(a):
+        return px * math.cos(a) - py * math.sin(a), px * math.sin(a) + py * math.cos(a)
+    (ax, ay), (bx, by) = r(yaw), r(yaw + dyaw)
+    return x + ax - bx, y + ay - by, yaw + dyaw
+
+
+def reach_starts(seed: int, attempts: int, spec: ReachSpec, base_for_reach, pivot_xy) -> list[Start]:
+    """The starts of one plan run of a reach block: base_for_reach(d) is the base (x, y, facing) that puts the
+    grasp at reach d (Robot.base_for_reach), turned about pivot_xy (the arm's first joint axis, base frame).
+    All on grasp 0 (the plan narrows the task's grasps to the sample's), cluster 0; dx = d, dyaw = the turn."""
+    out = []
+    for a, (d, dyaw) in enumerate(reach_attempts(seed, attempts, spec)):
+        x, y, yaw = turn_about(base_for_reach(d), pivot_xy, dyaw)
+        out.append(Start(a, 0, 0, x, y, yaw, d, 0.0, dyaw))
     return out
 
 

@@ -236,6 +236,11 @@ class Generation:
             ep = read(d / "episode.json")
             if ep is not None:
                 ep["datagen"] = {k: e[k] for k in ("seed", "attempt_id", "accepted", "label", "check")}
+                st = h.get("starts") or {}
+                if "sample" in st:          # a sampled start (reach starts block): the seed's sample + this attempt's
+                    ep["datagen"]["start_sample"] = dict(st["sample"], mode=st.get("mode"),
+                                                         attempt=next((x for x in st.get("attempts", [])
+                                                                       if x["attempt_id"] == a), None))
                 J.write_json(d / "episode.json", ep)
         return e
 

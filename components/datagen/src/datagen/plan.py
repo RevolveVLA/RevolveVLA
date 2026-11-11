@@ -26,6 +26,9 @@ moved rigidly with the handle (yaw clamped into the window); without a solution 
 nearest clustered goal IK of the grasp. The base yaw window of the block bounds the IK and the
 trajopt.
 handoff.json then holds a "starts" record and each attempt its "cluster".
+A `mode: reach` block (start_design.ReachSpec) plans the seed's one sampled grasp from its sampled base
+(attempt 0) and small jitters of it (the other attempts), the same pinned start IK; the "starts" record
+holds the sample and each attempt's d, turn and base.
 A mint round's plan dir holds plan_request.json (start_design.read_plan_request): the stop rule's
 cluster of each attempt and centre seed of each cluster. The attempts then start from those clusters
 and centres, and the "starts" record adds "centre_seeds".
@@ -72,6 +75,7 @@ def pick_pairs(S, G, k):
     return pairs
 
 
+LBFGS_FUSED_HISTORIES = (5, 6, 7, 15, 27, 31)   # cuRobo lbfgs_step_kernel.cu compiled history sizes
 IK_SEEDS_STARTS = 1000  # IK seeds per attempt with a starts block (start IK: the arm joints, base locked)
 
 
@@ -94,6 +98,12 @@ class PinnedStartIK:
         self.solver = IKSolver(IKSolverConfig.load_from_robot_config(
             self.config(base), None, planner.tensor_args, IK_SEEDS_STARTS, world_coll_checker=coll,
             use_cuda_graph=False, seed=seed))
+        # cuRobo cuts the L-BFGS history to d_opt - 1 for a short chain (5 arm joints: 4), and its fused kernel
+        # for a history without a compiled variant reads out of bounds (CUDA illegal memory access): those take
+        # cuRobo's own non-fused step instead (the 7-joint arm's history is compiled, so it is unchanged).
+        for opt in self.solver.solver.optimizers:
+            if getattr(opt, "use_cuda_kernel", False) and getattr(opt, "history", 5) not in LBFGS_FUSED_HISTORIES:
+                opt.use_cuda_kernel = False
         self.ready = planner.tensor_args.to_device(list(arm))
 
     def config(self, base):
@@ -269,7 +279,17 @@ def main(out, sel):
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
-    if spec is not None:
+    reach = isinstance(spec, start_design.ReachSpec)
+    if reach:
+        if (out / start_design.REQUEST_FILE).exists():
+            raise SystemExit(f"{start_design.REQUEST_FILE} needs a clustered starts block, not mode reach")
+        if attempts < 1:
+            raise SystemExit("no attempts: ATTEMPTS is 0")
+        # One grasp: the seed's sampled point along the task's grasp axis (the attempts only jitter the base).
+        sample = start_design.reach_sample(seed, spec)
+        along, = (k for k in "xyz" if k in task["grasp"])
+        task["grasp"] = {**task["grasp"], along: [sample.grasp]}
+    elif spec is not None:
         if task["name"] not in rb.planner.BOX_CENTRE_OBJ:
             raise SystemExit(f"starts: no box centre for task {task['name']} in robots/{rb.implementation}/planner.py "
                              "BOX_CENTRE_OBJ (or drop the starts block for this robot in generator.yaml)")
@@ -306,6 +326,12 @@ def main(out, sel):
         tf.write_text(yaml.safe_dump(tcfg, sort_keys=False))
         gen["planner"]["traj"]["gradient_trajopt_file"] = str(tf)       # absolute: cuRobo uses it as is
     T["assets_s"] = now() - t0
+    if reach:
+        # The base that puts the sampled grasp at reach d (facing the object), turned about the arm's first joint.
+        grasp_obj = np.array(A["object"]["grasps"][0]["pose_obj"][:3])
+        pivot = rb.first_joint_xy()
+        starts = start_design.reach_starts(
+            seed, attempts, spec, lambda d: rb.base_for_reach(grasp_obj, start_design.FACING_YAW_OBJ, d=d), pivot)
 
     from automoma.core.types import TrajResult
     from automoma.planning.pipeline import PlanningPipeline
@@ -448,7 +474,14 @@ def main(out, sel):
         "grasps": {g: {k: v[k] for k in (ax, "pose_obj", "T_handle_grasp")}
                    for g, v in A["object"]["grasps"].items()},
         "attempts_detail": rows}
-    if spec is not None:
+    if reach:
+        handoff["starts"] = {
+            "mode": "reach", "facing_yaw_obj": start_design.FACING_YAW_OBJ, "spec": vars(spec),
+            "sample": {f"grasp_{ax}": sample.grasp, "d_m": sample.d, "dyaw_deg": float(np.degrees(sample.dyaw))},
+            "grasp_obj": grasp_obj.tolist(), "first_joint_xy": pivot.tolist(),
+            "attempts": [{"attempt_id": st.attempt_id, "d_m": st.dx, "dyaw_deg": float(np.degrees(st.dyaw)),
+                          "base_obj": [st.x, st.y, st.yaw]} for st in starts]}
+    elif spec is not None:
         centres = (start_design.cluster_centres(centre_seed, spec, box) if request is None
                    else start_design.request_centres(request[1], spec, box))
         handoff["starts"] = {

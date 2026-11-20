@@ -21,6 +21,11 @@ class Config:
     cell: tuple[int, ...] = ()
     values: Mapping[str, Any] = field(default_factory=dict)       # {"robot_base.x_m": 0.05, ...}
 
+    def of(self, randomiser: str) -> dict:
+        """The values of one randomiser by plain dim name: {"x_m": 0.05, ...} (what Randomiser.realise takes)."""
+        prefix = randomiser + "."
+        return {k[len(prefix):]: v for k, v in self.values.items() if k.startswith(prefix)}
+
     def to_dict(self) -> dict:
         return asdict(self) | {"cell": list(self.cell)}
 

@@ -21,7 +21,7 @@ os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (t
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]
-sys.path[:0] = [str(COMP), str(COMP / "src" / "datagen")]
+sys.path[:0] = [str(COMP), str(COMP / "src"), str(COMP / "src" / "datagen")]
 RUN = REPO / "runs" / "datagen_tests" / time.strftime("%Y%m%d_%H%M%S")
 TASKS = {"open_fridge_door": 0, "open_drawer": 0}       # task -> seed
 POLLED = "open_fridge_door"                             # its plan job is polled over HTTP

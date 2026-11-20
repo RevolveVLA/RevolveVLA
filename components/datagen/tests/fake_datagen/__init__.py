@@ -3,16 +3,25 @@
 Registered under the module's own name, so a spec says `plugin: fake_datagen` (put tests/ on $DATAGEN_PLUGIN_PATH).
 Params: generator / recorder `fail_seeds`, validator `reject_seeds`, generator `realised` {seed: x} (the realised
 `fake_datagen.x` of that seed; others report only `x`). `KILL_AFTER = n` makes the generator raise
-KeyboardInterrupt on its (n+1)-th call (a killed run; a spec param would change the spec hash)."""
+KeyboardInterrupt on its (n+1)-th call (a killed run; a spec param would change the spec hash). A subprocess (the CLI
+system tests) gets both through the environment: $FAKE_DATAGEN_KILL_AFTER, and its calls appended to $FAKE_DATAGEN_LOG."""
 import json
+import os
 from pathlib import Path
 
 from datagen.core.interfaces import Converter, Generator, Randomiser, Recorder, Result, Validator
 from datagen.core.registry import register
 from datagen.core.spec import Range
 
-KILL_AFTER = None
+KILL_AFTER = int(os.environ["FAKE_DATAGEN_KILL_AFTER"]) if "FAKE_DATAGEN_KILL_AFTER" in os.environ else None
 CALLS = []      # ("generate"|"record"|"convert"|"validate", seed) in call order
+
+
+def called(kind, n):
+    CALLS.append((kind, n))
+    if log := os.environ.get("FAKE_DATAGEN_LOG"):
+        with open(log, "a") as f:
+            f.write(f"{kind} {n}\n")
 
 
 @register("randomiser", "fake_datagen")
@@ -30,7 +39,7 @@ class FakeGenerator(Generator):
         self.fail, self.n, self.realised = set(params.get("fail_seeds", [])), 0, params.get("realised", {})
 
     def generate(self, config, out):
-        CALLS.append(("generate", config.seed))
+        called("generate", config.seed)
         self.n += 1
         if KILL_AFTER is not None and self.n > KILL_AFTER:
             raise KeyboardInterrupt("simulated kill")
@@ -50,7 +59,7 @@ class FakeRecorder(Recorder):
         self.fail = set(params.get("fail_seeds", []))
 
     def record(self, config, generated, out):
-        CALLS.append(("record", config.seed))
+        called("record", config.seed)
         if config.seed in self.fail:
             return Result.fail("replay diverged")
         (out / "bag.txt").write_text("bag")
@@ -63,7 +72,7 @@ class FakeConverter(Converter):
         pass
 
     def convert(self, episodes, out):
-        CALLS.append(("convert", len(episodes)))
+        called("convert", len(episodes))
         out.mkdir(parents=True, exist_ok=True)
         (out / "dataset.json").write_text(json.dumps([Path(e).name for e in episodes]))
         return Result(paths={"dataset": str(out / "dataset.json")})
@@ -75,5 +84,5 @@ class FakeValidator(Validator):
         self.reject = set(params.get("reject_seeds", []))
 
     def validate(self, config):
-        CALLS.append(("validate", config.seed))
+        called("validate", config.seed)
         return Result.fail("too close to the wall") if config.seed in self.reject else Result()

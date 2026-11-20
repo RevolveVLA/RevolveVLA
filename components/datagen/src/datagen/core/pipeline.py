@@ -12,6 +12,7 @@ from typing import Callable, Mapping, Sequence
 
 from . import manifest as mf
 from . import pool, separation
+from .pool import PoolExhausted
 from .errors import DatagenError
 from .interfaces import (Check, Config, Converter, Generator, Randomiser, Recorder, Result, Sampler, Validator)
 from .spec import DatagenSpec, SplitSpec, check_limits
@@ -48,12 +49,19 @@ class Pipeline:
             raise PipelineError(f"unknown split {unknown} (splits: {known})")
         chosen = [s for s in self.spec.splits if splits is None or s.name in splits]
         ok = True
-        for step in steps:
-            ok &= getattr(self, f"_{step}")(chosen) is not False
-        if not self.dry_run:
-            self.out.mkdir(parents=True, exist_ok=True)
-            (self.out / "report.md").write_text(mf.report(self.spec, self.manifest.data))
+        try:
+            for step in steps:
+                ok &= getattr(self, f"_{step}")(chosen) is not False
+        except PoolExhausted:
+            self._report()                  # the exhausted cells are in the report; the error still ends the run
+            raise
+        self._report()
         return ok
+
+    def _report(self):
+        if not self.dry_run:
+            self.manifest.save()
+            (self.out / "report.md").write_text(mf.report(self.spec, self.manifest.data))
 
     def _call(self, what: str, fn, *args):
         """Plugin call; a dry run only says what it would do."""

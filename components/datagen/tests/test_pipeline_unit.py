@@ -87,6 +87,7 @@ def test_exhausted_pool_saves_progress_and_raises(tmp_path):
     with pytest.raises(PoolExhausted, match="1/3 accepted, 9 rejected"):
         make(tmp_path, generator={"plugin": "fake_datagen", "fail_seeds": [s for s in range(10) if s != 5]}).run()
     assert len(load(tmp_path)["splits"]["train"]["rejected"]) == 9
+    assert (tmp_path / "report.md").exists()                      # the report of the aborted run
 
 
 def test_changed_spec_is_refused(tmp_path):

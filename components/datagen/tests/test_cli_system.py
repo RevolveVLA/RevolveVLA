@@ -5,6 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 TESTS = Path(__file__).resolve().parent
@@ -19,10 +20,10 @@ SPEC = {
 }
 
 
-def datagen(tmp_path, *args, spec=SPEC):
+def datagen(tmp_path, *args, spec=SPEC, env=None):
     p = tmp_path / "spec.yaml"
-    p.write_text(yaml.safe_dump(spec))
-    env = os.environ | {"DATAGEN_PLUGIN_PATH": str(TESTS)}
+    p.write_text(yaml.safe_dump(spec, sort_keys=False))
+    env = os.environ | {"DATAGEN_PLUGIN_PATH": str(TESTS)} | (env or {})
     r = subprocess.run([sys.executable, str(REVOLVE), "datagen", str(p), *args], capture_output=True, text=True,
                        cwd=tmp_path, env=env)
     return r.returncode, r.stdout, r.stderr
@@ -58,7 +59,7 @@ def test_check_fails_with_exit_1_before_the_work_is_done(tmp_path):
     spec = spec_with(tmp_path)
     assert datagen(tmp_path, "sample", spec=spec)[0] == 0
     rc, out, _ = datagen(tmp_path, "check", spec=spec)
-    assert rc == 1 and "check target: FAIL heldout 0/1, train 0/3" in out
+    assert rc == 1 and "check target: FAIL train 0/3, heldout 0/1" in out
 
 
 def test_errors_are_one_line_and_exit_1(tmp_path):
@@ -71,3 +72,85 @@ def test_errors_are_one_line_and_exit_1(tmp_path):
     assert rc == 1 and "no generator plugin 'nope_plugin'" in err
     rc, _, err = datagen(tmp_path, "sample", spec=spec_with(tmp_path, seed=7))
     assert rc == 1 and "another spec" in err
+
+
+# ------------------------------------------------------------------ the pipeline end to end, through the CLI
+PLAIN = {"generator": {"plugin": "fake_datagen"},
+         "splits": {"train": {"target": 3, "pool": {"initial": [0, 4]}},
+                    "heldout": {"target": 1, "pool": {"initial": [10, 12]}, "record": False}}}
+
+
+def manifest(tmp_path):
+    return json.loads((tmp_path / "run" / "manifest.json").read_text())
+
+
+def used_seeds(tmp_path, split):
+    return [e["config"]["seed"] for e in manifest(tmp_path)["splits"][split]["used"]]
+
+
+@pytest.mark.parametrize("strategy", ["random", "stratified", "sobol", "lhs"])
+def test_all_with_each_sampler_strategy(tmp_path, strategy):
+    sampler = {"strategy": strategy, "overrides": {"fake_datagen.y": 1.5}} | (
+        {"bins": {"fake_datagen.x": 3}} if strategy == "stratified" else {})
+    splits = {"train": {"target": 3, "sampler": sampler, "pool": {"initial": [0, 5]}},
+              "heldout": {"target": 1, "sampler": sampler, "pool": {"initial": [10, 12]}, "record": False}}
+    rc, out, err = datagen(tmp_path, "all", spec=spec_with(tmp_path, splits=splits, **{"generator": PLAIN["generator"]}))
+    assert rc == 0, err
+    m = manifest(tmp_path)
+    assert used_seeds(tmp_path, "train") == [0, 1, 2] and used_seeds(tmp_path, "heldout") == [10]
+    xs = [c["values"]["fake_datagen.x"] for c in m["splits"]["train"]["sampled"]]
+    assert len(set(xs)) == len(xs) and all(-0.5 <= x <= 0.5 for x in xs)
+    assert {c["values"]["fake_datagen.y"] for c in m["splits"]["train"]["sampled"]} == {1.5}
+    assert all(c["ok"] for c in m["checks"])
+
+
+def test_a_killed_run_resumes_where_it_stopped(tmp_path):
+    spec, log = spec_with(tmp_path, **PLAIN), tmp_path / "calls.log"
+    rc, _, _ = datagen(tmp_path, "all", spec=spec, env={"FAKE_DATAGEN_KILL_AFTER": "2", "FAKE_DATAGEN_LOG": str(log)})
+    assert rc != 0 and used_seeds(tmp_path, "train") == [0, 1]
+    log.unlink()
+    rc, _, err = datagen(tmp_path, "all", spec=spec, env={"FAKE_DATAGEN_LOG": str(log)})
+    assert rc == 0, err
+    assert [l for l in log.read_text().split("\n") if l.startswith("generate")] == ["generate 2", "generate 10"]
+    assert used_seeds(tmp_path, "train") == [0, 1, 2] and used_seeds(tmp_path, "heldout") == [10]
+
+
+def test_an_exhausted_pool_exits_1_but_keeps_manifest_and_report(tmp_path):
+    train = {"target": 2, "sampler": {"strategy": "stratified", "bins": {"fake_datagen.x": 2}}, "pool": {"initial": [0, 3]}}
+    spec = spec_with(tmp_path, generator={"plugin": "fake_datagen", "fail_seeds": [0, 1, 2, 3]},
+                     splits={"train": train})
+    rc, _, err = datagen(tmp_path, "all", spec=spec)
+    assert rc == 1 and "datagen: 0/2 accepted, 4 rejected, no unused config left in cells" in err and "Traceback" not in err
+    assert len(manifest(tmp_path)["splits"]["train"]["rejected"]) == 4
+    report = (tmp_path / "run" / "report.md").read_text()
+    assert "| train | 2 | 0 | 4 |" in report and report.count("| yes |") == 2         # both cells exhausted
+
+
+def test_a_failed_check_exits_1_with_the_verdict_in_the_report(tmp_path):
+    spec = spec_with(tmp_path, recorder={"plugin": "fake_datagen", "fail_seeds": [1]}, **PLAIN)
+    rc, out, _ = datagen(tmp_path, "all", spec=spec)
+    assert rc == 1 and "check target: FAIL" in out
+    assert "| target | FAIL |" in (tmp_path / "run" / "report.md").read_text()
+    assert not manifest(tmp_path)["checks"][0]["ok"]
+
+
+def test_a_changed_spec_is_refused_on_an_existing_out(tmp_path):
+    assert datagen(tmp_path, "all", spec=spec_with(tmp_path, **PLAIN))[0] == 0
+    before = (tmp_path / "run" / "manifest.json").read_bytes()
+    changed = spec_with(tmp_path, **PLAIN | {"splits": PLAIN["splits"] | {"heldout": PLAIN["splits"]["heldout"] | {"target": 2}}})
+    rc, _, err = datagen(tmp_path, "all", spec=changed)
+    assert rc == 1 and "another spec" in err
+    assert (tmp_path / "run" / "manifest.json").read_bytes() == before
+
+
+def test_a_too_close_realised_start_is_replaced_and_the_run_passes(tmp_path):
+    realised = {0: -0.4, 1: 0.4, 20: -0.38, 21: 0.0, 22: 0.1}               # heldout 20 is 0.02 from train 0
+    splits = {"train": {"target": 2, "pool": {"initial": [0, 3]}},
+              "heldout": {"target": 2, "pool": {"initial": [20, 29]}, "record": False,
+                          "min_distance": {"from": "train", "value": 0.1, "realised": True}}}
+    spec = spec_with(tmp_path, generator={"plugin": "fake_datagen", "realised": realised}, splits=splits)
+    rc, out, err = datagen(tmp_path, "all", spec=spec)
+    assert rc == 0, out + err
+    held = manifest(tmp_path)["splits"]["heldout"]
+    assert held["rejected"] == [{"seed": 20, "step": "realised", "reason": "min_distance (realised)"}]
+    assert used_seeds(tmp_path, "heldout") == [21, 22] and "check realised_min_distance: PASS" in out

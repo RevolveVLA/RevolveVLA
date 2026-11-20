@@ -14,6 +14,8 @@ from conftest import COMP, POLLED, REPO, RUN, TASKS, load
 
 import launch
 
+pytestmark = [pytest.mark.gpu, pytest.mark.skipif(os.environ.get("DATAGEN_GPU") != "1", reason="needs a GPU: DATAGEN_GPU=1")]
+
 PHASES = ("approach", "grasp", "open", "release")
 # Legacy plan runs of seed 0 (the earlier pipeline's planner image and v2 round start sets,
 # 50 attempts): planned / trajopt successes. The trajectories themselves are not repeatable

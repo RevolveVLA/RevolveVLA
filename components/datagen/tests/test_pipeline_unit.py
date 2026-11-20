@@ -131,3 +131,27 @@ def test_sampling_is_deterministic_and_within_ranges(tmp_path):
 def test_limits_come_from_the_randomisers(tmp_path):
     with pytest.raises(S.SpecError, match="outside the hard limits"):
         make(tmp_path, randomisers={"fake_datagen": {"x": [-2, 0.5], "y": [1, 2]}})
+
+
+def test_min_distance_to_a_source_split_and_redraws_are_recorded(tmp_path):
+    splits = {"train": RAW["splits"]["train"],
+              "heldout": {"target": 2, "pool": {"initial": [20, 29]}, "record": False,
+                          "min_distance": {"from": "train", "value": 0.25}}}
+    make(tmp_path, splits=splits).run(["sample"], splits=["heldout"])      # samples train first
+    m = load(tmp_path)["splits"]
+    train = [c["values"] for c in m["train"]["sampled"]]
+    dims = S.parse(RAW).dims()
+    from datagen.core.samplers import distance
+    assert all(distance(c["values"], t, dims) >= 0.25 for c in m["heldout"]["sampled"] for t in train)
+    assert m["heldout"]["redrawn"] and {r["reason"] for r in m["heldout"]["redrawn"]} == {"min_distance"}
+    assert "redrawn" not in m["train"]
+
+
+def test_stratified_replacement_stays_in_the_cell(tmp_path):
+    strat = {"strategy": "stratified", "bins": {"fake_datagen.x": 2}}
+    splits = {"train": RAW["splits"]["train"] | {"sampler": strat, "pool": {"initial": [0, 5], "replacement": [6, 11]}}}
+    make(tmp_path, splits=splits, generator={"plugin": "fake_datagen", "fail_seeds": [0]}).run(["generate"])
+    rec = load(tmp_path)["splits"]["train"]
+    cell = {c["seed"]: c["cell"] for c in rec["sampled"]}
+    new = [e["config"]["seed"] for e in rec["used"] if e["config"]["seed"] >= 3]
+    assert len(new) == 1 and cell[new[0]] == cell[0] and rec["rejected"][0]["seed"] == 0

@@ -67,13 +67,24 @@ class Pipeline:
     def _configs(self, split: SplitSpec) -> list[Config]:
         return [Config.from_dict(d) for d in self.manifest.split(split.name)["sampled"]]
 
+    def _avoid(self, split: SplitSpec) -> list[Config]:
+        """The configs another split's min_distance keeps this one away from (sampled first if need be)."""
+        md = split.min_distance
+        if md is None or md.source == split.name:
+            return []
+        source = self.spec.split(md.source)
+        self._sample([source])
+        return self._configs(source)
+
     def _sample(self, splits):
         for s in splits:
             rec = self.manifest.split(s.name)
             if not rec["sampled"]:
                 sampler = self.plugins.samplers[s.sampler.strategy]
-                configs = sampler.sample(s, self.spec.dims(), s.pool.seeds(), self.spec.seed)
+                configs = sampler.sample(s, self.spec.dims(), s.pool.seeds(), self.spec.seed, avoid=self._avoid(s))
                 rec["sampled"] = [c.to_dict() for c in configs]
+                if sampler.redrawn:
+                    rec["redrawn"] = list(sampler.redrawn)
             self.log(f"sample {s.name}: {len(rec['sampled'])} configs")
         self.manifest.save()
 

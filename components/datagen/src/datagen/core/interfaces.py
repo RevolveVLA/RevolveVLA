@@ -8,7 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .spec import DatagenSpec, Dim, SplitSpec
 
@@ -50,10 +50,16 @@ class Result:
 
 
 class Sampler(ABC):
-    """A sampling strategy: configs for the given seeds of a split, deterministic in (spec.seed, seed)."""
+    """A sampling strategy: configs for the given seeds of a split, deterministic in (spec.seed, split, seeds).
+
+    A draw is redrawn (same cell) when `reject(config)` returns a reason or, with the split's `min_distance`, it lies
+    closer than that to a config of `avoid` (the source split's) or, for `from: <itself>`, to an earlier config of this
+    call. Redrawn draws are listed in `redrawn` ({seed, cell, values, reason}) until the next call."""
+    redrawn: Sequence[Mapping[str, Any]] = ()
 
     @abstractmethod
-    def sample(self, split: SplitSpec, dims: Mapping[str, Dim], seeds: Sequence[int], base_seed: int) -> list[Config]:
+    def sample(self, split: SplitSpec, dims: Mapping[str, Dim], seeds: Sequence[int], base_seed: int,
+               reject: Callable[[Config], str | None] | None = None, avoid: Sequence[Config] = ()) -> list[Config]:
         ...
 
 

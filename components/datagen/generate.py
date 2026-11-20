@@ -4,14 +4,27 @@ an accepted check the camera replay that records the episode (MCAP bag), until t
 episodes_per_seed accepted episodes or its planned attempts run out. `workers` seeds at a time.
 
   python components/datagen/generate.py --task T --seeds 0-9 --out runs/<exp>/turn_0/data \
-      [--episodes-per-seed 1] [--workers 2] [--attempts N] [--variant NAME]
-  generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER) -> manifest
+      [--episodes-per-seed 1] [--workers 2] [--attempts N] [--variant NAME] [--checks 1]
+  generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
+           checks=1, record=True) -> manifest
+
+--checks N (N > 1): an attempt passes its check only when N camera-off replays of the same plan from the
+same start are all accepted (repeat_check: repeats 1..N-1 run into checks/seed_<s>_a<a>_r<k>/, stopping
+at the first rejection). The check record then adds repeats and repeat_check {n, accepted, state_log_sha256
+(one per repeat run), identical, reason "repeat check k/N failed"}, and its `accepted` is the N-of-N
+verdict; the manifest adds checks. A resume continues from the repeats already recorded.
+
+layouts {seed: layout} (start_design.parse_layout: start_pose and / or grasp_id, what the datagen plugin
+realised): the seed's plan run starts from it (entry.py --layout) and episode.json "datagen" adds the layout.
+record=False stops a seed at its first accepted check (the "episodes" are those checks, label "check": no camera
+replay, no bag): a split whose episodes are not recorded, e.g. held-out start states (datagen.plugins.automoma).
 
 Layout under out/ (ported from the earlier pipeline's plans/ check/ record/ stages):
   manifest.json              rewritten atomically after every plan, check and record; a re-run resumes
                              from it (finished items are skipped, a half-written item is redone)
   plans/seed_<s>/            the plan run (handoff.npz/json, plan_report.json, fk_check.json, assets/)
   checks/seed_<s>_a<a>/      the attempt's camera-off replay (verdict.json, phase_report.json, state_log.npz)
+  checks/seed_<s>_a<a>_r<k>/ its repeat k (--checks > 1)
   episodes/seed_<s>_a<a>/    the camera replay: bag/, bag_check.json, verdict.json, phase_report.json,
                              phase_states/, state_log.npz, episode.json (+ "datagen": seed, attempt, label),
                              plan.json + plan.npz (the attempt's planned rows); the camera PNGs are removed
@@ -53,13 +66,14 @@ RECORD_TIMEOUT_S = 900           # a camera replay takes 36-50 s
 # ------------------------------------------------------------------ jobs (docker by default; stubs in tests)
 @dataclass(frozen=True)
 class Jobs:
-    plan: Callable[..., int | None]       # (task, seed, out, job_dir, attempts) -> exit code
+    plan: Callable[..., int | None]       # (task, seed, out, job_dir, attempts[, layout=]) -> exit code
     replay: Callable[..., int | None]     # (task, plan_dir, attempt, out, job_dir, cameras_hz) -> exit code
 
 
-def docker_plan(task, seed, out, job_dir, attempts=None):
+def docker_plan(task, seed, out, job_dir, attempts=None, layout=None):
     import launch
     args = ["plan", "--task", task, "--seed", str(seed), "--out", str(out)]
+    args += ["--layout", json.dumps(layout)] if layout is not None else []
     return launch.run(args + (["--attempts", str(attempts)] if attempts else []), job_dir, timeout=PLAN_TIMEOUT_S)["exit"]
 
 
@@ -107,6 +121,49 @@ def judge(d, rc):
                 state_log_sha256=sha256(Path(d) / "state_log.npz"))
 
 
+def repeat_check(n, chk, run, save=lambda chk: None):
+    """The N-of-N check rule on one attempt -> chk with repeats and repeat_check. chk: repeat 0's check (judge +
+    dir); run(k) -> repeat k's (camera off, its own dirs). Repeats stop at the first rejection and continue
+    from chk's repeat_check / repeats (a resume); save(new chk) after each (fresh dicts: chk is not mutated,
+    the manifest may be serialising it). n == 1 or done: chk."""
+    if n == 1 or repeat_done(chk, n):
+        return chk
+    rc = chk.get("repeat_check")
+    acc, shas = ((list(rc["accepted"]), list(rc["state_log_sha256"])) if rc
+                 else ([chk["accepted"]], [chk["state_log_sha256"]]))
+    reps = list(chk.get("repeats", []))
+    while all(acc) and len(acc) < n:
+        save(dict(chk, accepted=False, repeats=list(reps), repeat_check=dict(n=n, accepted=list(acc),
+                                                                            state_log_sha256=list(shas))))
+        r = run(len(acc))
+        reps.append(r)
+        acc.append(r["accepted"])
+        shas.append(r["state_log_sha256"])
+    bad = next((k for k, ok in enumerate(acc) if not ok), None)
+    chk = dict(chk, accepted=bad is None, repeats=reps, repeat_check=dict(
+        n=n, accepted=acc, state_log_sha256=shas, identical=None not in shas and len(set(shas)) == 1,
+        reason=None if bad is None else f"repeat check {bad + 1}/{n} failed"))
+    save(chk)
+    return chk
+
+
+def repeat_done(chk, n):
+    rc = chk.get("repeat_check") or {}
+    return rc.get("n") == n and "reason" in rc
+
+
+def plan_failure(rc, planned, handoff, ok):
+    """Why a plan run left nothing to check (plan failed / no IK / FK check failed), or None. handoff: a
+    callable -> handoff.json (read only when nothing was planned)."""
+    if rc not in (0, 1):
+        return "plan failed"
+    if not planned:
+        rows = (handoff() or {}).get("attempts_detail", [])
+        ik = any(r.get("goal_ik") == "seeded" or r.get("goal_ik_cluster", -1) >= 0 for r in rows)
+        return "plan failed" if ik else "no IK"
+    return None if ok else "FK check failed"
+
+
 class Manifest:
     """manifest.json: one writer (any thread, under the lock), atomic writes."""
 
@@ -137,14 +194,16 @@ class Manifest:
 # ------------------------------------------------------------------ one seed
 class Generation:
     def __init__(self, task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER,
-                 say=lambda msg: print(msg, flush=True)):
+                 say=lambda msg: print(msg, flush=True), layouts=None, checks=1, record=True):
         self.task, self.seeds, self.out = task, list(seeds), Path(out).resolve()
         self.eps, self.workers, self.attempts, self.jobs, self._say = episodes_per_seed, workers, attempts, jobs, say
+        self.layouts, self.checks, self.recording = layouts or {}, checks, record
         robot = specs_bridge.task_spec(task).robot
         self.cameras = [c.name for c in robot.cameras]
         self.fps = int(robot.cameras[0].rate)
         self.man = Manifest(self.out, dict(task=task, seed_list=self.seeds, episodes_per_seed=episodes_per_seed,
-                                           attempts=attempts or specs_bridge.load("generator", "automoma")["attempts"]))
+                                           attempts=attempts or specs_bridge.load("generator", "automoma")["attempts"],
+                                           **(dict(checks=checks) if checks > 1 else {})))
 
     def say(self, msg):
         self._say(f"{time.strftime('%H:%M:%S')} generate {self.task}: {msg}")
@@ -179,7 +238,8 @@ class Generation:
         p = rec["plan"]
         if p is None or not (p["ok"] or p["rc"] == 1):       # rc 1: the FK check failed (kept); else redo
             self.say(f"seed {s}: plan")
-            rc = self.jobs.plan(self.task, s, plan_dir, self.out / "jobs" / f"plan_seed_{s}", self.attempts)
+            rc = self.jobs.plan(self.task, s, plan_dir, self.out / "jobs" / f"plan_seed_{s}", self.attempts,
+                                **({"layout": self.layouts[s]} if s in self.layouts else {}))
             h, fk = read(plan_dir / "handoff.json"), read(plan_dir / "fk_check.json")
             ok = bool(rc == 0 and h and fk and fk.get("passed"))
             p = dict(ok=ok, rc=rc, dir=self.rel(plan_dir), attempts=(h or {}).get("attempts"),
@@ -197,19 +257,36 @@ class Generation:
                 continue
             chk = rec["checks"].get(str(a))
             if chk is None:
-                cdir = self.out / "checks" / f"seed_{s}_a{a}"
-                rc = self.jobs.replay(self.task, plan_dir, a, cdir, self.out / "jobs" / f"check_seed_{s}_a{a}", 0)
-                chk = dict(judge(cdir, rc), dir=self.rel(cdir))
+                chk = self.check(s, a, plan_dir)
                 self.update(lambda: rec["checks"].__setitem__(str(a), chk))
                 self.say(f"seed {s} a{a}: check " + ("accepted" if chk["accepted"] else
                                                        f"rejected ({chk['failed_phase']}; {'; '.join(chk['reasons'])[:200]})"))
+            if self.checks > 1 and not repeat_done(chk, self.checks):
+                chk = repeat_check(self.checks, chk, lambda k: self.check(s, a, plan_dir, k),
+                                   lambda c: self.update(lambda: rec["checks"].__setitem__(str(a), c)))
+                r = chk["repeat_check"]
+                self.say(f"seed {s} a{a}: " + (r["reason"] or f"{self.checks}/{self.checks} checks accepted")
+                         + f", state logs {'identical' if r['identical'] else 'differ'}")
             if chk["accepted"]:
-                e = self.record(s, a, plan_dir, chk)
+                e = self.record(s, a, plan_dir, chk) if self.recording else self.checked(s, a, chk)
                 self.update(lambda: rec["episodes"].append(e))
                 self.say(f"seed {s} a{a}: episode {e['name']} " + ("accepted" if e["accepted"] else f"rejected: {e['reasons']}"))
         n = sum(e["accepted"] for e in rec["episodes"])
         self.update(lambda: rec.update(state="done" if n >= self.eps else "short",
                                        reason=None if n >= self.eps else f"{n} of {self.eps} accepted, planned attempts used up"))
+
+    def check(self, s, a, plan_dir, k=0):
+        """Camera-off replay k of an attempt (k 0: the check; k >= 1: its repeats) -> judge + dir."""
+        name = f"seed_{s}_a{a}" + (f"_r{k}" if k else "")
+        cdir = self.out / "checks" / name
+        rc = self.jobs.replay(self.task, plan_dir, a, cdir, self.out / "jobs" / f"check_{name}", 0)
+        return dict(judge(cdir, rc), dir=self.rel(cdir))
+
+    @staticmethod
+    def checked(s, a, chk):
+        """The "episode" of an accepted check that is not recorded (record=False)."""
+        return dict(name=f"seed_{s}_a{a}", dir=chk["dir"], seed=s, attempt_id=a, accepted=True, reasons=[],
+                    state_log_sha256=chk["state_log_sha256"], check=chk["dir"], label="check")
 
     def record(self, s, a, plan_dir, chk):
         name = f"seed_{s}_a{a}"
@@ -241,6 +318,8 @@ class Generation:
                     ep["datagen"]["start_sample"] = dict(st["sample"], mode=st.get("mode"),
                                                          attempt=next((x for x in st.get("attempts", [])
                                                                        if x["attempt_id"] == a), None))
+                if s in self.layouts:
+                    ep["datagen"]["layout"] = self.layouts[s]
                 J.write_json(d / "episode.json", ep)
         return e
 
@@ -254,9 +333,11 @@ def set_variant(variant, task):
         specs_bridge.round_blocks(task)          # raises for a variant the task does not define for the robot
 
 
-def generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None):
+def generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
+             checks=1, record=True):
     kw = {} if say is None else dict(say=say)
-    return Generation(task, seeds, out, episodes_per_seed, workers, attempts, jobs, **kw).run()
+    return Generation(task, seeds, out, episodes_per_seed, workers, attempts, jobs, layouts=layouts, checks=checks,
+                      record=record, **kw).run()
 
 
 def main(argv=None):
@@ -270,9 +351,12 @@ def main(argv=None):
     ap.add_argument("--attempts", type=int, default=None, help="trajopt problems per plan run (generator.yaml)")
     ap.add_argument("--variant", default=None, help="generator.yaml tasks.<task>.variants.<name> (an experiment's "
                                                      "datagen.variant): sets $REVOLVE_DATAGEN_VARIANT for the jobs")
+    ap.add_argument("--checks", type=int, default=1, help="camera-off replays an attempt must pass, all of them (>= 1)")
     a = ap.parse_args(argv)
+    if a.checks < 1:
+        ap.error("--checks must be >= 1")
     set_variant(a.variant, a.task)
-    m = generate(a.task, parse_seeds(a.seeds), a.out, a.episodes_per_seed, a.workers, a.attempts)
+    m = generate(a.task, parse_seeds(a.seeds), a.out, a.episodes_per_seed, a.workers, a.attempts, checks=a.checks)
     return 1 if any(r["state"] == "error" for r in m["seeds"].values()) else 0
 
 

@@ -84,5 +84,6 @@ class AutoMoma(Generator):
         if rec["state"] == "error":
             return rec["reason"]
         p = rec["plan"] or {}
+        repeat = [c["repeat_check"]["reason"] for c in rec["checks"].values() if (c.get("repeat_check") or {}).get("reason")]
         return G.plan_failure(p.get("rc"), p.get("planned"), lambda: G.read(out / p["dir"] / "handoff.json"),
-                              p.get("ok")) or "replay rejected"
+                              p.get("ok")) or "replay rejected" + (f" ({repeat[-1]})" if repeat else "")

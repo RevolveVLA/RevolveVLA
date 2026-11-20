@@ -115,6 +115,12 @@ def test_generate_failures_say_why(automoma, tmp_path):
         assert not res.ok and res.reason == reason and res.realised == {}
 
 
+def test_generate_failure_names_the_repeat_check_that_failed(automoma, tmp_path):
+    gen, _ = automoma(PlanStub(planned=(0,), dirs={"seed_3_a0_r1": "reject"}), {"checks": 2})
+    res = gen.generate(config(), tmp_path / "e")
+    assert not res.ok and res.reason == "replay rejected (repeat check 2/2 failed)"
+
+
 def test_generate_reports_an_infrastructure_error(automoma, tmp_path):
     gen, _ = automoma(PlanStub(dirs={"seed_3_a0": "crash"}))
     res = gen.generate(config(), tmp_path / "e")

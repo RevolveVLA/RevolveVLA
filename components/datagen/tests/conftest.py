@@ -132,3 +132,7 @@ def numbers():
     yield d
     RUN.mkdir(parents=True, exist_ok=True)
     (RUN / "numbers.json").write_text(json.dumps(d, indent=1, default=str))
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "gpu: needs a free GPU, docker and the built images; set DATAGEN_GPU=1 to run")

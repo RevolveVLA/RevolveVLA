@@ -1,9 +1,12 @@
 """core/spec.py: loading, validation (every bad case names its yaml path), hash stability, hard limits."""
 import copy
+from pathlib import Path
 
 import pytest
 
 from datagen.core import spec as S
+
+REPO = Path(__file__).resolve().parents[3]
 
 GOOD = {
     "task": "open_fridge_door", "robot": "mobile_panda", "out": "runs/datagen/x",
@@ -124,3 +127,8 @@ def test_check_limits():
             S.check_limits(s, limits | {key: lim})
     with pytest.raises(S.SpecError, match="unknown dim"):
         S.check_limits(s, {k: v for k, v in limits.items() if k != "grasp.id"})
+
+
+@pytest.mark.parametrize("path", sorted((REPO / "specs" / "datagen").glob("*.yaml")), ids=lambda p: p.name)
+def test_the_datagen_specs_of_the_repo_load(path):
+    assert S.load(path).splits

@@ -31,6 +31,10 @@ a camera-off check per planned attempt and, when it is accepted, the camera repl
 An episode is accepted when the check and the record both pass (replay exit 0: offline verdict accepted and
 every task.yaml phase passed), the record reproduces the check's state_log.npz (sha256), and its bag check passes.
 
+The planner's scripts and helpers (plan.py, start_design.py, gen_assets.py, frames.py, fk_check.py, layout_check.py)
+live in `src/datagen/plugins/automoma/`, flat modules on PYTHONPATH in the image (`launch.py`); the same directory is the
+`automoma` generator plugin (`generator: {plugin: automoma}`) of `./revolve datagen`, whose adapter calls generate.py.
+
 ## Inputs
 specs/tasks/<t>/task.yaml (-> robot, scene) through `src/datagen/specs_bridge.py` (the old plugin dicts the
 planner reads). Generator settings: `src/datagen/generator.yaml` (the old generator plugin.yaml: attempts 50,

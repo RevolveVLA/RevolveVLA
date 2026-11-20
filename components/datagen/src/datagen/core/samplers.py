@@ -52,6 +52,11 @@ def cell_order(sizes: Sequence[int]) -> list[tuple[int, ...]]:
     return out
 
 
+def cell_sizes(split: SplitSpec, free: Mapping[str, Dim]) -> list[int]:
+    """Cells per free dim of a stratified split: its `bins` for a continuous dim (default 1), one per choice."""
+    return [len(d.values) if isinstance(d, Choices) else split.sampler.bins.get(k, 1) for k, d in free.items()]
+
+
 class _Sampler(Sampler):
     def __init__(self):
         self.redrawn = []
@@ -102,17 +107,13 @@ class StratifiedSampler(_Sampler):
     """Cells = `bins` per continuous dim (default 1) x every choice of a choices dim. The pool's seeds take the cells
     in `cell_order`, each uniform in its cell (a choices dim is its cell's choice), so every prefix is balanced."""
 
-    @staticmethod
-    def _sizes(split, free):
-        return [len(d.values) if isinstance(d, Choices) else split.sampler.bins.get(k, 1) for k, d in free.items()]
-
     def _starts(self, split, free, rngs, base_seed):
-        order = cell_order(self._sizes(split, free))
+        order = cell_order(cell_sizes(split, free))
         cells = [order[i % len(order)] for i in range(len(rngs))]
         return [(cell, self._redraw(rng, cell, free, split)) for cell, rng in zip(cells, rngs)]
 
     def _redraw(self, rng, cell, free, split):
-        sizes = self._sizes(split, free)
+        sizes = cell_sizes(split, free)
         return [(c + (rng.random() if isinstance(d, Range) else 0.5)) / n for c, n, d in zip(cell, sizes, free.values())]
 
 

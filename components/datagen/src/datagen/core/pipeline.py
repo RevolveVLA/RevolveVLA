@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from . import manifest as mf
-from . import pool
+from . import pool, separation
 from .errors import DatagenError
 from .interfaces import (Check, Config, Converter, Generator, Randomiser, Recorder, Result, Sampler, Validator)
 from .spec import DatagenSpec, SplitSpec, check_limits
@@ -100,8 +100,10 @@ class Pipeline:
                     res = self._call(f"validate {s.name} seed {config.seed}", v.validate, config)
                     if not res.ok:
                         return "validate", res
-                return "generate", self._call(f"generate {s.name} seed {config.seed}",
-                                              gen.generate, config, self.episode_dir(config))
+                res = self._call(f"generate {s.name} seed {config.seed}", gen.generate, config, self.episode_dir(config))
+                if why := separation.too_close(s, self.spec.dims(), res, self.manifest.data):
+                    return "realised", Result.fail(why)       # the pool walk replaces it in its cell
+                return "generate", res
             pool.walk(self._configs(s), rec, s.target, attempt, self.manifest.save)
             self.log(f"generate {s.name}: {len(rec['used'])}/{s.target} accepted, {len(rec['rejected'])} rejected")
 

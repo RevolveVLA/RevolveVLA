@@ -44,7 +44,7 @@ def test_all_steps_in_order_and_outputs(tmp_path, calls):
     assert m["convert"]["result"]["ok"] and len(m["convert"]["episodes"]) == 3
     assert json.loads((tmp_path / "dataset" / "dataset.json").read_text()) == ["seed_0", "seed_1", "seed_2"]
     assert (tmp_path / "train" / "episodes" / "seed_1" / "bag.txt").exists()
-    assert m["checks"] == [{"name": "target", "ok": True, "reason": "", "realised": {}, "paths": {}}]
+    assert [(c["name"], c["ok"]) for c in m["checks"]] == [("target", True), ("split_disjoint", True)]
     assert "| train | 3 | 3 | 0 | 3 |" in (tmp_path / "report.md").read_text()
 
 

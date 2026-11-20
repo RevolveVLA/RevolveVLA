@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .errors import DatagenError
+from . import stats
 from .spec import DatagenSpec
 
 
@@ -42,14 +43,30 @@ class Manifest:
             os.replace(tmp, self.path)
 
 
+def _num(pair) -> str:
+    return "-" if pair is None else f"{pair[0]:.3f}"
+
+
 def report(spec: DatagenSpec, data: dict[str, Any]) -> str:
-    """Short markdown summary: per split target vs done, then the checks."""
+    """Short markdown: per split target vs done, the cell balance of stratified splits, the min distances, the checks."""
     lines = [f"# {spec.task} ({spec.robot}), spec {spec.hash}", "", "| split | target | used | rejected | recorded |",
              "|---|---|---|---|---|"]
     for s in spec.splits:
-        rec = data["splits"].get(s.name, {"used": [], "rejected": []})
-        recorded = sum(e.get("record", {}).get("ok", False) for e in rec["used"])
-        lines.append(f"| {s.name} | {s.target} | {len(rec['used'])} | {len(rec['rejected'])} | {recorded} |")
+        p = stats.progress(s, stats.rec(data, s.name))
+        lines.append(f"| {s.name} | {s.target} | {p['used']} | {p['rejected']} | {p['recorded']} |")
+    for s in spec.splits:
+        if cells := stats.cells(spec, s, stats.rec(data, s.name)):
+            lines += ["", f"cells of {s.name} (bins {', '.join(f'{k} {n}' for k, n in cells['bins'].items())})", "",
+                      "| cell | pool | rejected | used | realised | exhausted |", "|---|---|---|---|---|---|"]
+            lines += [f"| {r['cell']} | {r['pool']} | {r['rejected']} | {r['used']} | "
+                      f"{'-' if r['realised'] is None else r['realised']} | {'yes' if r['exhausted'] else ''} |"
+                      for r in cells["rows"]]
+    if any(s.min_distance for s in spec.splits):
+        lines += ["", "| split | from | min distance | sampled | realised |", "|---|---|---|---|---|"]
+        for s in (s for s in spec.splits if s.min_distance):
+            d = stats.distances(spec, s, data)
+            lines.append(f"| {s.name} | {d['from']} | {d['value']}{' (realised)' if d['realised_required'] else ''} | "
+                         f"{_num(d['sampled'])} | {_num(d['realised'])} |")
     lines += ["", "| check | verdict | detail |", "|---|---|---|"]
     lines += [f"| {c['name']} | {'PASS' if c['ok'] else 'FAIL'} | {c['reason']} |" for c in data.get("checks", [])]
     return "\n".join(lines) + "\n"

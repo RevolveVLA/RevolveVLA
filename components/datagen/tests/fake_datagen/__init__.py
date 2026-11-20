@@ -1,7 +1,8 @@
 """Fake datagen plugins for the CPU tests (no docker, no GPU): tiny files, scripted failures, a call log.
 
 Registered under the module's own name, so a spec says `plugin: fake_datagen` (put tests/ on $DATAGEN_PLUGIN_PATH).
-Params: generator / recorder `fail_seeds`, validator `reject_seeds`. `KILL_AFTER = n` makes the generator raise
+Params: generator / recorder `fail_seeds`, validator `reject_seeds`, generator `realised` {seed: x} (the realised
+`fake_datagen.x` of that seed; others report only `x`). `KILL_AFTER = n` makes the generator raise
 KeyboardInterrupt on its (n+1)-th call (a killed run; a spec param would change the spec hash)."""
 import json
 from pathlib import Path
@@ -26,7 +27,7 @@ class Knob(Randomiser):
 @register("generator", "fake_datagen")
 class FakeGenerator(Generator):
     def __init__(self, spec, params):
-        self.fail, self.n = set(params.get("fail_seeds", [])), 0
+        self.fail, self.n, self.realised = set(params.get("fail_seeds", [])), 0, params.get("realised", {})
 
     def generate(self, config, out):
         CALLS.append(("generate", config.seed))
@@ -37,7 +38,10 @@ class FakeGenerator(Generator):
             return Result.fail("planner found no path")
         out.mkdir(parents=True, exist_ok=True)
         (out / "episode.json").write_text(json.dumps(dict(config.values)))
-        return Result(realised={"x": config.values.get("fake_datagen.x")}, paths={"episode": str(out / "episode.json")})
+        realised = {"x": config.values.get("fake_datagen.x")}
+        if config.seed in self.realised:
+            realised["fake_datagen.x"] = self.realised[config.seed]
+        return Result(realised=realised, paths={"episode": str(out / "episode.json")})
 
 
 @register("recorder", "fake_datagen")

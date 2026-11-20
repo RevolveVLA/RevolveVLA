@@ -9,10 +9,10 @@ import os
 import sys
 from pathlib import Path
 
-from .core import registry
+from .core import checks, registry
 from .core.errors import DatagenError
 from .core.pipeline import STEPS, Pipeline, PluginSet
-from .core.spec import DatagenSpec, PluginRef, load
+from .core.spec import DatagenSpec, load
 
 
 def build_plugins(spec: DatagenSpec, steps) -> PluginSet:
@@ -31,7 +31,7 @@ def build_plugins(spec: DatagenSpec, steps) -> PluginSet:
     if "convert" in steps:
         p.converter = one("converter", spec.converter)
     if "check" in steps:
-        p.checks = many("check", spec.checks or [PluginRef("target")])
+        p.checks = many("check", spec.checks or checks.default_checks(spec))
     return p
 
 

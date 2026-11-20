@@ -12,6 +12,7 @@ import layout_check
 from datagen.core import registry, spec as S
 from datagen.core.interfaces import Config, Generator, Validator
 from datagen.core.pipeline import Pipeline, PluginSet
+from datagen.plugins import generate_module
 from datagen.plugins.automoma import adapter, clearance
 from datagen.plugins.automoma.layout import Realiser
 from datagen.plugins.randomisers.robot_base import box_centre_obj
@@ -65,7 +66,7 @@ def test_importing_the_plugin_needs_no_heavy_stack():
     code = ("import sys; sys.path.insert(0, 'components/datagen/src'); import datagen.plugins.automoma\n"
             "bad = [m for m in ('torch', 'numpy', 'docker', 'curobo', 'automoma', 'generate') if m in sys.modules]\n"
             "assert not bad, bad")
-    root = adapter.COMPONENT.parents[1]
+    root = generate_module.COMPONENT.parents[1]
     r = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
 

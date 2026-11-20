@@ -2,7 +2,8 @@
 
 Every step reads and writes only the manifest, so each is idempotent and a killed run resumes: sampling is kept,
 the walk skips decided seeds, record redoes episodes without a good recording, convert reruns when its episodes
-change. Layout under `out`: manifest.json, report.md, <split>/episodes/seed_<n>/, dataset/."""
+change. Layout under `out`: manifest.json, report.md, <split>/episodes/seed_<n>/, dataset/. A recorder's Result.paths["episode"]
+is the dir convert reads (default: <split>/episodes/seed_<n>)."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -122,8 +123,8 @@ class Pipeline:
     def _convert(self, splits):
         if self.plugins.converter is None:
             return self.log("convert: no converter in the spec, skipped")
-        episodes = [str(self.episode_dir(Config.from_dict(e["config"]))) for s in splits if s.record
-                    for e in self.manifest.split(s.name)["used"] if e.get("record", {}).get("ok")]
+        episodes = [e["record"]["paths"].get("episode") or str(self.episode_dir(Config.from_dict(e["config"])))
+                    for s in splits if s.record for e in self.manifest.split(s.name)["used"] if e.get("record", {}).get("ok")]
         done = self.manifest.data.get("convert", {})
         if done.get("episodes") == episodes and done["result"]["ok"]:
             return self.log("convert: up to date")

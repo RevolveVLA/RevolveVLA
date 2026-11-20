@@ -14,16 +14,15 @@ from __future__ import annotations
 
 import json
 import math
-import os
 from pathlib import Path
 
 from datagen.core.errors import DatagenError
 from datagen.core.interfaces import Config, Generator, Result
 from datagen.core.registry import register
 
+from .. import generate_module
 from .layout import Realiser
 
-COMPONENT = Path(__file__).resolve().parents[4]          # components/datagen: generate.py, launch.py
 PARAMS = ("attempts", "checks", "variant")
 
 
@@ -77,15 +76,7 @@ class AutoMoma(Generator):
 
     def _generate_module(self):
         """generate.py (docker SDK, numpy), imported when first needed; REVOLVE_ROBOT / variant as the CLI sets them."""
-        import sys
-        if str(COMPONENT) not in sys.path:
-            sys.path.append(str(COMPONENT))
-        from revolve_common import specs
-        os.environ[specs.ROBOT_ENV] = self.spec.robot
-        import generate
-        if "variant" in self.params:
-            generate.set_variant(self.params["variant"], self.spec.task)
-        return generate
+        return generate_module.load(self.spec.robot, self.spec.task, self.params.get("variant"))
 
     @staticmethod
     def failure(G, out: Path, rec) -> str:

@@ -7,6 +7,7 @@ episodes_per_seed accepted episodes or its planned attempts run out. `workers` s
       [--episodes-per-seed 1] [--workers 2] [--attempts N] [--variant NAME] [--checks 1]
   generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
            checks=1, record=True) -> manifest
+  record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None) -> episode record  (the recorder of a record=False run)
 
 --checks N (N > 1): an attempt passes its check only when N camera-off replays of the same plan from the
 same start are all accepted (repeat_check: repeats 1..N-1 run into checks/seed_<s>_a<a>_r<k>/, stopping
@@ -246,7 +247,8 @@ class Generation:
                      planned=[r["attempt_id"] for r in (h or {}).get("attempts_detail", []) if r["success"]],
                      fk_passed=(fk or {}).get("passed"))
             self.update(lambda: rec.update(plan=p, state="planned" if ok else "failed",
-                                           reason=None if ok else f"plan exit {rc}"))
+                                           reason=None if ok else f"plan exit {rc}",
+                                           **({"layout": self.layouts[s]} if s in self.layouts else {})))
             self.say(f"seed {s}: {len(p['planned'])} of {p['attempts']} planned" + ("" if ok else f", plan exit {rc}"))
         if not p["ok"]:
             return
@@ -288,6 +290,20 @@ class Generation:
         return dict(name=f"seed_{s}_a{a}", dir=chk["dir"], seed=s, attempt_id=a, accepted=True, reasons=[],
                     state_log_sha256=chk["state_log_sha256"], check=chk["dir"], label="check")
 
+    def record_checked(self, s, a):
+        """The camera replay of seed s's accepted check of attempt a (an episode of a record=False run) -> its
+        episode record, which replaces the check's in the manifest. A recorded and accepted one is kept (resume)."""
+        rec = self.man.seed(s)
+        have = next((e for e in rec["episodes"] if e["attempt_id"] == a), None)
+        if have is None:
+            raise SystemExit(f"seed {s}: attempt {a} has no accepted check in {self.man.path}")
+        if have["label"] == "demo" and have["accepted"]:
+            return have
+        e = self.record(s, a, self.out / "plans" / f"seed_{s}", rec["checks"][str(a)])
+        self.update(lambda: rec.update(episodes=[x for x in rec["episodes"] if x["attempt_id"] != a] + [e]))
+        self.say(f"seed {s} a{a}: episode {e['name']} " + ("accepted" if e["accepted"] else f"rejected: {e['reasons']}"))
+        return e
+
     def record(self, s, a, plan_dir, chk):
         name = f"seed_{s}_a{a}"
         d = self.out / "episodes" / name
@@ -322,6 +338,18 @@ class Generation:
                     ep["datagen"]["layout"] = self.layouts[s]
                 J.write_json(d / "episode.json", ep)
         return e
+
+
+def record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None):
+    """Camera replay + bag of the accepted check of `attempt` in a finished record=False run at `out` (its
+    manifest gives attempts, checks and the seed's layout) -> the episode record (name, dir, accepted, reasons)."""
+    m = read(Path(out) / "manifest.json")
+    if m is None:
+        raise SystemExit(f"{out}: no manifest.json (generate it first)")
+    layouts = {int(k): r["layout"] for k, r in m["seeds"].items() if "layout" in r}
+    kw = {} if say is None else dict(say=say)
+    return Generation(task, [seed], out, 1, 1, m["attempts"], jobs, layouts=layouts, checks=m.get("checks", 1),
+                      **kw).record_checked(seed, attempt)
 
 
 def set_variant(variant, task):

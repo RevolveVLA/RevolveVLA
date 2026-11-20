@@ -258,3 +258,25 @@ def test_docker_plan_args(monkeypatch):
     G.docker_plan("t", 3, "/o", "/j", None, layout={"grasp_id": 1})
     assert runs == [["plan", "--task", "t", "--seed", "3", "--out", "/o", "--attempts", "5"],
                     ["plan", "--task", "t", "--seed", "3", "--out", "/o", "--layout", '{"grasp_id": 1}']]
+
+
+def test_record_attempt_records_the_accepted_check_of_a_record_false_run(tmp_path):
+    st = Stub(planned=(1, 3), rejected=(1,))
+    gen(tmp_path, st, record=False, layouts={0: {"grasp_id": 2}}, checks=1)
+    assert st.calls == [("plan", 0), ("check", 0, 1), ("check", 0, 3)]
+    e = G.record_attempt("open_fridge_door", 0, 3, tmp_path, jobs=st.jobs(), say=lambda m: None)
+    assert st.calls[-1] == ("record", 0, 3) and e["accepted"] and e["label"] == "demo" and e["dir"] == "episodes/seed_0_a3"
+    ep = json.loads((tmp_path / "episodes" / "seed_0_a3" / "episode.json").read_text())
+    assert ep["datagen"]["layout"] == {"grasp_id": 2} and ep["datagen"]["label"] == "demo"
+    m = json.loads((tmp_path / "manifest.json").read_text())
+    assert [x["label"] for x in m["seeds"]["0"]["episodes"]] == ["demo"] and m["episodes"] == ["seed_0_a3"]
+    assert G.record_attempt("open_fridge_door", 0, 3, tmp_path, jobs=st.jobs(), say=lambda m: None) == e     # resume: no replay
+    assert [c for c in st.calls if c[0] == "record"] == [("record", 0, 3)]
+
+
+def test_record_attempt_needs_a_finished_run(tmp_path):
+    with pytest.raises(SystemExit):
+        G.record_attempt("open_fridge_door", 0, 0, tmp_path, jobs=Stub().jobs())
+    gen(tmp_path, Stub(planned=(0,)), record=False)
+    with pytest.raises(SystemExit):
+        G.record_attempt("open_fridge_door", 0, 4, tmp_path, jobs=Stub().jobs())

@@ -1,12 +1,14 @@
 """Datagen entrypoint (runs inside revolve-datagen, normally under revolve_common.wrapper with
 --parser progress:parse):
 
-  entry.py plan --task T --seed S --out D [--attempts N] [--centre-seed C]
+  entry.py plan --task T --seed S --out D [--attempts N] [--centre-seed C] [--layout JSON]
       one AutoMoMa plan run into D (removed first): the robot's gz models (the simulator's generator,
       runs/models, shared), plan.py with the task's starts block (generator.yaml -> ROUND_STARTS), then
       fk_check.py (planner FK against the gz model). Exit 0 = planned and the FK check passed (as the
       the earlier pipeline's planner adapter), 1 = planned but the FK check failed (kept: the
       same seed plans the same), 3 = plan.py failed (retried on a resume).
+      --layout: {"start_pose": [x, y, yaw], "grasp_id": g} (either key optional; start_design.parse_layout) goes to
+      plan.py as ROUND_LAYOUT: every attempt starts at that pose (object frame) plus its own jitter. A bad one: exit 2.
 
 The replay, acceptance and recording of the planned attempts run in the simulator component; the host
 composition is components/datagen/generate.py.
@@ -55,7 +57,21 @@ def call(cmd, env):
         kill(signal.SIGKILL)
 
 
+def layout_env(layout):
+    """{"ROUND_LAYOUT": layout} (the --layout JSON text, checked) or {} without one. ValueError for a bad layout."""
+    if layout is None:
+        return {}
+    import start_design                       # on PYTHONPATH (plugins/automoma): imported only for a layout
+    start_design.layout_from_env({"ROUND_LAYOUT": layout})
+    return {"ROUND_LAYOUT": layout}
+
+
 def plan(a):
+    try:
+        layout = layout_env(a.layout)
+    except ValueError as e:
+        print(e)
+        return 2                      # not 1 (a kept FK failure): nothing planned
     out = rpath(a.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
@@ -70,6 +86,7 @@ def plan(a):
                CENTRE_SEED=str(a.seed if a.centre_seed is None else a.centre_seed))
     env.update({f"ROUND_{k.upper()}": json.dumps(v) for k, v in specs_bridge.round_blocks(a.task).items()
                 if k == "starts"})
+    env.update(layout)
     progress(stage="plan", attempts=int(env["ATTEMPTS"]))
     rc = call([sys.executable, str(AUTOMOMA / "plan.py"), str(out), f"task={a.task}"], env)
     if rc != 0 or not (out / "handoff.json").is_file():
@@ -92,6 +109,7 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--attempts", type=int, default=None, help="default: generator.yaml attempts")
     p.add_argument("--centre-seed", type=int, default=None, help="starts block centre seed (default: --seed)")
+    p.add_argument("--layout", default=None, help='JSON {"start_pose": [x, y, yaw], "grasp_id": g}: plan from it')
     a = ap.parse_args(argv)
     return {"plan": plan}[a.cmd](a)
 

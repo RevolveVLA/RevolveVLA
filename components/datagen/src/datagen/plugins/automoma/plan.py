@@ -44,6 +44,8 @@ reach_split (A,) (the row the unfold starts after) and pregrasp_arm (A, arm DoF)
 A mint round's plan dir holds plan_request.json (start_design.read_plan_request): the stop rule's
 cluster of each attempt and centre seed of each cluster. The attempts then start from those clusters
 and centres, and the "starts" record adds "centre_seeds".
+With a layout too (env ROUND_LAYOUT, start_design.layout_starts) every attempt starts at the layout's
+start_pose with the layout's grasp; the "starts" record holds the layout and that spot as its one centre.
 """
 import copy
 import json
@@ -461,6 +463,7 @@ def main(out, sel):
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
+    layout = start_design.layout_from_env(os.environ)
     reach = isinstance(spec, start_design.ReachSpec)     # a drive block is a reach block plus a far start
     drive = isinstance(spec, start_design.DriveSpec)
     if drive and rd["arm"].get("folded") is None:
@@ -468,6 +471,8 @@ def main(out, sel):
     if reach:
         if (out / start_design.REQUEST_FILE).exists():
             raise SystemExit(f"{start_design.REQUEST_FILE} needs a clustered starts block, not mode reach")
+        if layout is not None:
+            raise SystemExit("ROUND_LAYOUT needs a clustered starts block, not mode reach / drive")
         if attempts < 1:
             raise SystemExit("no attempts: ATTEMPTS is 0")
         # One grasp: the seed's sampled point along the task's grasp axis (the attempts only jitter the base).
@@ -481,12 +486,19 @@ def main(out, sel):
         box = rb.planner.BOX_CENTRE_OBJ[task["name"]]
         centre_seed = round_first_seed(out, seed)
         request = start_design.read_plan_request(out / start_design.REQUEST_FILE, seed, attempts, spec)
-        starts = (start_design.plan_starts(centre_seed, seed, attempts, spec, box) if request is None
-                  else start_design.request_starts(*request, seed, spec, box))
+        if layout is not None:
+            if request is not None:
+                raise SystemExit(f"ROUND_LAYOUT and {start_design.REQUEST_FILE} exclude each other")
+            starts = start_design.layout_starts(layout, seed, attempts, spec, box)
+        else:
+            starts = (start_design.plan_starts(centre_seed, seed, attempts, spec, box) if request is None
+                      else start_design.request_starts(*request, seed, spec, box))
         if not starts:
             raise SystemExit("no attempts: ATTEMPTS is 0")
     elif (out / start_design.REQUEST_FILE).exists():
         raise SystemExit(f"{start_design.REQUEST_FILE} needs a starts block (ROUND_STARTS)")
+    elif layout is not None:
+        raise SystemExit("ROUND_LAYOUT needs a starts block (ROUND_STARTS)")
     torch.manual_seed(seed)
     np.random.seed(seed)
     from curobo.wrap.reacher.motion_gen import MotionGenConfig
@@ -707,6 +719,9 @@ def main(out, sel):
             for at, d in zip(handoff["starts"]["attempts"], dr):
                 at.update(back_m=d.back, side_m=d.side, heading_deg=float(np.degrees(d.heading)),
                           start_obj=next(r_["drive_start_obj"] for r_ in rows if r_["attempt_id"] == at["attempt_id"]))
+    elif spec is not None and layout is not None:
+        handoff["starts"] = {"layout": layout, "facing_yaw_obj": start_design.FACING_YAW_OBJ,
+                             "box_centre_obj": list(box), "centres_obj": [list(start_design.layout_spot(layout, box))]}
     elif spec is not None:
         centres = (start_design.cluster_centres(centre_seed, spec, box) if request is None
                    else start_design.request_centres(request[1], spec, box))

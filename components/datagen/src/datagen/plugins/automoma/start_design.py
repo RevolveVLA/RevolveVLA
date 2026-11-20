@@ -23,6 +23,9 @@ the reach base (away from the object, along the facing), side_m sideways and tur
 (three more seeded generators). Attempts after the first jitter the start by jitter_m / jitter_deg too.
 Optional keys: `bearing_deg` (reach and drive: the grasp direction left of the arm's forward axis at the unturned
 base, default robot.yaml reach.bearing_rad) and `sequence` (drive: SEQUENCES).
+
+A plan run with a layout (env ROUND_LAYOUT, layout_starts) has no clusters: every attempt starts at the layout's
+`start_pose` plus its offset and plans the layout's `grasp_id` (the generator plugin's realised randomisers).
 """
 import json
 import math
@@ -357,6 +360,67 @@ def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box
         cx, cy, cyaw = centres[c]
         out.append(Start(a, c, grasp_of_cluster(c), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
     return out
+
+
+# A layout: the base start pose (x, y, yaw) in the object frame and the planner grasp id, both optional (the realised
+# `start_pose` / `grasp_id` of the robot_base and grasp randomisers); a missing pose is the box centre facing the object.
+LAYOUT_KEYS = ("start_pose", "grasp_id")
+
+
+def parse_layout(layout: Mapping) -> dict:
+    """The checked layout: known keys, a finite 3-number start_pose, a grasp id in 0..GRASPS-1."""
+    if not isinstance(layout, Mapping):
+        raise ValueError(f"layout: {type(layout).__name__} is not a mapping")
+    unknown = sorted(set(layout) - set(LAYOUT_KEYS))
+    if unknown:
+        raise ValueError(f"layout: unknown keys {unknown}, known {list(LAYOUT_KEYS)}")
+    pose = layout.get("start_pose")
+    if pose is not None and not (isinstance(pose, (list, tuple)) and len(pose) == 3 and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in pose)):
+        raise ValueError(f"layout.start_pose: {pose!r} is not three finite numbers (x, y, yaw)")
+    grasp = layout.get("grasp_id")
+    if grasp is not None and (isinstance(grasp, bool) or not isinstance(grasp, int) or not 0 <= grasp < GRASPS):
+        raise ValueError(f"layout.grasp_id: {grasp!r} is not an int in 0..{GRASPS - 1}")
+    return dict(layout)
+
+
+def layout_from_env(environ: Mapping[str, str]) -> dict | None:
+    """The layout of ROUND_LAYOUT, None without it. Reads no other key."""
+    try:
+        text = environ["ROUND_LAYOUT"]
+    except KeyError:
+        return None
+    try:
+        layout = json.loads(text, parse_constant=_no_constant)
+    except (TypeError, json.JSONDecodeError) as e:
+        raise ValueError(f"ROUND_LAYOUT is not JSON: {e}") from None
+    if not isinstance(layout, dict):
+        raise ValueError("ROUND_LAYOUT is not a JSON object")
+    return parse_layout(layout)
+
+
+def layout_spot(layout: Mapping, box_centre: tuple[float, float],
+                facing: float = FACING_YAW_OBJ) -> tuple[float, float, float]:
+    """The layout's base spot (x, y, yaw) in the object frame."""
+    x, y, yaw = layout.get("start_pose", (*box_centre, facing))
+    return float(x), float(y), float(yaw)
+
+
+def layout_starts(layout: Mapping, plan_seed: int, attempts: int, spec: StartsSpec,
+                  box_centre: tuple[float, float], facing: float = FACING_YAW_OBJ) -> list[Start]:
+    """The starts of a plan run with a layout: every attempt at the layout's spot plus its offset from the run's
+    seed (start_offsets), cluster 0, the layout's grasp (else attempt mod GRASPS). ValueError when the spot with
+    the offsets can leave the box or the yaw window."""
+    layout = parse_layout(layout)
+    _check_feasible(spec)
+    x, y, yaw = layout_spot(layout, box_centre, facing)
+    if (max(abs(x - box_centre[0]), abs(y - box_centre[1])) + spec.offset_m > spec.box_m / 2 + _EPS
+            or abs(yaw_dev_deg(yaw, facing)) + spec.offset_deg > spec.yaw_half_deg + 1e-9):
+        raise ValueError(f"layout {layout}: the spot +- the offsets ({spec.offset_m} m, {spec.offset_deg} deg) "
+                         f"leaves the box (+-{spec.box_m / 2} m) or the yaw window (+-{spec.yaw_half_deg} deg)")
+    grasp = layout.get("grasp_id")
+    return [Start(a, 0, a % GRASPS if grasp is None else grasp, x + dx, y + dy, yaw + dyaw, dx, dy, dyaw)
+            for a, (dx, dy, dyaw) in enumerate(start_offsets(plan_seed, attempts, spec))]
 
 
 def reach_sample(seed: int, spec: ReachSpec) -> ReachSample:

@@ -146,6 +146,8 @@ class Pipeline:
         return res.ok
 
     def _check(self, splits):
+        if self.dry_run:                    # nothing ran, so there is nothing to judge
+            return self.log(f"[dry-run] check {', '.join(c.name for c in self.plugins.checks)}")
         results = [(c.name, c.run(self.manifest.data)) for c in self.plugins.checks]
         self.manifest.data["checks"] = [{"name": n, **r.to_dict()} for n, r in results]
         self.manifest.save()

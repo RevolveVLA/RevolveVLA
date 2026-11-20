@@ -100,9 +100,10 @@ def test_dry_run_calls_no_plugin_and_writes_nothing(tmp_path, calls):
     logs = []
     spec = S.parse(RAW)
     p = pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path / "o", dry_run=True, log=logs.append)
-    p.run()
+    assert p.run()                                                # no verdict on checks: nothing ran
     assert calls == [] and not (tmp_path / "o").exists()
     assert "[dry-run] generate train seed 0" in logs and "[dry-run] convert 3 episodes" in logs
+    assert "[dry-run] check target" in logs
 
 
 def test_split_filter(tmp_path, calls):

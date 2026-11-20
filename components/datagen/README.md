@@ -8,7 +8,7 @@ helpers are the simulator component's copies (components/simulator/src/sim).
 ## Build and test
 ```
 ./revolve build datagen [--clean]   # image revolve-datagen (deps only), then cuRobo built inside it
-./revolve test datagen              # unit tests (stubbed jobs) + real jobs for seed 0 of fridge and drawer
+./revolve test datagen              # unit + CPU system tests (stubbed jobs); DATAGEN_GPU=1 adds the real jobs (GPU, docker)
 ```
 - `Dockerfile`: dependencies only (CUDA 12.8 devel, uv Python 3.11, torch 2.7.0 cu128, the plan-step pip deps
   as the legacy planner image, + pydantic/FastAPI/uvicorn). GPU arch: build arg `TORCH_CUDA_ARCH_LIST`

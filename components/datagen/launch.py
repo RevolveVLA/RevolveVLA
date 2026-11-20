@@ -57,8 +57,8 @@ def start(args, job_dir, timeout=1800.0, linger_s=0.0, env=None, network=None, i
                 "--linger-s", str(linger_s)],
         detach=True, user=f"{os.getuid()}:{os.getgid()}", working_dir="/repo", labels={LABEL: component, "revolve.job": jid},
         environment={"HOME": "/cache", "REPO": "/repo", "PYTHONDONTWRITEBYTECODE": "1",
-                     "PYTHONPATH": "".join(f"{p}:" for p in pythonpath) + "/repo/common:/repo/components/datagen/src/datagen:/repo/components/simulator/src/sim:"
-                                   "/opt/curobo/install:/opt/automoma", **specs.robot_env(), **(env or {})},
+                     "PYTHONPATH": "".join(f"{p}:" for p in pythonpath) + "/repo/common:/repo/components/datagen/src/datagen:/repo/components/datagen/src/datagen/plugins/automoma:"
+                                   "/repo/components/simulator/src/sim:/opt/curobo/install:/opt/automoma", **specs.robot_env(), **(env or {})},
         volumes={str(REPO): {"bind": "/repo", "mode": "ro"}, str(REPO / "runs"): {"bind": "/repo/runs", "mode": "rw"},
                  str(REPO / "cache"): {"bind": "/cache", "mode": "rw"},
                  str(INSTALL): {"bind": "/opt/curobo/install", "mode": "ro"},

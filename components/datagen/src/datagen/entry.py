@@ -12,6 +12,7 @@ The replay, acceptance and recording of the planned attempts run in the simulato
 composition is components/datagen/generate.py.
 """
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -23,6 +24,8 @@ from pathlib import Path
 import specs_bridge
 
 HERE = Path(__file__).resolve().parent
+AUTOMOMA = HERE / "plugins" / "automoma"          # plan.py, fk_check.py (and their flat imports: on PYTHONPATH)
+SIM_CLI = HERE.parents[2] / "simulator" / "src" / "sim" / "cli.py"
 
 
 def progress(**kw):
@@ -56,7 +59,9 @@ def plan(a):
     out = rpath(a.out)
     shutil.rmtree(out, ignore_errors=True)
     out.mkdir(parents=True)
-    import cli as sim_cli                     # the simulator's model generator (components/simulator/src/sim)
+    sim = importlib.util.spec_from_file_location("sim_cli", SIM_CLI)      # the simulator's model generator; by path,
+    sim_cli = importlib.util.module_from_spec(sim)                        # as this directory has a cli.py too
+    sim.loader.exec_module(sim_cli)
     import spec as sim_spec
     progress(stage="models", task=a.task, seed=a.seed)
     sim_cli.models(sim_spec.task(a.task))
@@ -66,13 +71,13 @@ def plan(a):
     env.update({f"ROUND_{k.upper()}": json.dumps(v) for k, v in specs_bridge.round_blocks(a.task).items()
                 if k == "starts"})
     progress(stage="plan", attempts=int(env["ATTEMPTS"]))
-    rc = call([sys.executable, str(HERE / "plan.py"), str(out), f"task={a.task}"], env)
+    rc = call([sys.executable, str(AUTOMOMA / "plan.py"), str(out), f"task={a.task}"], env)
     if rc != 0 or not (out / "handoff.json").is_file():
         print(f"plan.py exited {rc}")
         return 3                      # no plan run (a crash, CUDA OOM, no IK at all): may be retried
     planned = json.loads((out / "handoff.json").read_text())["planned"]
     progress(stage="fk_check", planned=planned)
-    rc = call([sys.executable, str(HERE / "fk_check.py"), str(out)], env)
+    rc = call([sys.executable, str(AUTOMOMA / "fk_check.py"), str(out)], env)
     progress(stage="done", planned=planned, fk_passed=rc == 0)
     return rc
 

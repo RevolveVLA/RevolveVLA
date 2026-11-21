@@ -157,3 +157,89 @@ def test_stratified_replacement_stays_in_the_cell(tmp_path):
     cell = {c["seed"]: c["cell"] for c in rec["sampled"]}
     new = [e["config"]["seed"] for e in rec["used"] if e["config"]["seed"] >= 3]
     assert len(new) == 1 and cell[new[0]] == cell[0] and rec["rejected"][0]["seed"] == 0
+
+
+# ------------------------------------------------------------------ runtime: workers, log lines
+def manifest_text(path):
+    return (path / "manifest.json").read_text().replace(str(path), "OUT")
+
+
+def slow_spec(workers, **edits):
+    """12 seeds, train target 5 over a pool with rejections, heldout with a realised min_distance; slower seeds first."""
+    delays = {s: 0.06 - 0.01 * (s % 6) for s in list(range(0, 12)) + list(range(20, 26))}
+    gen = {"plugin": "fake_datagen", "fail_seeds": [1, 3, 7], "delays": delays,
+           "realised": {0: -0.4, 2: -0.2, 4: 0.0, 5: 0.4, 6: 0.45, 20: -0.38, 21: 0.01, 22: 0.2, 23: -0.1}}
+    splits = {"train": {"target": 5, "pool": {"initial": [0, 5], "replacement": [6, 11]}},
+              "heldout": {"target": 2, "pool": {"initial": [20, 25]}, "record": False,
+                          "min_distance": {"from": "train", "value": 0.1, "realised": True}}}
+    return RAW | dict(generator=gen, splits=splits, run={"workers": workers}) | edits
+
+
+def test_the_manifest_is_the_same_for_one_and_three_workers(tmp_path, calls):
+    logs = {}
+    for n in (1, 3):
+        F.ACTIVE.update(now=0, peak=0)
+        spec = S.parse(slow_spec(n, recorder={"plugin": "fake_datagen", "delays": {0: 0.1, 2: 0.05, 4: 0.0}}))
+        logs[n] = []
+        p = pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path / str(n), log=logs[n].append)
+        assert p.run()
+        assert F.ACTIVE["peak"] == (1 if n == 1 else 3)           # n at a time, never more, and really in parallel
+    assert manifest_text(tmp_path / "1") == manifest_text(tmp_path / "3")
+    m = load(tmp_path / "3")["splits"]
+    assert [e["config"]["seed"] for e in m["train"]["used"]] == [0, 2, 4, 5, 6] and len(m["train"]["rejected"]) == 2
+    assert [(e["seed"], e["step"]) for e in m["heldout"]["rejected"]] == [(20, "realised"), (21, "realised")]
+    assert [e["config"]["seed"] for e in m["heldout"]["used"]] == [22, 23]                       # decided in order
+    assert (tmp_path / "1" / "report.md").read_text() == (tmp_path / "3" / "report.md").read_text()
+    assert logs[1] == logs[3]
+
+
+def test_a_killed_parallel_run_resumes_like_a_sequential_one(tmp_path, calls, monkeypatch):
+    monkeypatch.setattr(F, "KILL_AFTER", 3)
+    spec = S.parse(slow_spec(3))
+    with pytest.raises(KeyboardInterrupt):
+        pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path / "a", log=lambda m: None).run()
+    monkeypatch.setattr(F, "KILL_AFTER", None)
+    assert pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path / "a", log=lambda m: None).run()
+    spec1 = S.parse(slow_spec(1))
+    assert pipeline.Pipeline(spec1, cli.build_plugins(spec1, pipeline.STEPS), tmp_path / "b", log=lambda m: None).run()
+    assert manifest_text(tmp_path / "a") == manifest_text(tmp_path / "b")
+
+
+def test_an_error_in_a_worker_discards_the_unfinished_episodes_and_calls_abort(tmp_path, calls, monkeypatch):
+    monkeypatch.setattr(F, "KILL_AFTER", 1)
+    aborted = []
+    spec = S.parse(RAW | dict(generator={"plugin": "fake_datagen", "delays": {0: 0.0, 1: 0.3, 2: 0.3}},
+                              run={"workers": 3}))
+    p = pipeline.Pipeline(spec, cli.build_plugins(spec, ["generate"]), tmp_path, log=lambda m: None,
+                          abort=lambda: aborted.append(1))
+    with pytest.raises(KeyboardInterrupt):
+        p.run(["generate"])
+    assert aborted == [1]
+    assert not (tmp_path / "train" / "episodes" / "seed_1").exists()      # started, not finished: not resumable from
+    assert not (tmp_path / "train" / "episodes" / "seed_2").exists()
+
+
+def test_gui_runs_have_one_worker_and_say_so(tmp_path):
+    logs = []
+    spec = S.parse(RAW | {"run": {"workers": 3, "headless": False}})
+    p = pipeline.Pipeline(spec, cli.build_plugins(spec, ["sample"]), tmp_path, log=logs.append)
+    assert p.workers == 1 and logs == ["run.headless false: one GUI window, so workers 3 -> 1"]
+    assert pipeline.Pipeline(S.parse(RAW | {"run": {"workers": 3}}), cli.build_plugins(spec, ["sample"]), tmp_path / "x",
+                             log=lambda m: None).workers == 3
+
+
+def test_every_log_line_is_said_once(tmp_path):
+    logs = []
+    spec = S.parse(RAW | {"splits": RAW["splits"] | {"heldout": RAW["splits"]["heldout"] | {
+        "min_distance": {"from": "train", "value": 0.01}}}})
+    pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path, log=logs.append).run()
+    assert [l for l in logs if l.startswith("sample")] == ["sample train: 10 configs", "sample heldout: 5 configs"]
+    assert len(logs) == len(set(logs))
+
+
+def test_a_dry_run_says_what_it_would_do_and_claims_no_result(tmp_path):
+    logs = []
+    spec = S.parse(RAW)
+    pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path / "o", dry_run=True, log=logs.append).run()
+    assert not [l for l in logs if "accepted" in l or "recorded" in l or "convert: ok" in l]
+    assert len([l for l in logs if l.startswith("sample")]) == 2 and len(logs) == len(set(logs))

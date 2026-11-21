@@ -3,17 +3,22 @@
 Every step reads and writes only the manifest, so each is idempotent and a killed run resumes: sampling is kept,
 the walk skips decided seeds, record redoes episodes without a good recording, convert reruns when its episodes
 change. Layout under `out`: manifest.json, report.md, <split>/episodes/seed_<n>/, dataset/. A recorder's Result.paths["episode"]
-is the dir convert reads (default: <split>/episodes/seed_<n>)."""
+is the dir convert reads (default: <split>/episodes/seed_<n>).
+
+`spec.run.workers` configs are generated (and episodes recorded) at a time; every decision is still taken in the
+sequential order (pool.walk), so the manifest does not depend on it. A GUI run (not headless) has one window: 1 worker."""
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from . import manifest as mf
 from . import pool, separation
-from .pool import PoolExhausted
 from .errors import DatagenError
+from .interrupt import Interrupted
+from .pool import PoolExhausted
 from .interfaces import (Check, Config, Converter, Generator, Randomiser, Recorder, Result, Sampler, Validator)
 from .spec import DatagenSpec, SplitSpec, check_limits
 
@@ -37,10 +42,15 @@ class PluginSet:
 
 class Pipeline:
     def __init__(self, spec: DatagenSpec, plugins: PluginSet, out: Path, dry_run: bool = False,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, abort: Callable[[], None] | None = None):
+        """abort: stops what the running plugin calls started (their docker jobs); called when the run is interrupted."""
         check_limits(spec, {k: d for r in plugins.randomisers.values() for k, d in r.limits(spec).items()})
-        self.spec, self.plugins, self.out, self.dry_run, self.log = spec, plugins, out, dry_run, log
+        self.spec, self.plugins, self.out, self.dry_run, self.log, self.abort = spec, plugins, out, dry_run, log, abort
         self.manifest = mf.Manifest.open(out / "manifest.json", spec, persist=not dry_run)
+        self.workers = spec.run.workers if spec.run.headless else 1
+        self._sampled = set()
+        if self.workers != spec.run.workers:
+            log(f"run.headless false: one GUI window, so workers {spec.run.workers} -> 1")
 
     def run(self, steps: Sequence[str] = STEPS, splits: Sequence[str] | None = None) -> bool:
         """Run `steps` on `splits` (default all); False when a check failed."""
@@ -52,8 +62,8 @@ class Pipeline:
         try:
             for step in steps:
                 ok &= getattr(self, f"_{step}")(chosen) is not False
-        except PoolExhausted:
-            self._report()                  # the exhausted cells are in the report; the error still ends the run
+        except (PoolExhausted, Interrupted):
+            self._report()                  # the exhausted cells / what was decided are in the report; the error ends the run
             raise
         self._report()
         return ok
@@ -69,6 +79,11 @@ class Pipeline:
             self.log(f"[dry-run] {what}")
             return Result()
         return fn(*args)
+
+    def _said(self, line: str):
+        """A step's result line: a dry run did nothing, so it has none."""
+        if not self.dry_run:
+            self.log(line)
 
     def episode_dir(self, config: Config) -> Path:
         return self.out / config.split / "episodes" / f"seed_{config.seed}"
@@ -94,7 +109,9 @@ class Pipeline:
                 rec["sampled"] = [c.to_dict() for c in configs]
                 if sampler.redrawn:
                     rec["redrawn"] = list(sampler.redrawn)
-            self.log(f"sample {s.name}: {len(rec['sampled'])} configs")
+            if s.name not in self._sampled:
+                self._sampled.add(s.name)
+                self.log(f"sample {s.name}: {len(rec['sampled'])} configs")
         self.manifest.save()
 
     def _generate(self, splits):
@@ -103,32 +120,38 @@ class Pipeline:
         for s in splits:
             rec = self.manifest.split(s.name)
 
-            def attempt(config):
+            def attempt(config):                       # on a worker thread: touches no manifest
                 for v in self.plugins.validators:
                     res = self._call(f"validate {s.name} seed {config.seed}", v.validate, config)
                     if not res.ok:
                         return "validate", res
-                res = self._call(f"generate {s.name} seed {config.seed}", gen.generate, config, self.episode_dir(config))
-                if why := separation.too_close(s, self.spec.dims(), res, self.manifest.data):
+                return "generate", self._call(f"generate {s.name} seed {config.seed}", gen.generate, config,
+                                              self.episode_dir(config))
+
+            def accept(config, step, res):             # in walk order: reads the configs accepted before it
+                if step == "generate" and (why := separation.too_close(s, self.spec.dims(), res, self.manifest.data)):
                     return "realised", Result.fail(why)       # the pool walk replaces it in its cell
-                return "generate", res
-            pool.walk(self._configs(s), rec, s.target, attempt, self.manifest.save)
-            self.log(f"generate {s.name}: {len(rec['used'])}/{s.target} accepted, {len(rec['rejected'])} rejected")
+                return step, res
+            pool.walk(self._configs(s), rec, s.target, attempt, self.manifest.save, self.workers, accept, self.abort,
+                      lambda left: [shutil.rmtree(self.episode_dir(c), ignore_errors=True) for c in left])
+            self._said(f"generate {s.name}: {len(rec['used'])}/{s.target} accepted, {len(rec['rejected'])} rejected")
 
     def _record(self, splits):
         if self.plugins.recorder is None:
             return self.log("record: no recorder in the spec, skipped")
         for s in (s for s in splits if s.record):
-            for e in self.manifest.split(s.name)["used"]:
-                if e.get("record", {}).get("ok"):
-                    continue
+            def call(e):                                # on a worker thread
                 config = Config.from_dict(e["config"])
-                res = self._call(f"record {s.name} seed {config.seed}", self.plugins.recorder.record, config,
-                                 Result.from_dict(e["generate"]), self.episode_dir(config))
+                return self._call(f"record {s.name} seed {config.seed}", self.plugins.recorder.record, config,
+                                  Result.from_dict(e["generate"]), self.episode_dir(config))
+
+            def commit(e, res):
                 e["record"] = res.to_dict()
                 self.manifest.save()
+            todo = [e for e in self.manifest.split(s.name)["used"] if not e.get("record", {}).get("ok")]
+            pool.ordered(todo, call, commit, self.workers, self.abort)
             recorded = sum(e.get("record", {}).get("ok", False) for e in self.manifest.split(s.name)["used"])
-            self.log(f"record {s.name}: {recorded} recorded")
+            self._said(f"record {s.name}: {recorded} recorded")
 
     def _convert(self, splits):
         if self.plugins.converter is None:
@@ -142,7 +165,7 @@ class Pipeline:
                          [Path(p) for p in episodes], self.out / "dataset")
         self.manifest.data["convert"] = {"episodes": episodes, "result": res.to_dict()}
         self.manifest.save()
-        self.log(f"convert: {'ok' if res.ok else 'FAILED ' + res.reason}")
+        self._said(f"convert: {'ok' if res.ok else 'FAILED ' + res.reason}")
         return res.ok
 
     def _check(self, splits):

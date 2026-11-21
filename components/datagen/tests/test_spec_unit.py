@@ -99,6 +99,7 @@ def test_hash_is_stable_and_tracks_settings():
     shuffled = dict(reversed(list(GOOD.items())))
     assert S.parse(shuffled).hash == h
     assert S.parse(bad(out="elsewhere")).hash == h                       # `out` is not a setting
+    assert S.parse(bad(run={"workers": 4, "headless": False})).hash == h        # nor how the run executes
     assert S.parse(bad(seed=1)).hash != h
     assert S.parse(bad(splits__train__target=51)).hash != h
     assert S.parse(bad(generator={"plugin": "automoma", "attempts": 51, "checks": 3})).hash != h
@@ -132,3 +133,13 @@ def test_check_limits():
 @pytest.mark.parametrize("path", sorted((REPO / "specs" / "datagen").glob("*.yaml")), ids=lambda p: p.name)
 def test_the_datagen_specs_of_the_repo_load(path):
     assert S.load(path).splits
+
+
+def test_run_block_defaults_values_and_errors():
+    assert S.parse(GOOD).run == S.RunSpec(1, True)
+    assert S.parse(bad(run={"workers": 3})).run == S.RunSpec(3, True)
+    assert S.parse(bad(run={"workers": 2, "headless": False})).run == S.RunSpec(2, False)
+    for edit, path in (({"workers": 0}, "run.workers"), ({"workers": "3"}, "run.workers"), ({"workers": True}, "run.workers"),
+                       ({"headless": "no"}, "run.headless"), ({"threads": 2}, "run.threads")):
+        with pytest.raises(S.SpecError, match=path):
+            S.parse(bad(run=edit))

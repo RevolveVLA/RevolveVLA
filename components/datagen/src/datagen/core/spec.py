@@ -1,7 +1,7 @@
 """DatagenSpec: the datagen section of a task yaml, as frozen dataclasses, loaded and validated here.
 
 Every error names the yaml path of the offending key. Plugin refs ({plugin: name, ...free-form params}) are the only
-free-form blocks: their params belong to the plugin. `hash` fingerprints the settings (not `out`)."""
+free-form blocks: their params belong to the plugin. `hash` fingerprints the settings (not `out`, not `run`)."""
 from __future__ import annotations
 
 import hashlib
@@ -77,6 +77,13 @@ class SplitSpec:
 
 
 @dataclass(frozen=True)
+class RunSpec:
+    """How the run executes, not what it makes (so it is not in the hash): seeds in parallel, headless replays."""
+    workers: int = 1
+    headless: bool = True
+
+
+@dataclass(frozen=True)
 class DatagenSpec:
     task: str
     robot: str
@@ -89,6 +96,7 @@ class DatagenSpec:
     validators: tuple[PluginRef, ...] = ()
     checks: tuple[PluginRef, ...] = ()
     seed: int = 0
+    run: RunSpec = RunSpec()
 
     def dims(self) -> dict[str, Dim]:
         """{`<randomiser>.<dim>`: Dim} of every varied dimension."""
@@ -99,9 +107,9 @@ class DatagenSpec:
 
     @property
     def hash(self) -> str:
-        """Stable across yaml formatting / key order; changes with any setting except `out`."""
+        """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self)
-        d.pop("out")
+        d.pop("out"), d.pop("run")
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -224,6 +232,14 @@ def _split(name, v, at, dims):
     return SplitSpec(name, target, _sampler(d.get("sampler", {}), f"{at}.sampler", dims), pool, md, record)
 
 
+def _run(v, at) -> RunSpec:
+    d = _mapping(v, at, optional=("workers", "headless"))
+    headless = d.get("headless", True)
+    if not isinstance(headless, bool):
+        _fail(f"{at}.headless", f"expected true/false, got {headless!r}")
+    return RunSpec(_int(d.get("workers", 1), f"{at}.workers", 1), headless)
+
+
 def _check_pools_and_sources(splits, at):
     taken = []     # (lo, hi, split)
     for s in splits:
@@ -242,7 +258,7 @@ def _check_pools_and_sources(splits, at):
 
 def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
     d = _mapping(raw, source, required=("task", "robot", "out", "generator", "splits"),
-                 optional=("recorder", "converter", "randomisers", "validators", "checks", "seed"))
+                 optional=("recorder", "converter", "randomisers", "validators", "checks", "seed", "run"))
     rand = {}
     for r, dims in _mapping(d.get("randomisers", {}), f"{source}.randomisers", free=True).items():
         at = f"{source}.randomisers.{r}"
@@ -260,7 +276,8 @@ def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
         recorder=_plugin(d["recorder"], f"{source}.recorder") if "recorder" in d else None,
         converter=_plugin(d["converter"], f"{source}.converter") if "converter" in d else None,
         randomisers=rand, validators=_plugins(d.get("validators", []), f"{source}.validators"),
-        checks=_plugins(d.get("checks", []), f"{source}.checks"), seed=_int(d.get("seed", 0), f"{source}.seed"))
+        checks=_plugins(d.get("checks", []), f"{source}.checks"), seed=_int(d.get("seed", 0), f"{source}.seed"),
+        run=_run(d.get("run", {}), f"{source}.run"))
 
 
 def load(path: str | Path) -> DatagenSpec:

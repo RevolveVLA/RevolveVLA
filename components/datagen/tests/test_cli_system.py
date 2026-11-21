@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -154,3 +155,29 @@ def test_a_too_close_realised_start_is_replaced_and_the_run_passes(tmp_path):
     held = manifest(tmp_path)["splits"]["heldout"]
     assert held["rejected"] == [{"seed": 20, "step": "realised", "reason": "min_distance (realised)"}]
     assert used_seeds(tmp_path, "heldout") == [21, 22] and "check realised_min_distance: PASS" in out
+
+
+# ------------------------------------------------------------------ runtime flags
+def test_workers_and_gui_flags_override_the_run_block(tmp_path):
+    slow = {"plugin": "fake_datagen", "delay": 0.2}
+    spec = spec_with(tmp_path, **PLAIN | {"generator": slow, "run": {"workers": 1}})
+    t0 = time.time()
+    rc, out, err = datagen(tmp_path, "generate", "--workers", "3", spec=spec)
+    assert rc == 0, err
+    assert time.time() - t0 < 2.0 and used_seeds(tmp_path, "train") == [0, 1, 2]       # 4 seeds of 0.2 s, 3 at a time
+    (tmp_path / "gui").mkdir()
+    rc, out, _ = datagen(tmp_path / "gui", "sample", "--workers", "3", "--gui", spec=spec_with(tmp_path / "gui", **PLAIN))
+    assert rc == 0 and "run.headless false: one GUI window, so workers 3 -> 1" in out
+    rc, out, _ = datagen(tmp_path / "gui", "sample", "--gui", spec=spec_with(tmp_path / "gui", **PLAIN | {"run": {"workers": 2}}))
+    assert "workers 2 -> 1" in out
+    rc, out, _ = datagen(tmp_path / "gui", "sample", "--headless",
+                         spec=spec_with(tmp_path / "gui", **PLAIN | {"run": {"workers": 2, "headless": False}}))
+    assert rc == 0 and "GUI" not in out
+    rc, _, err = datagen(tmp_path, "sample", "--workers", "0", spec=spec)
+    assert rc != 0 and "--workers must be >= 1" in err
+
+
+def test_the_run_block_never_refuses_an_existing_out(tmp_path):
+    assert datagen(tmp_path, "all", spec=spec_with(tmp_path, **PLAIN))[0] == 0
+    rc, _, err = datagen(tmp_path, "all", spec=spec_with(tmp_path, **PLAIN | {"run": {"workers": 4, "headless": False}}))
+    assert rc == 0, err

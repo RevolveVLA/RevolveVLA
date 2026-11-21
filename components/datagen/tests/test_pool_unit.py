@@ -104,3 +104,97 @@ def test_resume_rebuilds_replacements_from_rejected_seeds():
     run(cfgs, 4, fail={1, 5}, r=half, calls=calls)
     assert 1 not in calls and calls[0] == 3
     assert sorted(used(half)) == sorted(used(full)) and len(half["rejected"]) == 2
+
+
+# ------------------------------------------------------------------ parallel attempts
+import threading
+import time
+
+from datagen.core.pool import ordered
+
+
+def slow_attempt(fail=(), delays=None, seen=None):
+    """attempt(c): a sleep of delays[seed] (later seeds finish first), then ok or failed; `seen` {now, peak}."""
+    lock = threading.Lock()
+
+    def attempt(c):
+        with lock:
+            seen["now"] += 1
+            seen["peak"] = max(seen["peak"], seen["now"])
+        time.sleep((delays or {}).get(c.seed, 0))
+        with lock:
+            seen["now"] -= 1
+        return ("generate", Result.fail(f"bad {c.seed}")) if c.seed in fail else ("generate", Result())
+    return attempt
+
+
+def walked(workers, configs, target, fail, delays, accept=None):
+    r, seen = rec(), {"now": 0, "peak": 0}
+    walk(configs, r, target, slow_attempt(fail, delays, seen), lambda: None, workers, accept)
+    return r, seen
+
+
+def test_workers_change_nothing_but_the_timing():
+    delays = {0: 0.15, 1: 0.1, 2: 0.0, 3: 0.12, 4: 0.0, 5: 0.05, 6: 0.0, 7: 0.0}   # later seeds finish first
+    one, seen1 = walked(1, two_cells(), 6, {1, 4, 5}, delays)
+    three, seen3 = walked(3, two_cells(), 6, {1, 4, 5}, delays)
+    assert one == three and len(one["used"]) == 6 and [e["seed"] for e in one["rejected"]] == [1, 4, 5]
+    assert seen1["peak"] == 1 and 1 < seen3["peak"] <= 3                    # really parallel, never above `workers`
+
+
+def test_the_accept_hook_decides_in_queue_order():
+    def accept(c, step, res):                  # refuses seed 2 only when seed 0 and 1 are already accepted
+        return ("realised", Result.fail("close")) if c.seed == 2 and len(used(seen_rec)) == 2 else (step, res)
+    seen_rec = rec()
+    walk([cfg(i) for i in range(8)], seen_rec, 3, slow_attempt(delays={0: 0.1, 1: 0.1}, seen={"now": 0, "peak": 0}),
+         lambda: None, 3, accept)
+    assert used(seen_rec) == [0, 1, 3] and seen_rec["rejected"] == [{"seed": 2, "step": "realised", "reason": "close"}]
+
+
+def test_resume_with_workers_attempts_only_undecided_seeds():
+    r = rec()
+    r["used"] = [{"config": cfg(0).to_dict(), "generate": Result().to_dict()}]
+    r["rejected"] = [{"seed": 1, "step": "generate", "reason": "bad"}]
+    calls = []
+    run([cfg(i) for i in range(6)], 3, r=r, calls=calls)
+    assert sorted(calls) == [2, 3] and used(r) == [0, 2, 3]
+
+
+def test_an_error_cancels_the_queue_aborts_waits_and_discards_the_unfinished():
+    events, lock = [], threading.Lock()
+
+    def attempt(c):
+        if c.seed == 0:
+            time.sleep(0.1)                    # seed 1 is under way when this one fails
+            raise KeyboardInterrupt("stop")
+        time.sleep(0.4 if c.seed == 1 else 0)
+        with lock:
+            events.append(f"done {c.seed}")
+        return "generate", Result()
+    left = []
+    r = rec()
+    with pytest.raises(KeyboardInterrupt):
+        walk([cfg(i) for i in range(6)], r, 6, attempt, lambda: None, 2, None, lambda: events.append("abort"), left.extend)
+    assert events[0] == "abort" and events[-1] == "done 1"           # aborted first, then the running one was awaited
+    assert {1} <= {c.seed for c in left} <= {1, 2} and "done 4" not in events and r["used"] == []
+
+
+def test_ordered_commits_in_item_order_whatever_the_finish_order():
+    got, seen = [], {"now": 0, "peak": 0}
+    attempt = slow_attempt(delays={0: 0.15, 1: 0.05}, seen=seen)
+    ordered([cfg(0), cfg(1), cfg(2), cfg(3)], attempt, lambda c, res: got.append(c.seed), 3)
+    assert got == [0, 1, 2, 3] and seen["peak"] > 1
+
+
+def test_ordered_error_aborts_and_awaits():
+    events = []
+
+    def call(i):
+        if i == 0:
+            time.sleep(0.1)                    # item 1 is under way when this one fails
+            raise ValueError("boom")
+        time.sleep(0.2)
+        events.append("done")
+    with pytest.raises(ValueError):
+        ordered([0, 1], call, lambda i, r: None, 2, lambda: events.append("abort"))
+    assert events == ["abort", "done"]

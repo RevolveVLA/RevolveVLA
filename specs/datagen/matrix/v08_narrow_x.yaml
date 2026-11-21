@@ -1,0 +1,28 @@
+# Matrix variant: robot_base.x_m [-0.05, 0.05] (baseline: ../fridge_smoke.yaml). Outputs under runs/datagen_matrix/.
+task: open_fridge_door
+robot: mobile_panda
+out: runs/datagen_matrix/v08_narrow_x
+generator: {plugin: automoma, attempts: 10, checks: 1}
+recorder: {plugin: rosetta}
+converter: {plugin: rosetta, format: lerobot}
+randomisers:
+  robot_base:
+    x_m: [-0.05, 0.05]
+    y_m: [-0.15, 0.15]
+    yaw_deg: [-27, 27]
+seed: 0
+splits:
+  train:
+    target: 2
+    sampler: {strategy: random}
+    pool:
+      initial: [0, 5]
+      replacement: [6, 11]
+    record: true
+  heldout:
+    target: 1
+    sampler: {strategy: sobol}
+    pool:
+      initial: [500, 505]
+    min_distance: {from: train, value: 0.1, realised: true}
+    record: false

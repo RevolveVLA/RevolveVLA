@@ -1,0 +1,35 @@
+# Matrix variant: explicit checks list incl. repeat_stats max_rate 0.3 (baseline: ../fridge_smoke.yaml). Outputs under runs/datagen_matrix/.
+task: open_fridge_door
+robot: mobile_panda
+out: runs/datagen_matrix/v16_explicit_checks
+generator: {plugin: automoma, attempts: 10, checks: 1}
+recorder: {plugin: rosetta}
+converter: {plugin: rosetta, format: lerobot}
+randomisers:
+  robot_base:
+    x_m: [-0.15, 0.15]
+    y_m: [-0.15, 0.15]
+    yaw_deg: [-27, 27]
+seed: 0
+splits:
+  train:
+    target: 2
+    sampler: {strategy: random}
+    pool:
+      initial: [0, 5]
+      replacement: [6, 11]
+    record: true
+  heldout:
+    target: 1
+    sampler: {strategy: sobol}
+    pool:
+      initial: [500, 505]
+    min_distance: {from: train, value: 0.1, realised: true}
+    record: false
+checks:
+- {plugin: target}
+- {plugin: split_disjoint}
+- {plugin: min_distance}
+- {plugin: realised_min_distance}
+- {plugin: coverage}
+- {plugin: repeat_stats, max_rate: 0.3}

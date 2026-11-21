@@ -1,0 +1,24 @@
+# Smallest end-to-end run on the GPU box of drawer_so101_xl_smoke: 2 train open_drawer demos on mobile_so101_xl: the drive-in start varied over every dim of the task's drive start design
+# (specs/tasks/open_drawer/task.yaml starts.mobile_so101_xl; components/datagen/src/datagen/plugins/randomisers/drive_start.py),
+# Sobol-spread. `./revolve datagen --list-randomisers --task open_drawer --robot mobile_so101_xl` lists the dims and ranges.
+task: open_drawer
+robot: mobile_so101_xl
+out: runs/datagen/drawer_so101_xl_smoke
+generator: {plugin: automoma, attempts: 50, checks: 1}
+recorder: {plugin: rosetta}
+converter: {plugin: rosetta, format: lerobot}
+randomisers:
+  drive_start:
+    grasp_m: [-0.1, 0.1]
+    d_m: [0.68, 0.76]
+    yaw_deg: [-8, 8]
+    back_m: [1.0, 1.6]
+    side_m: [-0.3, 0.3]
+    heading_deg: [-20, 20]
+seed: 0
+splits:
+  train:
+    target: 2
+    sampler: {strategy: sobol}
+    pool: {initial: [0, 5], replacement: [6, 11]}
+    record: true

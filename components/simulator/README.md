@@ -11,8 +11,10 @@ episodes live (phases, metrics, sanity checks) and records them.
 ```
 ./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]] [--gui]
 ```
-One container (`--name`, default `revolve-sim`) on the GPU and the host network (ROS 2 from the host works;
-`ROS_DOMAIN_ID` is passed through), the repo mounted read-only at `/repo` (`runs/` writable). It runs `ros2 launch revolve_sim
+One container (`--name`, default `revolve-sim`) on the GPU and the host network, isolated from other ROS 2 / gz
+instances on the host: its own `ROS_DOMAIN_ID` (`--domain-id`, default derived from the container name, 1..101,
+skipping the domains of the other running containers; printed at start: export it to use ROS 2 from the host) and
+its own `GZ_PARTITION` (the container name), the repo mounted read-only at `/repo` (`runs/` writable). It runs `ros2 launch revolve_sim
 sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
 - `revolve_sim/world.py`: scene.yaml -> world SDF (`python3 -m revolve_sim.world <scene>` prints it): the models as
   `model://` includes at their poses (search path = the scene's `assets`), a JointStatePublisher on every

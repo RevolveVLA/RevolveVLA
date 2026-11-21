@@ -16,7 +16,6 @@ runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's a
 """
 import json
 import os
-import random
 import re
 import shutil
 import subprocess
@@ -60,12 +59,11 @@ def sim(request):
     cfile = rdir / yaml.safe_load((rdir / "robot.yaml").read_text())["controllers"]
     controllers = [k for k, v in yaml.safe_load(cfile.read_text())["controller_manager"]["ros__parameters"].items()
                    if isinstance(v, dict) and "type" in v]
-    env = {**os.environ, "ROS_DOMAIN_ID": str(random.randint(10, 99))}
     launch_log = logs / "launch.log"
     with open(launch_log, "w") as f:
         p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", ROBOT, "--name", name,
                               *getattr(request.module, "SIM_ARGS", [])],
-                             stdout=f, stderr=subprocess.STDOUT, env=env, cwd=REPO, start_new_session=True)
+                             stdout=f, stderr=subprocess.STDOUT, cwd=REPO, start_new_session=True)
     try:
         deadline = time.time() + 240
         while True:

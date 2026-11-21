@@ -6,10 +6,11 @@
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
-  ./revolve sim --scene S --robot R [--task T [--no-autostart]] [--gui] [--name N]   run the simulator (the world
+  ./revolve sim --scene S --robot R [--task T [--no-autostart]] [--gui] [--name N] [--domain-id D]   run the simulator (the world
                                      from scene S, robot R at the scene's robot_start; components/simulator/README.md)
                                      in the simulator image, on the GPU; --task: the evaluator, episode results and
-                                     bags in runs/sim/; --gui: also the gz GUI on the host's X display
+                                     bags in runs/sim/; --gui: also the gz GUI on the host's X display; ROS 2 on its
+                                     own ROS_DOMAIN_ID (printed; default from the container name)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
                                      robot and task under specs/, and tasks/sanity.yaml), against the model SDFs in
                                      the scene's asset search path; --robot: also check the tasks with robot R;
@@ -21,6 +22,7 @@ import argparse
 import os
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -72,24 +74,49 @@ def cmd_validate(a):
 SIM_IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
 
 
-def sim_docker_args(name, gui=False):
+def container_domains():
+    """The ROS_DOMAIN_IDs of the running containers (0 when unset: the ROS 2 default)."""
+    ids = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split()
+    if not ids:
+        return set()
+    envs = subprocess.run(["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}---", *ids],
+                          capture_output=True, text=True).stdout.split("---")
+    used = set()
+    for env in envs[:len(ids)]:
+        d = [ln.split("=", 1)[1] for ln in env.splitlines() if ln.startswith("ROS_DOMAIN_ID=")]
+        used.add(int(d[0]) if d and d[0].isdigit() else 0)
+    return used
+
+
+def sim_domain(name, requested=None):
+    """The sim's ROS_DOMAIN_ID: --domain-id, else one derived from the container name (1..101, never the default
+    0), moved on past the domains of the other running containers (they share the host network)."""
+    used = container_domains()
+    if requested is not None:
+        if requested in used:
+            print(f"revolve sim: warning: another container uses ROS_DOMAIN_ID={requested}", file=sys.stderr)
+        return requested
+    d = 1 + zlib.crc32(name.encode()) % 101
+    while d in used:
+        d = d % 101 + 1
+    return d
+
+
+def sim_docker_args(name, gui=False, domain=0):
     """docker run args for a simulator container: the repo read-only at /repo (runs/ writable: episode results, bags),
-    the Kura + ros_gz installs at their build paths, the GPU (rendering), the host network (ROS 2 discovery from the
-    host; gz-transport in its own partition, the container name, so other gz instances on the host network
-    neither see nor join this world); --gui: the host's X."""
+    the Kura + ros_gz installs at their build paths, the GPU (rendering), the host network (ROS 2 from the host on
+    the sim's ROS_DOMAIN_ID, domain; gz-transport in its own partition, the container name: other ROS 2 and gz
+    instances on the host network neither see nor join this sim); --gui: the host's X."""
     for d in ("gz_kura", "ros_gz_ws"):
         if not (REPO / "ThirdParty" / d / "install" / "setup.bash").is_file():
             sys.exit("revolve sim: not built: ./revolve build simulator")
     (REPO / "runs").mkdir(exist_ok=True)
     args = ["docker", "run", "--rm", "--init", "--name", name, "--gpus", "all", "--network", "host", "--ipc", "host",
             "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "REVOLVE_REPO=/repo",
-            "-e", "PYTHONPATH=/repo/common", "-e", f"GZ_PARTITION={name}",
+            "-e", "PYTHONPATH=/repo/common", "-e", f"GZ_PARTITION={name}", "-e", f"ROS_DOMAIN_ID={domain}",
             "-v", f"{REPO}:/repo:ro", "-v", f"{REPO}/runs:/repo/runs",
             "-v", f"{REPO}/ThirdParty/gz_kura/install:/opt/gz_ws/install:ro",
             "-v", f"{REPO}/ThirdParty/ros_gz_ws/install:/opt/ros_gz_ws/install:ro"]
-    for k in ("ROS_DOMAIN_ID",):
-        if os.environ.get(k):
-            args += ["-e", f"{k}={os.environ[k]}"]
     if gui:
         display, xauth = os.environ.get("DISPLAY"), os.environ.get("XAUTHORITY")
         if not display or not xauth or not Path(xauth).is_file():
@@ -105,8 +132,11 @@ def cmd_sim(a):
     launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={a.scene}", f"robot:={a.robot}",
               f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}"] if a.task else []) + \
         (["autostart:=false"] if a.no_autostart else [])
+    domain = sim_domain(a.name, a.domain_id)
+    print(f"revolve sim: ROS_DOMAIN_ID={domain} (from the host: export ROS_DOMAIN_ID={domain})", file=sys.stderr,
+          flush=True)
     # bash: the image's BASH_ENV sets up ROS, the ros_gz workspace and Kura
-    return subprocess.call([*sim_docker_args(a.name, a.gui), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
+    return subprocess.call([*sim_docker_args(a.name, a.gui, domain), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
                            cwd=REPO)
 
 
@@ -170,6 +200,8 @@ def main():
                    "/evaluator/start service (default: the first one starts when the evaluator has every input)")
     s.add_argument("--gui", action="store_true", help="also start the gz GUI client")
     s.add_argument("--name", default="revolve-sim", help="the container name (default revolve-sim)")
+    s.add_argument("--domain-id", type=int, choices=range(0, 233), metavar="D", help="the sim's ROS_DOMAIN_ID "
+                   "(default: from the container name, 1..101, skipping the other running containers' domains)")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="*")
     v.add_argument("--robot", help="also check the tasks with this robot (specs/robots/<robot>)")

@@ -13,6 +13,7 @@ from datagen.core import registry, spec as S
 from datagen.core.interfaces import Config, Randomiser
 from datagen.core.pipeline import Pipeline
 from datagen.plugins.randomisers import robot_base as RB
+from datagen.plugins.randomisers.design import StartDesignError
 
 BOX = (0.95, -0.05)
 
@@ -52,10 +53,10 @@ def test_hard_limits_come_from_the_tasks_start_design():
 
 @pytest.mark.parametrize("task, robot, needle", [
     ("open_drawer", "mobile_so101", "no start design"),
-    ("open_drawer", "mobile_so101_xl", "a drive start design"),
+    ("open_drawer", "mobile_so101_xl", "mobile_so101_xl on open_drawer uses drive: use drive_start, not robot_base"),
 ])
 def test_robot_base_needs_a_box_start_design(task, robot, needle):
-    with pytest.raises(RB.RobotBaseError, match=needle):
+    with pytest.raises(StartDesignError, match=needle):
         limits("robot_base", S.parse(dict(raw({}), task=task, robot=robot)))
 
 
@@ -101,7 +102,7 @@ def test_spec_at_the_hard_limits_is_accepted():
 
 def test_sampling_and_realising_are_torch_free():
     code = ("import sys; from datagen.core import registry; "
-            "[registry.create('randomiser', n).realise({}, {'box_centre': (0, 0)}) for n in ('robot_base', 'grasp')]; "
+            "[registry.create('randomiser', n).realise({}, {'box_centre': (0, 0)}) for n in ('robot_base', 'grasp', 'reach_start', 'drive_start')]; "
             "assert not {'torch', 'numpy'} & set(sys.modules), sorted(sys.modules)")
     subprocess.run([sys.executable, "-c", code], check=True, env={"PYTHONPATH": ":".join(p for p in sys.path if p)})
 

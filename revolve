@@ -6,13 +6,17 @@
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
-  ./revolve sim --scene S --robot R [--task T [--no-autostart]] [--gui] [--name N] [--domain-id D]   run the simulator (the world
-                                     from scene S, robot R at the scene's robot_start; components/simulator/README.md)
-                                     in the simulator image, on the GPU; --task: the evaluator, episode results and
-                                     bags in runs/sim/; --gui: also the gz GUI on the host's X display; ROS 2 on its
-                                     own ROS_DOMAIN_ID (printed; default from the container name)
+  ./revolve sim --scene S --robot R [--task T [--no-autostart] [--record images|no-images] [--out DIR]] [--gui]
+                [--name N] [--domain-id D]   run the simulator (the world from scene S, a name or a scene.yaml file,
+                                     robot R at the scene's robot_start; components/simulator/README.md) in the
+                                     simulator image, on the GPU;
+                                     --task: the evaluator, episode results and bags (with or without the camera
+                                     images) in DIR (default runs/sim/<time>_<task>/); --gui: also the gz GUI on the
+                                     host's X display; ROS 2 on its own ROS_DOMAIN_ID (printed; default from the
+                                     container name)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
-                                     robot and task under specs/, and tasks/sanity.yaml), against the model SDFs in
+                                     robot and task under specs/, and tasks/sanity.yaml; a scene.yaml outside specs/
+                                     is a scene instance), against the model SDFs in
                                      the scene's asset search path; --robot: also check the tasks with robot R;
                                      --no-assets: names and syntax only (no asset files read)
 
@@ -102,8 +106,10 @@ def sim_domain(name, requested=None):
     return d
 
 
-def sim_docker_args(name, gui=False, domain=0):
-    """docker run args for a simulator container: the repo read-only at /repo (runs/ writable: episode results, bags),
+def sim_docker_args(name, gui=False, domain=0, out=None, mounts=()):
+    """docker run args for a simulator container: the repo read-only at /repo (runs/ writable: episode results, bags;
+    out: a host directory mounted writable at the same path, so the paths in the episode results are host paths;
+    mounts: host files mounted read-only at the same path),
     the Kura + ros_gz installs at their build paths, the GPU (rendering), the host network (ROS 2 from the host on
     the sim's ROS_DOMAIN_ID, domain; gz-transport in its own partition, the container name: other ROS 2 and gz
     instances on the host network neither see nor join this sim); --gui: the host's X."""
@@ -118,6 +124,10 @@ def sim_docker_args(name, gui=False, domain=0):
             "-v", f"{REPO}:/repo:ro", "-v", f"{REPO}/runs:/repo/runs",
             "-v", f"{REPO}/ThirdParty/gz_kura/install:/opt/gz_ws/install:ro",
             "-v", f"{REPO}/ThirdParty/ros_gz_ws/install:/opt/ros_gz_ws/install:ro"]
+    if out:
+        args += ["-v", f"{out}:{out}"]
+    for m in mounts:
+        args += ["-v", f"{m}:{m}:ro"]
     if gui:
         display, xauth = os.environ.get("DISPLAY"), os.environ.get("XAUTHORITY")
         if not display or not xauth or not Path(xauth).is_file():
@@ -130,14 +140,29 @@ def sim_docker_args(name, gui=False, domain=0):
 def cmd_sim(a):
     from revolve_common import gpu
     gpu.launch_check()
-    launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={a.scene}", f"robot:={a.robot}",
-              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}"] if a.task else []) + \
-        (["autostart:=false"] if a.no_autostart else [])
+    out = None
+    if a.out:
+        if not a.task:
+            sys.exit("revolve sim: --out needs --task (it holds the episode results and bags)")
+        out = Path(a.out).resolve()
+        out.mkdir(parents=True, exist_ok=True)      # by the user, before docker would create it as root
+    scene, mounts = a.scene, []
+    if scene.endswith(".yaml"):     # a scene file (e.g. a randomizer's scene instance): its path in the container
+        p = Path(scene).resolve()
+        if not p.is_file():
+            sys.exit(f"revolve sim: no scene file {p}")
+        if p.is_relative_to(REPO):
+            scene = f"/repo/{p.relative_to(REPO)}"
+        else:
+            scene, mounts = str(p), [p]
+    launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={scene}", f"robot:={a.robot}",
+              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}", f"record:={a.record}"] if a.task else []) + \
+        (["autostart:=false"] if a.no_autostart else []) + ([f"run_dir:={out}"] if out else [])
     domain = sim_domain(a.name, a.domain_id)
     print(f"revolve sim: ROS_DOMAIN_ID={domain} (from the host: export ROS_DOMAIN_ID={domain})", file=sys.stderr,
           flush=True)
     # bash: the image's BASH_ENV sets up ROS, the ros_gz workspace and Kura
-    return subprocess.call([*sim_docker_args(a.name, a.gui, domain), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
+    return subprocess.call([*sim_docker_args(a.name, a.gui, domain, out, mounts), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
                            cwd=REPO)
 
 
@@ -194,11 +219,16 @@ def main():
     t.add_argument("component", choices=COMPONENTS)
     t.add_argument("pytest_args", nargs=argparse.REMAINDER)
     s = sub.add_parser("sim")
-    s.add_argument("--scene", required=True, help="specs/scenes/<scene>")
+    s.add_argument("--scene", required=True, help="specs/scenes/<scene>, or a scene.yaml file (e.g. a scene "
+                   "instance: the scene with another robot_start, named like it, its assets relative to the repo)")
     s.add_argument("--robot", required=True, help="specs/robots/<robot>")
     s.add_argument("--task", help="specs/tasks/<task> (checked against the scene and robot)")
     s.add_argument("--no-autostart", action="store_true", help="with --task: start episodes only on the "
                    "/evaluator/start service (default: the first one starts when the evaluator has every input)")
+    s.add_argument("--record", choices=("images", "no-images"), default="images", help="with --task: record each "
+                   "episode with the camera images (JPEG; default) or without them")
+    s.add_argument("--out", metavar="DIR", help="with --task: write the episode results and bags into DIR (a host "
+                   "directory, created if missing; default runs/sim/<time>_<task>/)")
     s.add_argument("--gui", action="store_true", help="also start the gz GUI client")
     s.add_argument("--name", default="revolve-sim", help="the container name (default revolve-sim)")
     s.add_argument("--domain-id", type=int, choices=range(0, 233), metavar="D", help="the sim's ROS_DOMAIN_ID "

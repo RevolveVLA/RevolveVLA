@@ -10,9 +10,19 @@ scene's start for the next episode.
 
 ## Run
 ```
-./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]] [--gui]
+./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]
+              [--record images|no-images] [--out DIR]] [--gui] [--name N] [--domain-id D]
 ./revolve sim --scene kitchen_partnet --robot mobile_so101        # or mobile_so101_xl
+./revolve sim --scene runs/exp/scene_7/scene.yaml --robot mobile_panda --task open_fridge_door   # a scene instance
 ```
+`--scene` takes a scene name (`specs/scenes/<s>`) or a scene.yaml file anywhere: a scene instance (e.g. one a
+randomizer wrote per seed, with another `robot_start`), named like the scene it was made from (with `--task`: the
+task's scene), its `assets` relative to the repo (`./revolve validate <file>` checks it; a file outside the repo is
+mounted read-only at its path). `--record` (with `--task`, default `images`): the episode bags with or without the
+camera images. `--out DIR` (with `--task`): the episode results and bags go into the host directory DIR (created if
+missing, mounted writable at the same path, so the paths in the results are host paths) instead of
+`runs/sim/<time>_<task>/`; episode numbers continue after the highest `episode_<n>.json` already in DIR.
+The datagen contract (how a client drives episodes, what is recorded): `components/datagen/DATAGEN-v2.md`.
 Robots (`specs/robots/`): mobile_panda (the moveit_resources Panda), mobile_so101 (the SO-101 arm) and
 mobile_so101_xl (the same arm at scale 2 on a lower chassis), all on the shared omni base
 (`common/omni_base.urdf.xacro`); `common/so101.urdf.xacro` is the SO-101 macro (ported from ThirdParty/so_arm100
@@ -87,16 +97,25 @@ start.
 - `/evaluator/state` (std_msgs/String JSON, 10 Hz): `t`, `ready`, `resets` (the world resets it has seen),
   `episode`, `phase`, `values` (every condition's current value, keyed `<phase>.done[i]`, `<phase>.while[i]`,
   `sanity.<check>`; also between episodes).
-- `/evaluator/result` (std_msgs/String JSON, transient local) and `runs/sim/<time>_<task>/episode_<n>.json`:
+- `/evaluator/result` (std_msgs/String JSON, transient local) and `<run dir>/episode_<n>.json` (run dir: `--out`,
+  default `runs/sim/<time>_<task>/`; the file is written after the episode's bag is closed):
   `passed`, `failed_phase`, `reason` (`timeout_s`, `budget_s`, `while`, `sanity`, `reset`), `check`, `condition`,
   `value`,
   `t_fail` (s since the episode start), `duration_s`, `phases` [{`name`, `status` (passed / failed / aborted /
   not_reached), `t_start`, `t_end`, `reason`, `last` (the last values)}], `sanity_last`, `contacts` (at the end),
   `rate_hz`, `tick_ms`, `sim_time_start`, `gz_log`, `bag`.
-- Bag: `ros2 bag record` (mcap, sim time) of the bridged topics (not the camera images), tf, joint states, the
-  command topics and the evaluator's, started paused by the launch; the evaluator resumes it for each episode,
-  then pauses and splits it: episode n = `runs/sim/<time>_<task>/bag/<n>_bag_<time>.mcap`.
-- Launch args: `autostart`, `run_dir`, `bag` (`ros2 launch revolve_sim sim.launch.py ... task:=<t>`).
+- Bags: one per episode, `<run dir>/episode_<n>_bag/` (rosbag2, mcap with zstd chunk compression, sim time;
+  closed, with its metadata.yaml, before the result file is written). The topics: `config/record.yaml`, the frozen
+  list (clock, robot_description, tf, tf_static, joint states, each JTC's controller_state and joint_trajectory,
+  the omni cmd_vel and odom, the ground-truth poses, the scene joint states, the contacts, camera_info, the
+  evaluator's state and result; with `--record images` also `/<camera>/image/compressed`, JPEG from
+  compressed_image_transport through ros_gz_image's image_transport publisher, 30 Hz). The launch starts
+  `ros2 bag record` paused into a scratch bag in the container; the evaluator stops it and, per episode, calls its
+  `record` service with the episode's bag path and `stop` at the end: each recording subscribes anew, so the
+  transient-local /tf_static and /robot_description are in every bag (a QoS override takes /evaluator/result live
+  only). Topics with messages only on demand (contacts, commands) are missing from a bag that saw no publisher.
+- Launch args: `autostart`, `run_dir`, `record` (images, no-images, none) (`ros2 launch revolve_sim sim.launch.py ...
+  task:=<t>`).
 
 ## Reset (client contract)
 Episodes back to back on one sim (datagen, recovery, evaluation) go through one service, `/simulator/reset`
@@ -112,8 +131,8 @@ the scene's start; `success: false` + `message` if a step failed or timed out (t
 4. each joint trajectory controller drives its joints to their ros2_control initial values (the scene's
    `robot_start.arm`, the gripper's start) over 1 s; the reset waits until they stay within 1 deg / 1 mm for 0.5 s;
 5. with a task: it waits until the evaluator has seen the reset (`resets` in `/evaluator/state` goes up). A running
-   episode ends with `reason: reset` (its result JSON and bag are written as usual); the recorder is paused and split,
-   so the next episode gets the next bag file. The evaluator drops every input for 0.5 s of sim time, then is ready
+   episode ends with `reason: reset` (its result JSON and bag are written as usual; the bag can end with up to
+   ~0.2 s of messages after the jump back in sim time). The evaluator drops every input for 0.5 s of sim time, then is ready
    again once its inputs are live.
 
 Client sequence per episode: read `resets` from `/evaluator/state`, call `/simulator/reset`, wait for an
@@ -134,8 +153,8 @@ Contact) and a few TF_OLD_DATA lines from the evaluator before it notices the ju
                                       # revolve_sim
 ./revolve test simulator              # T1 bring-up, T2 control (every robot), MoveIt smoke (SO-101 robots), T3
                                       # evaluator and T4 (MoveIt) for open_fridge_door (mobile_panda) and open_drawer
-                                      # (mobile_so101_xl) on a launched sim + the evaluator unit tests
-                                      # (ros/revolve_sim/test); -- -m "not slow" skips T4
+                                      # (mobile_so101_xl) on a launched sim, the reset loop, the datagen contract
+                                      # + the evaluator unit tests (ros/revolve_sim/test); -- -m "not slow" skips T4
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
   moveit_py + the moveit_resources Panda + pick_ik, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
@@ -162,7 +181,12 @@ Contact) and a few TF_OLD_DATA lines from the evaluator before it notices the ju
   script in `robot_cases.TASKS`). Reset (`test_reset.py`): 5 resets between 6 episodes in one sim (moving episodes
   reset mid-episode, idle ones after their result), each checked against the start (base 1 cm / 1 deg, arm 1 deg,
   scene joints, controllers active, evaluator ready, a T2 arm move after it, one result + bag per episode, memory /
-  processes stable); T4 ends with one reset from the opened door / drawer.
+  processes stable); T4 ends with one reset from the opened door / drawer. Contract (`test_contract.py`,
+  `check_contract.py`): the datagen interface as datagen uses it: a scene instance in `--out`, the sim from the CLI
+  with `--record images --out --domain-id`, the client in its own container (host network, the sim's domain), two
+  episodes (ramped twist, FollowJointTrajectory goals, streamed joint_trajectory points) with a reset between, then
+  the files: two results + two closed bags with every frozen topic, cameras JPEG at ~30 Hz, /tf_static, and a 30 Hz
+  action series from each bag. The other modules record `--record no-images`.
   A launch whose controller manager logs "No clock received" once a second (it never got /clock; rare, cause not
   pinned) fails at once with that message (conftest.py; no retry).
   `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or

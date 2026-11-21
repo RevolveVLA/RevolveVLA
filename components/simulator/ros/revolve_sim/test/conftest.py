@@ -12,11 +12,14 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
   T4 positive (test_positive.py, marker `slow`): MoveIt 2 (moveit_py) plans the arm, the base gets open-loop
      ramped TwistStamped segments (test code only): open_fridge_door (mobile_panda, check_open_door.py) and
      open_drawer (mobile_so101_xl, check_open_drawer.py) pass approach, grasp and open.
+  Reset (test_reset.py) and the datagen contract (test_contract.py: a client in its own container, two episodes,
+     the recorded files).
   Unit tests of the evaluator logic without a sim: test_episode_unit.py.
 A launch whose controller manager logs "No clock received" once a second (it never gets /clock; rare, cause not
 pinned) fails at once with that message, before the test runs (no retry).
 A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot
-of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task, or a dict of them per robot) for its sim.
+of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task, or a dict of them per robot) for its sim;
+with --task the fixture adds `--record no-images` unless SIM_ARGS has --record.
 
 Env: REVOLVE_TEST_SCENE (default kitchen_partnet), REVOLVE_TEST_ROBOT (comma-separated: only these of each module's
 ROBOTS), REVOLVE_TEST_LOGS (default runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's
@@ -91,6 +94,8 @@ def sim(request, robot):
     sim_args = getattr(request.module, "SIM_ARGS", [])
     if isinstance(sim_args, dict):
         sim_args = sim_args[robot]
+    if "--task" in sim_args and "--record" not in sim_args:
+        sim_args = [*sim_args, "--record", "no-images"]     # the bags without the camera images (size)
     with open(launch_log, "w") as f:
         p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", robot, "--name", name,
                               *sim_args],

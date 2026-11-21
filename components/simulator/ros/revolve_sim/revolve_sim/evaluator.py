@@ -13,10 +13,14 @@ with different delays (under load its callback queues fall behind by tens of ms)
 otherwise show slip / speed / lost contacts that are only these time offsets.
 
 Episodes: ~/start (std_srvs/Trigger) starts one (autostart: the first one starts as soon as every input is live).
-At the end the result (JSON) is published on ~/result (std_msgs/String, transient local) and written to
-<run_dir>/episode_<n>.json; a rosbag2 recorder started paused by the launch (rosbag2_recorder) is resumed for the
-episode, then paused and split, so episode n is the bag's file n (bag/<n>_bag_<time>.mcap). ~/state (std_msgs/String JSON, 10 Hz): the sim
-time, the active phase and every condition's current value (also between episodes).
+Each episode is recorded into its own bag, <run_dir>/episode_<n>_bag/ (the rosbag2 recorder of the launch,
+rosbag2_recorder: its record service with that uri at the start, stop at the end; a fresh recording subscribes anew,
+so it gets the transient-local /tf_static and /robot_description). At the end the result (JSON) is published on
+~/result (std_msgs/String, transient local), the bag is closed (metadata.yaml written), then the result is written to
+<run_dir>/episode_<n>.json: once that file exists, the episode's files are complete. Episode numbers continue after
+the highest episode_<n>.json already in run_dir (a relaunch into the same run_dir overwrites nothing). ~/state
+(std_msgs/String JSON, 10 Hz): the sim time, the active phase and every condition's current value (also between
+episodes).
 A world reset (/simulator/reset, revolve_sim/reset.py: sim time jumps back) re-arms it: a running episode ends with
 reason `reset`, every input is dropped for SETTLE_S, then it is ready again once its inputs are live (~/start).
 ~/state `resets` counts the resets it has seen.
@@ -60,6 +64,8 @@ HISTORY = 200               # gz pose messages kept per model (100 Hz: 2 s)
 SYNC_MAX_AGE_S = 0.5        # an input older than this (a stalled publisher) does not hold the common stamp back
 CONTACT_WINDOW_S = 0.05     # a sensor's contacts count until this long after its message (it publishes at 100 Hz)
 SETTLE_S = 0.5             # sim time after a reset during which inputs (also late ones from before it) are dropped
+BAG_CALL_S = 10.0           # wall timeout of a rosbag2 recorder service call (stop: flushes and closes the bag)
+BAG_RESULT_S = 0.1          # wall time between publishing the result and stopping the recorder
 GZ_PROBLEM = re.compile(r'\[(error|critical)\]')
 MSG_TYPES = {'geometry_msgs/msg/TwistStamped': TwistStamped, 'trajectory_msgs/msg/JointTrajectory': JointTrajectory}
 
@@ -118,7 +124,9 @@ class Evaluator(Node):
         self.contacts = {}                  # topic -> (stamp, [(c1, c2, depth)])
         self.bad_commands, self.gz_lines, self.gz_offset = 0, [], 0
         self.counted_from = (0, 0)          # (commands, gz lines) before the episode: it counts only its own
-        self.episode, self.n_episodes, self.ticks = None, 0, 0
+        done = [int(f.stem.split('_')[1]) for f in self.run_dir.glob('episode_*.json') if f.stem.split('_')[1].isdigit()]
+        self.episode, self.n_episodes, self.ticks = None, max(done, default=-1) + 1, 0
+        self.started, self.bag_path = False, None
         self.values, self.ready = {}, False
         self.tf_links = []                  # the robot links tf has (not the passive rollers: no joint states)
         self.sync_link = robot.frames.get('tcp', links[-1])   # its tf stamp: the newest of the arm's joint states
@@ -144,11 +152,11 @@ class Evaluator(Node):
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.result_pub = self.create_publisher(String, '~/result', latched)
         self.state_pub = self.create_publisher(String, '~/state', 10)
-        self.bag_clients = {}
+        self.bag_clients, self.bag_idle = {}, False
         if self.bag:
-            from rosbag2_interfaces.srv import Pause, Resume, SplitBagfile
+            from rosbag2_interfaces.srv import Record, Resume, Stop
             self.bag_clients = {k: (self.create_client(t, f'/rosbag2_recorder/{k}'), t)
-                                for k, t in (('resume', Resume), ('pause', Pause), ('split_bagfile', SplitBagfile))}
+                                for k, t in (('record', Record), ('resume', Resume), ('stop', Stop))}
         tick = MutuallyExclusiveCallbackGroup()     # the ticks, ~/start and the episode state
         self.create_service(Trigger, '~/start', self.on_start, callback_group=tick)
         self.create_timer(1.0 / p['rate_hz'], self.tick, callback_group=tick)
@@ -301,7 +309,7 @@ class Evaluator(Node):
         self.values = values
         self.ready = all(math.isfinite(values.get(k, 0.0)) for k, c in self.conditions if c.metric != 'peak_body_speed')
         if ep is None:
-            if self.autostart and self.ready and self.n_episodes == 0:
+            if self.autostart and self.ready and not self.started:
                 self.start(t)
             return
         phase = ep.i
@@ -319,7 +327,17 @@ class Evaluator(Node):
         self.t_start, self.ticks, self.tick_wall = t, 0, []
         with self.lock:
             self.counted_from = (self.bad_commands, len(self.gz_lines))
-        self.bag_call('resume')
+        self.started = True
+        self.bag_path = None
+        if self.bag:
+            if not self.bag_idle:    # the launch's recording (paused, a scratch bag): stopped, unpaused for good
+                self.bag_idle = self.bag_call('stop') is not None and self.bag_call('resume') is not None
+            uri = self.run_dir / f'episode_{self.n_episodes}_bag'
+            r = self.bag_call('record', uri=str(uri))
+            if r is not None and r.return_code == 0:
+                self.bag_path = str(uri)
+            else:
+                self.get_logger().error(f'rosbag2 recorder: episode not recorded ({r.error_string if r else "no reply"})')
         self.get_logger().info(f'episode {self.n_episodes} started at t={t:.3f}')
 
     def finish(self, t, result):
@@ -335,12 +353,12 @@ class Evaluator(Node):
                                    if not any(x.startswith(GROUND + '::') for x in (a, b))}),
                'gz_log': self.gz_log_path or None,
                'result_file': str(self.run_dir / f'episode_{n}.json'),
-               'bag': next(iter(sorted(glob.glob(str(self.run_dir / 'bag' / f'{n}_*.mcap')))), None) if self.bag
-               else None}
-        Path(out['result_file']).write_text(json.dumps(out, indent=1))
+               'bag': self.bag_path}
         self.result_pub.publish(String(data=json.dumps(out)))
-        self.bag_call('pause')
-        self.bag_call('split_bagfile')
+        if self.bag_path:
+            time.sleep(BAG_RESULT_S)        # the recorder gets the result before it stops
+            self.bag_call('stop')
+        Path(out['result_file']).write_text(json.dumps(out, indent=1))
         self.episode = None
         self.n_episodes += 1
         self.get_logger().info(f'episode {n}: {"passed" if result["passed"] else "failed"} '
@@ -358,13 +376,21 @@ class Evaluator(Node):
             res.success, res.message = True, f'episode {self.n_episodes}'
         return res
 
-    def bag_call(self, name):
-        if name in self.bag_clients:
-            cli, typ = self.bag_clients[name]
-            if cli.service_is_ready():
-                cli.call_async(typ.Request())
-            else:
-                self.get_logger().warning(f'rosbag2 recorder: no {name} service')
+    def bag_call(self, name, **req):
+        """Call a rosbag2 recorder service and wait for its reply (the clients are in the default callback group,
+        served by another executor thread) -> the response, None on no service / timeout."""
+        cli, typ = self.bag_clients[name]
+        if not cli.wait_for_service(timeout_sec=BAG_CALL_S):
+            self.get_logger().warning(f'rosbag2 recorder: no {name} service')
+            return None
+        f = cli.call_async(typ.Request(**req))
+        w0 = time.monotonic()
+        while not f.done() and time.monotonic() - w0 < BAG_CALL_S:
+            time.sleep(0.005)
+        if not f.done():
+            self.get_logger().warning(f'rosbag2 recorder: {name} timed out')
+            return None
+        return f.result()
 
     def publish_state(self):
         t = self.get_clock().now().nanoseconds * 1e-9

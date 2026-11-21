@@ -38,8 +38,13 @@ CMD_TOPICS = {'omni_wheel_drive_controller/OmniWheelDriveController': ('cmd_vel'
                   ('joint_trajectory', 'trajectory_msgs/msg/JointTrajectory')}
 
 
+def controller_types(controllers_yaml):
+    """{controller name: type} of a ros2_control controllers.yaml."""
+    params = yaml.safe_load(Path(controllers_yaml).read_text())['controller_manager']['ros__parameters']
+    return {name: v['type'] for name, v in params.items() if isinstance(v, dict) and 'type' in v}
+
+
 def command_topics(controllers_yaml):
     """[(topic, message type)] of the controllers in a ros2_control controllers.yaml."""
-    params = yaml.safe_load(Path(controllers_yaml).read_text())['controller_manager']['ros__parameters']
-    return [(f'/{name}/{CMD_TOPICS[v["type"]][0]}', CMD_TOPICS[v['type']][1]) for name, v in params.items()
-            if isinstance(v, dict) and v.get('type') in CMD_TOPICS]
+    return [(f'/{name}/{CMD_TOPICS[t][0]}', CMD_TOPICS[t][1]) for name, t in controller_types(controllers_yaml).items()
+            if t in CMD_TOPICS]

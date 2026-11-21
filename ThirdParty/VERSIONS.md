@@ -35,6 +35,9 @@ go in `patches/<module>/*.patch`.
 Patches:
 - `patches/gz-physics/gz-physics-mujoco-solver-options.patch`: MuJoCo solver options (cone, noslip iterations, ...)
   from environment variables, as SDF does not expose them yet (gazebosim/gz-physics#1119).
+- `patches/gz-physics/gz-physics-mujoco-runtime-shape-lookup.patch`: find the collisions of a model spawned at
+  runtime (the compiled name lookup misses them until the next recompile, so gz-sim logged "Dynamic collision
+  construction is not supported" for each one and had no collision entities, e.g. for contact sensors).
 - `patches/gz-sim/gz-sim-video-recorder-skip-dropped-frames.patch`
 
 The gz_*_vendor packages (gazebo-release, `rolling` = the Kura majors: gz-sim 11, gz-physics 10, sdformat 17, ...)

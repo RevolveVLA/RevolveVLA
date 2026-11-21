@@ -163,5 +163,7 @@ Contact) and a few TF_OLD_DATA lines from the evaluator before it notices the ju
   reset mid-episode, idle ones after their result), each checked against the start (base 1 cm / 1 deg, arm 1 deg,
   scene joints, controllers active, evaluator ready, a T2 arm move after it, one result + bag per episode, memory /
   processes stable); T4 ends with one reset from the opened door / drawer.
+  A launch whose controller manager logs "No clock received" once a second (it never got /clock; rare, cause not
+  pinned) fails at once with that message (conftest.py; no retry).
   `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or
   `$REVOLVE_TEST_LOGS`.

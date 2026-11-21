@@ -13,6 +13,8 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
      ramped TwistStamped segments (test code only): open_fridge_door (mobile_panda, check_open_door.py) and
      open_drawer (mobile_so101_xl, check_open_drawer.py) pass approach, grasp and open.
   Unit tests of the evaluator logic without a sim: test_episode_unit.py.
+A launch whose controller manager logs "No clock received" once a second (it never gets /clock; rare, cause not
+pinned) fails at once with that message, before the test runs (no retry).
 A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot
 of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task, or a dict of them per robot) for its sim.
 
@@ -37,6 +39,9 @@ ONLY_ROBOTS = [r for r in os.environ.get("REVOLVE_TEST_ROBOT", "").split(",") if
 TEST_IN = "/repo/components/simulator/ros/revolve_sim/test"
 # gz / ROS problem lines; the known benign ones: MuJoCo's NaN-in-CTRL line at load (a WARNING, not matched)
 PROBLEM = re.compile(r"\[(error|Err|ERROR|FATAL|critical)\]|Traceback|not added")
+# A broken launch: the controller manager (in the gz process) never gets /clock and warns once a second for the
+# whole run (rare, cause not pinned). One or two lines at start are a race with the first /clock.
+NO_CLOCK, NO_CLOCK_LINES = "No clock received", 3
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "slow: the long positive episodes (T4); deselect with -m 'not slow'")
@@ -62,6 +67,12 @@ def result(sim, script, args, timeout, log):
     lines = [ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")]
     assert lines, f"{script} printed no RESULT (rc {r.returncode}): see {log}"
     return json.loads(lines[-1][len("RESULT "):])
+
+
+def clock_fault(launch_log):
+    n = Path(launch_log).read_text(errors="replace").count(NO_CLOCK)
+    assert n < NO_CLOCK_LINES, (f"broken sim launch: the controller manager logged {NO_CLOCK!r} {n} times (it never "
+                                f"got /clock); not retried, see {launch_log}")
 
 
 @pytest.fixture(scope="module")
@@ -91,6 +102,7 @@ def sim(request, robot):
             text = launch_log.read_text(errors="replace")
             assert "Failed loading controller" not in text and "Could not configure" not in text, \
                 f"a controller failed to load: see {launch_log}"
+            clock_fault(launch_log)
             if "Configured and activated" in text:
                 r = sh(name, "timeout 20 ros2 control list_controllers", 30)
                 states = re.findall(r"\b(active|inactive|unconfigured)\b", r.stdout)
@@ -98,6 +110,8 @@ def sim(request, robot):
                     break
             assert time.time() < deadline, f"controllers not active after 240 s: see {launch_log}"
             time.sleep(2)
+        time.sleep(NO_CLOCK_LINES)      # the fault would log on
+        clock_fault(launch_log)
         yield {"name": name, "robot": robot, "logs": logs, "launch_log": launch_log}
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)   # kills the whole launch

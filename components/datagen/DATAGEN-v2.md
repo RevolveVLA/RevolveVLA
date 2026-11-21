@@ -393,15 +393,15 @@ they never had a publisher; treat "absent" as "no messages". Every other topic i
 `controller_state`, `joint_states`, `odom` and `/tf` run at the controller rate (1 kHz) because the upstream
 controllers publish every cycle; the dataset downsamples.
 
-### 7.3 Sizes (measured, mobile_panda, 20 s episodes)
+### 7.3 Sizes (measured, 20 s episodes)
 
-| Recording | Size per episode | Per second |
-|---|---|---|
-| `--record images` | 133-139 MB | ~6.8 MB/s |
-| `--record no-images` | see the note below | ~0.75 MB/s |
+| Recording | Robot | Size per episode | Per second |
+|---|---|---|---|
+| `--record images` | mobile_panda | 133-139 MB | ~6.8 MB/s |
+| `--record no-images` | mobile_panda | 15.3 MB | ~0.76 MB/s |
+| `--record no-images` | mobile_so101_xl | 14.7 MB | ~0.73 MB/s |
 
-(No-images rate measured over a 5.6 s recording of the same topic list; images dominate the size. Plan disk space
-for the images case: ~0.4 GB per minute of recorded episodes.)
+The images dominate. Plan disk space for the images case: ~0.4 GB per minute of recorded episodes.
 
 ### 7.4 Extracting the 30 Hz action
 

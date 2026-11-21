@@ -8,8 +8,8 @@ pose from the gz ground truth; helpers from check_open_door.py.
   approach: TCP +z into the drawer (handle -x), TCP x along the bar (handle y): with the 5-DoF arm this pose is
             reachable only in the vertical plane of the shoulder pan axis, so the grasp point is the bar point in
             front of the shoulder (measured after the drive). MoveIt OMPL to the pre-grasp (PRE m back along the
-            approach, IK seeded with SEED), Pilz LIN to the bar, more LINs until the TCP is on the bar centre
-            within CENTRE_MM in depth and LIFT above it (the fixed jaw pressed up against the bar)
+            approach, IK seeded with SEED), Pilz LIN to the bar, more LINs until the TCP is DEPTH in front of the bar
+            centre and LIFT above it (within CENTRE_MM) (the fixed jaw pressed up against the bar)
   grasp:    close the moving jaw past the bar (the effort JTC squeezes at its clamp) until the evaluator leaves
             `grasp`
   open:     the base backs off along the slide (one ramped segment, PULL m at V_PULL) with the arm holding; hold
@@ -51,6 +51,10 @@ LIN_SCALE = 0.1                  # Pilz LIN velocity / acceleration scaling (joi
 CENTRE_MM, CENTRE_TRIES = 1.0, 4   # TCP on the bar within [mm] (handle x, z) before closing
 LIFT = 0.003                     # above the bar centre [m]: the fixed jaw's pad (8 mm under the TCP) 2 mm into the
                                  # bar's bottom (pressed against it)
+DEPTH = 0.003                    # the bar centre this far beyond the TCP towards the jaw tips [m]: the fixed jaw's tip
+                                 # pad (8 mm under the TCP) starts 4.4 mm beyond it, the next pad is 3.6 mm further out;
+                                 # a bar centred on the TCP overlaps the tip pad by ~2.6 mm and sometimes slips off it
+                                 # in the squeeze (the TCP jumps 3.5 mm up, the fixed jaw loses the bar in the pull)
 JAW, JAW_OPEN = CONTROL['mobile_so101_xl']['hand_joint'], 0.0   # 0: a 32 mm gap around the 14 mm bar
 JAW_GRIP = -0.3                  # past closed: the effort JTC squeezes the bar at its clamp (~12 N)
 
@@ -167,7 +171,7 @@ def main():
         along = float((tf_point('shoulder_link')[:3] - h) @ T_h[:3, 1])
         along = max(-bar_half + BAR_MARGIN, min(bar_half - BAR_MARGIN, along))
         T_grasp = np.eye(4)
-        T_grasp[:3, :3], T_grasp[:3, 3] = R_tcp, h + along * T_h[:3, 1]
+        T_grasp[:3, :3], T_grasp[:3, 3] = R_tcp, h + along * T_h[:3, 1] + DEPTH * hx
         scene_boxes(T_b)
         T_inv = np.linalg.inv(T_b)
         T_pre = T_grasp.copy()
@@ -183,16 +187,16 @@ def main():
         # centre the TCP on the bar in depth (the effort JTC leaves a few mm), then up by LIFT: a centred TCP leaves the
         # fixed jaw 1 mm under the bar, and the stiff arm does not give to the moving jaw's squeeze. The error at the
         # pre-grasp corrects the first LIN's target (the bar centre: the fixed jaw passes under the bar), then up to
-        # CENTRE_TRIES more LINs to (depth 0, height LIFT).
+        # CENTRE_TRIES more LINs to (depth DEPTH, height LIFT).
         n.wait(0.3)
-        e = np.array(tcp_in_handle()) - (1000 * PRE, 1000 * along, 0.0)
+        e = np.array(tcp_in_handle()) - (1000 * (PRE + DEPTH), 1000 * along, 0.0)
         mark('pre_grasp', ok=out['pre_ok'], tcp_mm=[round(float(v), 1) for v in e])
         xz = T_h[:3, [0, 2]]
         T_cmd = T_grasp.copy()
         T_cmd[:3, 3] -= xz @ e[[0, 2]] / 1000.0
         scene_boxes(T_b, skip_link=drawer_link)    # the bar goes between the jaws
         out['lin_ok'] = out['pre_ok'] and run('pilz_lin', pose=T_inv @ T_cmd, scale=LIN_SCALE)
-        goal = np.array([0.0, 1000 * LIFT])
+        goal = np.array([1000 * DEPTH, 1000 * LIFT])
         for _ in range(CENTRE_TRIES):
             n.wait(0.3)
             e = np.array(tcp_in_handle())

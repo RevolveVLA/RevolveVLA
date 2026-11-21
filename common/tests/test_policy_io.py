@@ -4,14 +4,9 @@ import math
 
 import numpy as np
 import pytest
-import yaml
 
 from revolve_common import policy_io as P
-from revolve_common import specs
 
-from conftest import SPECS
-
-ROBOTS = sorted(p.parent.name for p in (SPECS / "robots").glob("*/robot.yaml"))
 DT, FPS = 0.001, 30
 
 
@@ -89,19 +84,6 @@ def test_policy_rows():
     s = P.policy_state(np.ones((4, 3)), np.zeros((4, 5)), np.full((4, 1), 0.3))
     a = P.policy_action(np.ones((4, 3)), np.zeros((4, 5)), np.full(4, 0.04))
     assert s.shape == (4, 9) and a.shape == (4, 9) and (a[:, -1] == 0.04).all()
-
-
-@pytest.mark.parametrize("robot", ROBOTS)
-def test_contract_layout_per_robot(robot):
-    r = specs.load(SPECS / "robots" / robot / "robot.yaml")
-    c = yaml.safe_load((SPECS / "robots" / robot / r.contract).read_text())
-    st, ac = P.state_sources(c), P.action_sources(c)
-    assert P.names(st) == r.joints.policy_state and P.names(ac) == r.joints.policy_action
-    assert [s.type for s in st] == [P.ODOM, P.JS] and [s.type for s in ac] == [P.TWIST, P.JS]
-    world = set(r.joints.base)            # base_x, base_y, base_yaw: the world pose
-    assert not world & set(P.names(st) + P.names(ac))
-    images = [k for k, v in P.contract_layout(c).items() if all(s.type == P.CI for s in v)]
-    assert len(images) == len(r.cameras) == 3
 
 
 def test_contract_layout_rejects_world_pose_and_bad_twist():

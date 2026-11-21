@@ -349,3 +349,19 @@ def test_metric_registry_names():
     assert set(specs.METRICS) == {"joint", "distance", "angle", "contacts", "gripper_opening", "slip",
                                   "peak_body_speed", "penetration", "non_finite_commands", "gz_log_problem_lines"}
     assert all(p.type in ("entity", "axes", "patterns") for m in specs.METRICS.values() for p in m.params.values())
+
+
+def test_scene_instance_outside_specs(tree, tmp_path):
+    """A scene.yaml outside a specs/ tree (a randomizer's per-seed instance): validated like a scene, named like its
+    base scene, assets relative to the repo of `root`."""
+    d = yaml.safe_load((tree / "scenes/room/scene.yaml").read_text())
+    d["robot_start"]["base"] = [0.5, -0.2, 1.0]
+    p = write(tmp_path / "runs/exp/scene_7/scene.yaml", yaml.safe_dump(d))
+    scene = specs.load(p, root=tree)
+    assert scene.name == "room" and scene.robot_start.base == [0.5, -0.2, 1.0]
+    d["models"]["cabinet"]["model"] = "nope"
+    write(p, yaml.safe_dump(d))
+    with pytest.raises(SpecError, match="model://nope"):
+        specs.load(p, root=tree)
+    with pytest.raises(SpecError, match="not under a specs/"):
+        specs.load(write(tmp_path / "runs/exp/task.yaml", TASK))

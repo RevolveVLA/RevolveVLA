@@ -503,6 +503,7 @@ def check_robot_refs(task, scene, models, sanity, robot):
 
 
 # ------------------------------------------------------------------ loader
+REPO_SPECS = Path(__file__).resolve().parents[2] / "specs"    # this repo's specs/ (scene instances resolve against it)
 KINDS = {"tasks": Task, "robots": Robot, "scenes": Scene}
 FILES = {"tasks": "task.yaml", "robots": "robot.yaml", "scenes": "scene.yaml"}
 
@@ -576,9 +577,9 @@ def load_sanity(root):
     return out
 
 
-def _load(path, root, kind, assets):
+def _load(path, root, kind, assets, instance=False):
     spec = parse(KINDS[kind], path)
-    if spec.name != Path(path).parent.name:
+    if not instance and spec.name != Path(path).parent.name:
         raise SpecError(f"{path}: name {spec.name!r} != its folder {Path(path).parent.name!r}")
     if kind == "robots":
         errs = check_robot_files(spec, Path(path).parent)
@@ -599,12 +600,20 @@ def _load(path, root, kind, assets):
     return spec, Resolved(task=spec, scene=scene, models=models, sanity=sanity)
 
 
-def load(path, assets=True):
+def load(path, assets=True, root=None):
     """Load and validate one spec file -> Scene, Robot, Task, or {key: SanityCheck} for tasks/sanity.yaml.
     A scene's model:// names and joints, and a task's entities, are checked against the model SDFs
-    (assets=False: names only, no asset files read). Raises SpecError with every problem found."""
+    (assets=False: names only, no asset files read). Raises SpecError with every problem found.
+    A scene.yaml outside any specs/ directory is a scene instance (e.g. one a randomizer wrote for a seed): a scene
+    like any other, named like the scene it was made from (not after its folder), its `assets` relative to the repo
+    of `root` (a specs/ directory; default the repo's own, REPO_SPECS)."""
     path = Path(path)
-    root = find_root(path)
+    try:
+        root = find_root(path)
+    except SpecError:
+        if path.name != FILES["scenes"]:
+            raise
+        return _load(path, Path(root or REPO_SPECS), "scenes", assets, instance=True)[0]
     if path.resolve() == (root / "tasks" / SANITY_FILE).resolve():
         return load_sanity(root)
     rel = path.resolve().relative_to(root).parts

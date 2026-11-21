@@ -33,7 +33,7 @@ os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (t
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]
-sys.path[:0] = [str(COMP), str(COMP / "src" / "evaluation")]
+sys.path[:0] = [str(COMP), str(COMP / "src" / "evaluation"), str(COMP / "src"), str(REPO / "components" / "datagen" / "src")]
 CACHE = REPO / "runs" / "test_cache" / "evaluation"
 RUN = REPO / "runs" / "evaluation_tests" / time.strftime("%Y%m%d_%H%M%S")
 TASK = "open_fridge_door"

@@ -6,7 +6,9 @@ import yaml
 from revolve_common import specs
 from conftest import SPECS
 
-ALL = sorted(p for p in SPECS.rglob("*.yaml") if p.name != "contract.yaml" and p.relative_to(SPECS).parts[0] != "datagen")
+COMPONENT_SPECS = ("datagen", "eval")       # their own loaders validate these
+ALL = sorted(p for p in SPECS.rglob("*.yaml")
+             if p.name != "contract.yaml" and p.relative_to(SPECS).parts[0] not in COMPONENT_SPECS)
 
 
 def test_found_every_kind():

@@ -1,0 +1,19 @@
+# The 30k SmolVLA checkpoint on 10 held-out fridge-door configs (inside the training ranges of specs/datagen/fridge_base50.yaml,
+# >= 0.1 away from its training configs) and 10 training starts. `./revolve evaluate specs/eval/fridge_base50_30k.yaml [--dry-run]`
+train: specs/datagen/fridge_base50.yaml        # task, robot, randomisers, generator, seed, training manifest (<train.out>/manifest.json)
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+# ckpt: {source: hf, repo: org/name, revision: main, subfolder: checkpoints/030000/pretrained_model}
+policy: {plugin: smolvla}
+out: runs/eval/fridge_base50_30k
+sets:
+  heldout:
+    count: 10
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 529], replacement: [530, 599]}
+    min_distance: {value: 0.1, realised: true}
+  train: {from: train, count: 10}
+rollouts: 5                                    # per config
+retries: 1                                     # policy again from the failed phase start, up to N times
+runner: {actions_per_chunk: 21, chunk_size_threshold: 0}      # no-blend (20 executed)
+judge: {criterion: c2}
+run: {workers: 2, headless: true}

@@ -9,7 +9,7 @@ from datagen.core import registry
 
 @pytest.fixture
 def clean(monkeypatch):
-    monkeypatch.setattr(registry, "_PLUGINS", dict(registry._PLUGINS))
+    monkeypatch.setattr(registry._DEFAULT, "_plugins", dict(registry._DEFAULT._plugins))
 
 
 def test_register_and_get(clean):

@@ -14,6 +14,7 @@
   <xacro:arg name="controllers" default=""/>
 
   <xacro:include filename="../common/omni_base.urdf.xacro"/>
+  <xacro:include filename="../common/sensors.urdf.xacro"/>
   <xacro:omni_base/>
 
   <xacro:include filename="$(find moveit_resources_panda_description)/urdf/panda.urdf.xacro"/>
@@ -67,21 +68,6 @@
   </ros2_control>
 
   <!-- Cameras (D22 poses: the old base_link was on the floor, as base_footprint is; gz sensors, pose in the link frame, gz camera convention: looking along +x) -->
-  <xacro:macro name="camera" params="name link pose hfov near far">
-    <gazebo reference="${link}">
-      <sensor name="${name}" type="camera">
-        <pose>${pose}</pose>
-        <always_on>true</always_on>
-        <update_rate>30</update_rate>
-        <topic>${name}/image</topic>
-        <camera>
-          <horizontal_fov>${hfov}</horizontal_fov>
-          <image><width>480</width><height>480</height><format>R8G8B8</format></image>
-          <clip><near>${near}</near><far>${far}</far></clip>
-        </camera>
-      </sensor>
-    </gazebo>
-  </xacro:macro>
   <xacro:camera name="wrist_cam" link="panda_hand" pose="0.10 0 0.06 3.141593 -2.094395 0" hfov="1.8"
                 near="0.02" far="10.0"/>
   <xacro:camera name="overhead_left_cam" link="base_footprint" pose="0.10 0.50 1.80 0 1.117011 -1.570796" hfov="1.68"
@@ -94,26 +80,6 @@
        /world/<w>/model/<m>/link/<link>/sensor/contact/contact). The links are the gz links after sdformat's
        fixed-joint lumping, with its collision names: base_link and panda_link0 merge into base_footprint,
        panda_hand into panda_link7. -->
-  <xacro:macro name="contact" params="link collisions:=''">
-    <gazebo reference="${link}">
-      <sensor name="contact" type="contact">
-        <always_on>true</always_on>
-        <update_rate>100</update_rate>
-        <contact>
-          <xacro:if value="${collisions == ''}"><collision>${link}_collision</collision></xacro:if>
-          <xacro:unless value="${collisions == ''}">
-            <xacro:macro name="collision_names" params="names">
-              <xacro:if value="${names}">
-                <collision>${names[0]}</collision>
-                <xacro:collision_names names="${names[1:]}"/>
-              </xacro:if>
-            </xacro:macro>
-            <xacro:collision_names names="${collisions.split()}"/>
-          </xacro:unless>
-        </contact>
-      </sensor>
-    </gazebo>
-  </xacro:macro>
   <xacro:contact link="panda_leftfinger"/>
   <xacro:contact link="panda_rightfinger"/>
   <xacro:contact link="base_footprint" collisions="base_footprint_fixed_joint_lump__base_link_collision

@@ -14,16 +14,20 @@ can-on-plate demo (Panda only, not a pipeline task).
 
 ## Build and test
 ```
-./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura with colcon inside it
+./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control
 ./revolve test simulator              # pytest tests/ (all sim jobs in containers, run concurrently)
 ```
-- `Dockerfile`: dependencies only (gz-kura-mujoco's apt list + rosbags, pillow, pydantic, FastAPI, uvicorn).
-  No ROS (replay and bags need none). `ros/Dockerfile`: revolve-simulator-ros, the thin deps-only ROS 2 Jazzy
-  layer FROM this image for `rollout` (built by `./revolve build evaluation`).
-- `build.sh`: `ThirdParty/gz_kura/fetch.sh` (kura.repos pins + ThirdParty/patches) and colcon into
-  `ThirdParty/gz_kura/install` (git-ignored; build/, log/, .ccache/ too), mounted at `/opt/gz_ws` as
-  the earlier gz build did. Rebuilds are incremental. The robots' model sources (robot.yaml `description`:
-  franka_description, SO-ARM100) are read in place from the ThirdParty submodules (nothing to build).
+- `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
+  moveit_py + the moveit_resources Panda, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
+  deps. Never the Lyrical ros-gz / gz-ros2-control binaries (built on Gazebo Jetty). Every bash in the image sources
+  `/opt/revolve_env.sh`: ROS, then the ros_gz workspace, then Kura first on PATH / LD_LIBRARY_PATH /
+  CMAKE_PREFIX_PATH (the binaries pull Jetty sdformat / gz-math / gz-tools vendors into /opt/ros/lyrical).
+- `build.sh`, with colcon inside the image: (1) `ThirdParty/gz_kura/fetch.sh` (kura.repos pins + ThirdParty/patches)
+  and Kura into `ThirdParty/gz_kura/install`, mounted at `/opt/gz_ws`; (2) the submodules ThirdParty/ros_gz,
+  ThirdParty/gz_ros2_control (+ demos) and ThirdParty/gz_vendors/* (gz_*_vendor, all satisfied by the Kura install)
+  into `ThirdParty/ros_gz_ws/install`, mounted at `/opt/ros_gz_ws/install`. Both git-ignored (build/, log/,
+  .ccache/ too), mounted at runtime at the paths they are built at. Rebuilds are incremental; missing submodules are
+  initialised, checked-out ones are left alone.
 - Assets (PartNet-Mobility, ReplicaCAD: non-commercial) are read in place from `assets/` (git-ignored, repo root)
   through the repo mount; never copied into git or the image. They are made by `assets_pipeline/` (moved from
   the earlier gz demo, see below).

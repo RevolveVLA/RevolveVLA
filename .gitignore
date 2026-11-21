@@ -13,6 +13,8 @@ __pycache__/
 /ThirdParty/gz_kura/log/
 /ThirdParty/gz_kura/.ccache/
 /ThirdParty/gz_kura/kura_versions.txt
+# ros_gz + gz_ros2_control colcon workspace (build/ install/ log/ .ccache/; sources are the ThirdParty submodules)
+/ThirdParty/ros_gz_ws/
 /runs/
 /assets/
 /.venv/

@@ -5,7 +5,7 @@ from datagen.core import registry
 from datagen.core.interfaces import Config
 from datagen.core.spec import DatagenSpec
 
-PLAN_KEYS = ("start_pose", "grasp_id")        # start_design.LAYOUT_KEYS
+PLAN_KEYS = ("start_pose", "grasp_id", "reach", "drive")        # start_design.LAYOUT_KEYS
 
 
 class Realiser:
@@ -18,10 +18,11 @@ class Realiser:
 
     @property
     def context(self) -> dict:
-        """The generator's data for Randomiser.realise: the task's start-box centre (task.yaml starts)."""
+        """The generator's data for Randomiser.realise: the task's start-box centre (task.yaml starts, box method)."""
         if self._context is None:
             from datagen.plugins.randomisers.robot_base import box_design
-            self._context = {"box_centre": tuple(box_design(self.spec.task, self.spec.robot).centre)}
+            self._context = ({"box_centre": tuple(box_design(self.spec).centre)} if "robot_base" in self.randomisers
+                             else {})
         return self._context
 
     def realise(self, config: Config) -> dict:
@@ -31,6 +32,7 @@ class Realiser:
         return out
 
     def layout(self, config: Config) -> dict:
-        """{"start_pose": [x, y, yaw], "grasp_id": g} (object frame), the keys that are varied; {} when none is."""
+        """{"start_pose": [x, y, yaw], "grasp_id": g} (object frame) of a box start, {"reach": {...}, "drive": {...}} of a
+        reach / drive start: the keys that are varied; {} when none is."""
         r = self.realise(config)
         return {k: list(r[k]) if k == "start_pose" else r[k] for k in PLAN_KEYS if k in r}

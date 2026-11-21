@@ -7,7 +7,9 @@ Runs on the host (docker SDK; components/datagen/generate.py does the jobs). Rec
 the recorder's job, so a split with `record: false` ends here: its start states are the Result.
 
 Result.realised: {"attempt_id", "start_pose" (the accepted attempt's start, object frame), "robot_base.x_m", ".y_m",
-".yaw_deg" (offsets from the start-box centre and the facing, comparable with the sampled dims), "grasp_id" (when varied)}.
+".yaw_deg" (offsets from the start-box centre and the facing, comparable with the sampled dims), "grasp_id" (when varied)};
+a reach / drive start reports "reach_start.<dim>" / "drive_start.<dim>" (grasp_m, d_m, yaw_deg, drive: back_m, side_m,
+heading_deg) of the accepted attempt, its jitter included, and its start_pose (the far start of a drive).
 Result.paths: plan (the plan run), check (the accepted check dir: actions.npz, live.json, episode.json, state_log.npz),
 manifest (generate.py's, per episode dir: also what evaluation/starts.py takes as `--source`)."""
 from __future__ import annotations
@@ -35,6 +37,8 @@ def realised_start(plan_dir: Path, attempt_id: int) -> dict:
     from the plan's start-box centre / facing (handoff.json starts); {} when the plan has no starts record."""
     import numpy as np
     h = json.loads((plan_dir / "handoff.json").read_text()).get("starts") or {}
+    if h.get("mode") in ("reach", "drive"):
+        return realised_reach(h, attempt_id)
     if "box_centre_obj" not in h:
         return {}
     z = np.load(plan_dir / "handoff.npz")
@@ -42,6 +46,17 @@ def realised_start(plan_dir: Path, attempt_id: int) -> dict:
     (bx, by), facing = h["box_centre_obj"], h["facing_yaw_obj"]
     return {"start_pose": [x, y, yaw], "robot_base.x_m": x - bx, "robot_base.y_m": y - by,
             "robot_base.yaw_deg": math.degrees((yaw - facing + math.pi) % (2 * math.pi) - math.pi)}
+
+
+def realised_reach(starts: dict, attempt_id: int) -> dict:
+    """realised_start of a reach / drive plan (handoff.json "starts": the sample and each attempt's values)."""
+    at = next(a for a in starts["attempts"] if a["attempt_id"] == attempt_id)
+    dims = {"d_m": at["d_m"], "yaw_deg": at["dyaw_deg"]}
+    dims["grasp_m"] = next(v for k, v in starts["sample"].items() if k.startswith("grasp_"))
+    if starts["mode"] == "drive":
+        dims.update({k: at[k] for k in ("back_m", "side_m", "heading_deg")})
+    return {"start_pose": list(at.get("start_obj", at["base_obj"])),
+            **{f"{starts['mode']}_start.{k}": v for k, v in dims.items()}}
 
 
 @register("generator", "automoma")

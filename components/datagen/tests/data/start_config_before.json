@@ -1,0 +1,145 @@
+{
+ "open_drawer/mobile_panda/None": {
+  "centre": [
+   0.98,
+   0.0
+  ],
+  "pull": "{\"repeat_tol\": 1e-05}",
+  "round_starts": "{\"clusters\": 10, \"per_cluster\": 10, \"box_m\": 0.4, \"yaw_half_deg\": 30, \"offset_m\": 0.03, \"offset_deg\": 3, \"nominal_arm\": \"ready\"}",
+  "spec": {
+   "box_m": 0.4,
+   "clusters": 10,
+   "nominal_arm": "ready",
+   "offset_deg": 3,
+   "offset_m": 0.03,
+   "per_cluster": 10,
+   "yaw_half_deg": 30
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.84, \"hold_s\": 1.7}"
+ },
+ "open_drawer/mobile_panda/drive_seq": "error",
+ "open_drawer/mobile_so101/None": {
+  "centre": null,
+  "pull": "{\"repeat_tol\": 1e-05}",
+  "round_starts": null,
+  "spec": null,
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.84, \"hold_s\": 1.7}"
+ },
+ "open_drawer/mobile_so101/drive_seq": "error",
+ "open_drawer/mobile_so101_xl/None": {
+  "centre": null,
+  "pull": "{\"repeat_tol\": 1e-05}",
+  "round_starts": "{\"mode\": \"drive\", \"grasp_m\": [-0.1, 0.1], \"d_m\": [0.68, 0.76], \"yaw_half_deg\": 8.0, \"jitter_m\": 0.01, \"jitter_deg\": 1.0, \"back_m\": [1.0, 1.6], \"side_m\": [-0.3, 0.3], \"heading_half_deg\": 20.0, \"slowdown\": 2.0}",
+  "spec": {
+   "back_m": [
+    1.0,
+    1.6
+   ],
+   "bearing_deg": null,
+   "d_m": [
+    0.68,
+    0.76
+   ],
+   "grasp_m": [
+    -0.1,
+    0.1
+   ],
+   "heading_half_deg": 20.0,
+   "jitter_deg": 1.0,
+   "jitter_m": 0.01,
+   "sequence": "simultaneous",
+   "side_m": [
+    -0.3,
+    0.3
+   ],
+   "slowdown": 2.0,
+   "yaw_half_deg": 8.0
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.84, \"hold_s\": 1.7}"
+ },
+ "open_drawer/mobile_so101_xl/drive_seq": "error",
+ "open_fridge_door/mobile_panda/None": {
+  "centre": [
+   0.95,
+   -0.05
+  ],
+  "pull": "null",
+  "round_starts": "{\"clusters\": 10, \"per_cluster\": 10, \"box_m\": 0.4, \"yaw_half_deg\": 30, \"offset_m\": 0.03, \"offset_deg\": 3, \"nominal_arm\": \"ready\"}",
+  "spec": {
+   "box_m": 0.4,
+   "clusters": 10,
+   "nominal_arm": "ready",
+   "offset_deg": 3,
+   "offset_m": 0.03,
+   "per_cluster": 10,
+   "yaw_half_deg": 30
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.77, \"hold_s\": 1.7}"
+ },
+ "open_fridge_door/mobile_panda/drive_seq": {
+  "centre": [
+   0.95,
+   -0.05
+  ],
+  "pull": "null",
+  "round_starts": "{\"mode\": \"drive\", \"grasp_m\": [0.965, 1.085], \"d_m\": [0.6, 0.7], \"yaw_half_deg\": 10.0, \"bearing_deg\": 40.0, \"jitter_m\": 0.01, \"jitter_deg\": 1.0, \"back_m\": [1.0, 1.6], \"side_m\": [-0.3, 0.3], \"heading_half_deg\": 20.0, \"slowdown\": 2.0, \"sequence\": \"drive_then_arm\"}",
+  "spec": {
+   "back_m": [
+    1.0,
+    1.6
+   ],
+   "bearing_deg": 40.0,
+   "d_m": [
+    0.6,
+    0.7
+   ],
+   "grasp_m": [
+    0.965,
+    1.085
+   ],
+   "heading_half_deg": 20.0,
+   "jitter_deg": 1.0,
+   "jitter_m": 0.01,
+   "sequence": "drive_then_arm",
+   "side_m": [
+    -0.3,
+    0.3
+   ],
+   "slowdown": 2.0,
+   "yaw_half_deg": 10.0
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.77, \"hold_s\": 1.7}"
+ },
+ "open_fridge_door/mobile_so101/None": {
+  "centre": null,
+  "pull": "null",
+  "round_starts": "{\"clusters\": 10, \"per_cluster\": 10, \"box_m\": 0.4, \"yaw_half_deg\": 30, \"offset_m\": 0.03, \"offset_deg\": 3, \"nominal_arm\": \"ready\"}",
+  "spec": {
+   "box_m": 0.4,
+   "clusters": 10,
+   "nominal_arm": "ready",
+   "offset_deg": 3,
+   "offset_m": 0.03,
+   "per_cluster": 10,
+   "yaw_half_deg": 30
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.77, \"hold_s\": 1.7}"
+ },
+ "open_fridge_door/mobile_so101/drive_seq": "error",
+ "open_fridge_door/mobile_so101_xl/None": {
+  "centre": null,
+  "pull": "null",
+  "round_starts": "{\"clusters\": 10, \"per_cluster\": 10, \"box_m\": 0.4, \"yaw_half_deg\": 30, \"offset_m\": 0.03, \"offset_deg\": 3, \"nominal_arm\": \"ready\"}",
+  "spec": {
+   "box_m": 0.4,
+   "clusters": 10,
+   "nominal_arm": "ready",
+   "offset_deg": 3,
+   "offset_m": 0.03,
+   "per_cluster": 10,
+   "yaw_half_deg": 30
+  },
+  "timing": "{\"settle_s\": 0.0, \"close_s\": 1.0, \"grip_settle_s\": 0.0, \"pull_start_s\": 0.77, \"hold_s\": 1.7}"
+ },
+ "open_fridge_door/mobile_so101_xl/drive_seq": "error"
+}

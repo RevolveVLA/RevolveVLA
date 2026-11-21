@@ -41,6 +41,11 @@ Patches:
 - `patches/gz-physics/gz-physics-mujoco-shared-mesh-files.patch`: one MuJoCo mesh asset per mesh collision, so
   several collisions may use the same mesh file (gazebosim/gz-physics#1162; the Panda's two fingers share one).
 - `patches/gz-sim/gz-sim-video-recorder-skip-dropped-frames.patch`
+- `patches/gz_ros2_control/gz_ros2_control-system-reset.patch`: world reset support (gz-sim ISystemReset) in
+  the gz_ros2_control plugin: on a world reset it keeps its controller manager and restarts its control clock
+  (unpatched, gz-sim reloads the plugin and the new controller manager blocks the simulation thread). Adapted from
+  a sibling project's patch. Applied in the submodule's working tree by `components/simulator/build.sh` (once,
+  idempotent; `.gitmodules` sets `ignore = dirty` for it).
 
 The gz_*_vendor packages (gazebo-release, `rolling` = the Kura majors: gz-sim 11, gz-physics 10, sdformat 17, ...)
 only wrap Kura: each one finds the Kura install and vendors nothing (gz_dartsim_vendor / gz_ogre_next_vendor find

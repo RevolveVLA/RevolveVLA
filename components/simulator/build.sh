@@ -3,7 +3,8 @@
 #   1. Gazebo Kura (+ the MuJoCo plugin) from ThirdParty/gz_kura (fetch.sh: kura.repos pins + ThirdParty/patches)
 #      into ThirdParty/gz_kura/install, ThirdParty/gz_kura mounted at /opt/gz_ws;
 #   2. ros_gz, gz_ros2_control (+ demos) and the gz_*_vendor packages (all satisfied by the Kura install, nothing
-#      vendored) from the ThirdParty submodules, and revolve_sim (components/simulator/ros), into
+#      vendored) from the ThirdParty submodules (gz_ros2_control with ThirdParty/patches/gz_ros2_control), and
+#      revolve_sim (components/simulator/ros), into
 #      ThirdParty/ros_gz_ws/install, mounted at /opt/ros_gz_ws.
 # Both install dirs are git-ignored and mounted at the same paths at runtime (absolute install paths). build/ and
 # the ccache dirs persist, so a rebuild only compiles what changed.
@@ -22,6 +23,12 @@ t0=$(date +%s)
 for p in ThirdParty/ros_gz ThirdParty/gz_ros2_control \
          $(git -C "$repo" config -f .gitmodules --get-regexp '^submodule\..*_vendor\.path$' | cut -d' ' -f2); do
   [[ -e $repo/$p/.git ]] || git -C "$repo" submodule update --init -- "$p"
+done
+# ThirdParty/patches/<submodule>/*.patch, once each, in the submodule's working tree (Kura's: fetch.sh)
+for p in "$repo"/ThirdParty/patches/gz_ros2_control/*.patch; do
+  sub=$repo/ThirdParty/$(basename "$(dirname "$p")")
+  if git -C "$sub" apply --reverse --check "$p" 2>/dev/null; then echo "patch already applied: ${p#$repo/}"
+  else git -C "$sub" apply "$p" && echo "applied patch: ${p#$repo/}"; fi
 done
 docker build -t "$IMAGE" "$repo/components/simulator"
 echo "image $IMAGE: $(docker image inspect "$IMAGE" --format '{{.Size}}') bytes, $(( $(date +%s) - t0 )) s"

@@ -1,0 +1,66 @@
+gz_ros2_control: world reset support (gz-sim ISystemReset) for the GazeboSimROS2ControlPlugin.
+Adapted from a sibling project's patch; applies to the pinned lyrical branch (see ThirdParty/VERSIONS.md).
+Without it, a gz world reset (/world/<w>/control reset, or ROS 2 Simulation Interfaces ResetSimulation)
+destroys and reloads the plugin, and the new controller manager blocks the simulation thread.
+Applied in the submodule's working tree by `./revolve build simulator` (components/simulator/build.sh).
+
+diff --git a/gz_ros2_control/include/gz_ros2_control/gz_ros2_control_plugin.hpp b/gz_ros2_control/include/gz_ros2_control/gz_ros2_control_plugin.hpp
+index 43d71a2..dafd663 100644
+--- a/gz_ros2_control/include/gz_ros2_control/gz_ros2_control_plugin.hpp
++++ b/gz_ros2_control/include/gz_ros2_control/gz_ros2_control_plugin.hpp
+@@ -29,7 +29,8 @@ class GazeboSimROS2ControlPlugin
+   : public sim::System,
+   public sim::ISystemConfigure,
+   public sim::ISystemPreUpdate,
+-  public sim::ISystemPostUpdate
++  public sim::ISystemPostUpdate,
++  public sim::ISystemReset
+ {
+ public:
+   /// \brief Constructor
+@@ -54,6 +55,11 @@ public:
+     const sim::UpdateInfo & _info,
+     const sim::EntityComponentManager & _ecm) override;
+ 
++  // Documentation inherited
++  void Reset(
++    const sim::UpdateInfo & _info,
++    sim::EntityComponentManager & _ecm) override;
++
+ private:
+   /// \brief Private data pointer.
+   std::unique_ptr<GazeboSimROS2ControlPluginPrivate> dataPtr;
+diff --git a/gz_ros2_control/src/gz_ros2_control_plugin.cpp b/gz_ros2_control/src/gz_ros2_control_plugin.cpp
+index 50feae7..fb5faed 100644
+--- a/gz_ros2_control/src/gz_ros2_control_plugin.cpp
++++ b/gz_ros2_control/src/gz_ros2_control_plugin.cpp
+@@ -527,6 +527,22 @@ void GazeboSimROS2ControlPlugin::PostUpdate(
+     this->dataPtr->controller_manager_->update(sim_time_ros, sim_period);
+   }
+ }
++
++//////////////////////////////////////////////////
++void GazeboSimROS2ControlPlugin::Reset(
++  const sim::UpdateInfo & _info,
++  sim::EntityComponentManager & /*_ecm*/)
++{
++  // A world reset (e.g. ROS 2 Simulation Interfaces ResetSimulation). Without ISystemReset, gz-sim destroys and
++  // reloads this plugin, and the new controller manager blocks the simulation thread waiting for its hardware.
++  // Keep the controller manager instead and restart the control clock at the reset sim time (it jumps back, so
++  // the update period would stay negative). The hardware re-reads the reset joint states on the next update;
++  // active controllers keep their references, so restart them (controller_manager switch_controller) to latch
++  // onto the reset state.
++  this->dataPtr->last_update_sim_time_ros_ = rclcpp::Time(
++    std::chrono::duration_cast<std::chrono::nanoseconds>(_info.simTime).count(), RCL_ROS_TIME);
++}
++
+ }  // namespace gz_ros2_control
+ 
+ GZ_ADD_PLUGIN(
+@@ -534,4 +550,5 @@ GZ_ADD_PLUGIN(
+   gz::sim::System,
+   gz_ros2_control::GazeboSimROS2ControlPlugin::ISystemConfigure,
+   gz_ros2_control::GazeboSimROS2ControlPlugin::ISystemPreUpdate,
+-  gz_ros2_control::GazeboSimROS2ControlPlugin::ISystemPostUpdate)
++  gz_ros2_control::GazeboSimROS2ControlPlugin::ISystemPostUpdate,
++  gz_ros2_control::GazeboSimROS2ControlPlugin::ISystemReset)

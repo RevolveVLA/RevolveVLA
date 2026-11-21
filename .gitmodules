@@ -20,3 +20,98 @@
 	path = ThirdParty/so_arm100
 	url = https://github.com/TheRobotStudio/SO-ARM100.git
 	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_cmake_vendor"]
+	path = ThirdParty/gz_vendors/gz_cmake_vendor
+	url = https://github.com/gazebo-release/gz_cmake_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_utils_vendor"]
+	path = ThirdParty/gz_vendors/gz_utils_vendor
+	url = https://github.com/gazebo-release/gz_utils_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_math_vendor"]
+	path = ThirdParty/gz_vendors/gz_math_vendor
+	url = https://github.com/gazebo-release/gz_math_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_tools_vendor"]
+	path = ThirdParty/gz_vendors/gz_tools_vendor
+	url = https://github.com/gazebo-release/gz_tools_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/sdformat_vendor"]
+	path = ThirdParty/gz_vendors/sdformat_vendor
+	url = https://github.com/gazebo-release/sdformat_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_plugin_vendor"]
+	path = ThirdParty/gz_vendors/gz_plugin_vendor
+	url = https://github.com/gazebo-release/gz_plugin_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_common_vendor"]
+	path = ThirdParty/gz_vendors/gz_common_vendor
+	url = https://github.com/gazebo-release/gz_common_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_msgs_vendor"]
+	path = ThirdParty/gz_vendors/gz_msgs_vendor
+	url = https://github.com/gazebo-release/gz_msgs_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_transport_vendor"]
+	path = ThirdParty/gz_vendors/gz_transport_vendor
+	url = https://github.com/gazebo-release/gz_transport_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_fuel_tools_vendor"]
+	path = ThirdParty/gz_vendors/gz_fuel_tools_vendor
+	url = https://github.com/gazebo-release/gz_fuel_tools_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_rendering_vendor"]
+	path = ThirdParty/gz_vendors/gz_rendering_vendor
+	url = https://github.com/gazebo-release/gz_rendering_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_physics_vendor"]
+	path = ThirdParty/gz_vendors/gz_physics_vendor
+	url = https://github.com/gazebo-release/gz_physics_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_sensors_vendor"]
+	path = ThirdParty/gz_vendors/gz_sensors_vendor
+	url = https://github.com/gazebo-release/gz_sensors_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_gui_vendor"]
+	path = ThirdParty/gz_vendors/gz_gui_vendor
+	url = https://github.com/gazebo-release/gz_gui_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_sim_vendor"]
+	path = ThirdParty/gz_vendors/gz_sim_vendor
+	url = https://github.com/gazebo-release/gz_sim_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_dartsim_vendor"]
+	path = ThirdParty/gz_vendors/gz_dartsim_vendor
+	url = https://github.com/gazebo-release/gz_dartsim_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_vendors/gz_ogre_next_vendor"]
+	path = ThirdParty/gz_vendors/gz_ogre_next_vendor
+	url = https://github.com/gazebo-release/gz_ogre_next_vendor.git
+	branch = rolling
+	shallow = true
+[submodule "ThirdParty/gz_ros2_control"]
+	path = ThirdParty/gz_ros2_control
+	url = https://github.com/ros-controls/gz_ros2_control.git
+	branch = lyrical
+	shallow = true
+[submodule "ThirdParty/ros_gz"]
+	path = ThirdParty/ros_gz
+	url = https://github.com/gazebosim/ros_gz.git
+	branch = lyrical
+	shallow = true

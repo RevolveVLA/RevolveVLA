@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """RevolveVLA command line.
 
+  ./revolve assets [--out DIR] [--offline]   one-time: fetch the scene assets into assets/ (where licences allow) and
+                                     convert them to SDF models in assets/generated*/ (assets_pipeline/README.md)
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
@@ -110,6 +112,7 @@ def main():
     ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("assets")  # dispatched below, before parsing: its options go to make_assets.sh
     b = sub.add_parser("build")
     b.add_argument("component", nargs="?")
     b.add_argument("build_args", nargs=argparse.REMAINDER, help="passed to the build script (e.g. --clean)")
@@ -122,6 +125,8 @@ def main():
                                        help="the yaml changed since the run started: continue with the new one")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="+")
+    if sys.argv[1:2] == ["assets"]:
+        return subprocess.call(["bash", str(REPO / "assets_pipeline" / "make_assets.sh"), *sys.argv[2:]], cwd=REPO)
     a = ap.parse_args()
     if a.cmd == "validate":
         return cmd_validate(a)

@@ -9,9 +9,9 @@ Textures: CC0 PBR sets from ambientCG (pinned IDs, URLs and zip sha256 below),
 downloaded once into assets/textures/<id>/ (git-ignored). Offline or on a checksum
 mismatch the model uses plain colours and one warning line is printed. Idempotent:
 existing textures are reused; files are only rewritten when their content changes.
-Stdlib only (runs on the host). Downloads are untrusted data: only the
+Stdlib only. Downloads are untrusted data: only the
 three named JPG maps are read out of each zip, nothing is executed.
-  python3 -I assets_pipeline/make_room.py [--offline]
+  python3 -I assets_pipeline/make_room.py [--offline] [--out DIR]   (DIR default: assets/generated)
 """
 import hashlib
 import io
@@ -158,10 +158,10 @@ def box_visual(vname, pose, size, mat, shadows=True):
             f"</geometry>\n          {mat}</visual>\n")
 
 
-def build(set_name, tex):
+def build(set_name, tex, gen_dir=GEN_DIR):
     cfg = SETS[set_name]
     name = f"kitchen_room_{set_name}"
-    out = os.path.join(GEN_DIR, name)
+    out = os.path.join(gen_dir, name)
     meshes, vis = {}, ""
     # inner faces 2 mm in front of the wall boxes, floor 1 mm above z = 0, ceiling at H
     meshes["floor"] = quad([(-3, -3.1, 0.001), (3, -3.1, 0.001), (3, 3, 0.001), (-3, 3, 0.001)], 1.6)
@@ -249,7 +249,9 @@ def build(set_name, tex):
 
 
 def main():
-    offline = "--offline" in sys.argv[1:]
+    args = sys.argv[1:]
+    offline = "--offline" in args
+    gen_dir = os.path.abspath(args[args.index("--out") + 1]) if "--out" in args else GEN_DIR
     tex = {}
     for k, (aid, sha, _) in TEXTURES.items():
         tex[k] = fetch(aid, sha, offline)
@@ -257,7 +259,7 @@ def main():
             tex = {k: None for k in TEXTURES}
             break
     for s in SETS:
-        build(s, tex)
+        build(s, tex, gen_dir)
 
 
 if __name__ == "__main__":

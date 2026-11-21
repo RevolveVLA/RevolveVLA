@@ -1,4 +1,4 @@
-"""An `out` outside the repo (hostmounts), stopping a run's docker jobs (containers), SIGINT/SIGTERM as an exception
+"""Stopping a run's docker jobs (containers), SIGINT/SIGTERM as an exception
 (core/interrupt): host side, with docker and the launchers faked."""
 import os
 import signal
@@ -8,85 +8,10 @@ import types
 
 import pytest
 
-from datagen import containers, hostmounts
+from datagen import containers
 from datagen.core.interrupt import Interrupted, interruptible
 
-REPO = hostmounts.REPO
-
-
-@pytest.fixture(autouse=True)
-def clean():
-    hostmounts.clear()
-    yield
-    hostmounts.clear()
-
-
-def test_only_paths_outside_runs_are_recorded(tmp_path):
-    hostmounts.add(REPO / "runs" / "datagen" / "x")
-    assert hostmounts.MOUNTS == []
-    hostmounts.add(tmp_path / "ssd" / "x")
-    hostmounts.add(tmp_path / "ssd" / "x")
-    assert hostmounts.MOUNTS == [(tmp_path / "ssd" / "x").resolve()]
-
-
-def test_a_symlinked_out_is_recorded_as_its_target(tmp_path):
-    real = tmp_path / "real"
-    real.mkdir()
-    link = tmp_path / "link"
-    link.symlink_to(real)
-    hostmounts.add(link)
-    assert hostmounts.MOUNTS == [real.resolve()]
-
-
-def test_nothing_is_patched_without_a_recorded_path(monkeypatch):
-    from docker.models.containers import ContainerCollection
-    run = ContainerCollection.run
-    launcher = types.SimpleNamespace(cpath=lambda p: "orig")
-    monkeypatch.setitem(sys.modules, "launch", launcher)
-    hostmounts.add(REPO / "runs" / "datagen" / "x")
-    hostmounts.apply()
-    assert ContainerCollection.run is run and launcher.cpath("/a") == "orig"
-
-
-def test_a_recorded_path_is_mounted_into_every_job_and_kept_by_cpath(tmp_path, monkeypatch):
-    from docker.models.containers import ContainerCollection
-    started = []
-    monkeypatch.setattr(ContainerCollection, "run", lambda self, image, command=None, **kw: started.append(kw) or "c")
-
-    def orig(p):
-        from pathlib import Path
-        return "/repo/" + str(Path(p).resolve().relative_to(REPO))
-    launchers = {n: types.SimpleNamespace(cpath=orig) for n in ("launch", "sim_launch", "dataset_launch")}
-    for n, m in launchers.items():
-        monkeypatch.setitem(sys.modules, n, m)
-    out = tmp_path / "ssd" / "run"                      # does not exist yet: docker would create it as root
-    hostmounts.add(out)
-    hostmounts.apply()
-    hostmounts.apply()                                  # idempotent
-    assert out.is_dir()
-    inside, outside = REPO / "runs" / "a" / "job", out / "jobs" / "plan_seed_1"
-    for m in launchers.values():
-        assert m.cpath(inside) == "/repo/runs/a/job" and m.cpath(outside) == str(outside)
-        with pytest.raises(ValueError):
-            m.cpath(tmp_path / "other")                 # not recorded: the launcher's own error
-    assert ContainerCollection(None).run("img", ["x"], volumes={"/a": {"bind": "/b", "mode": "ro"}}) == "c"
-    assert started == [{"volumes": {"/a": {"bind": "/b", "mode": "ro"}, str(out): {"bind": str(out), "mode": "rw"}}}]
-    ContainerCollection(None).run("img", ["x"])         # a call without volumes is left alone
-    assert started[1] == {}
-
-
-def test_load_applies_the_mounts_before_the_first_job(tmp_path, monkeypatch):
-    from datagen.plugins import generate_module
-    launch = types.SimpleNamespace(cpath=lambda p: "orig")
-    monkeypatch.setitem(sys.modules, "launch", launch)
-    monkeypatch.setenv("REVOLVE_ROBOT", "mobile_panda")
-    monkeypatch.setattr(hostmounts, "apply", lambda: seen.append(1))
-    seen = []
-    generate_module.load("mobile_panda", "open_fridge_door")
-    assert seen == []                                   # nothing recorded: untouched
-    hostmounts.add(tmp_path / "ssd")
-    generate_module.load("mobile_panda", "open_fridge_door")
-    assert seen == [1]
+REPO = containers.REPO
 
 
 class FakeContainer:

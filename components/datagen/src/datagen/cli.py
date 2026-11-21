@@ -12,7 +12,6 @@ import os
 import sys
 from pathlib import Path
 
-from . import hostmounts
 from .core import checks, registry
 from .core.errors import DatagenError
 from .core.interrupt import Interrupted, interruptible
@@ -77,8 +76,7 @@ def main(argv=None, root: Path | None = None) -> int:
     steps = STEPS if a.step == "all" else (a.step,)
     try:
         spec = with_run(load(a.spec), a)
-        out = (Path(spec.out) if Path(spec.out).is_absolute() else (root or Path.cwd()) / spec.out).resolve()
-        hostmounts.add(out)              # an out outside the repo's runs/ is mounted into the jobs (hostmounts.apply)
+        out = (Path(spec.out) if Path(spec.out).is_absolute() else (root or Path.cwd()) / spec.out)
         pipeline = Pipeline(spec, build_plugins(spec, steps), out, a.dry_run, abort=lambda: stop_jobs(out))
         with interruptible():
             return 0 if pipeline.run(steps, a.split) else 1
@@ -88,8 +86,6 @@ def main(argv=None, root: Path | None = None) -> int:
     except DatagenError as e:
         print(f"datagen: {e}", file=sys.stderr)
         return 1
-    finally:
-        hostmounts.clear()
 
 
 def with_run(spec: DatagenSpec, a) -> DatagenSpec:

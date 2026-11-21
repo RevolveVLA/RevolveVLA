@@ -14,7 +14,6 @@ from typing import Sequence
 from datagen.core.interfaces import Converter, Result
 from datagen.core.registry import register
 
-from ... import hostmounts
 from .. import generate_module
 
 LAUNCH = generate_module.COMPONENT.parent / "dataset" / "launch.py"
@@ -28,7 +27,6 @@ def load_launch():
         s = importlib.util.spec_from_file_location(name, LAUNCH)
         sys.modules[name] = m = importlib.util.module_from_spec(s)
         s.loader.exec_module(m)
-    hostmounts.apply()                           # an `out` outside the repo: the launchers must know it before a job starts
     return sys.modules[name]
 
 

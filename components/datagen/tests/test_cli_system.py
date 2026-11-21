@@ -184,22 +184,7 @@ def test_the_run_block_never_refuses_an_existing_out(tmp_path):
     assert rc == 0, err
 
 
-# ------------------------------------------------------------------ out outside the repo, signals
-def test_an_absolute_out_anywhere_and_a_symlinked_one_resume(tmp_path):
-    real = tmp_path / "disk2" / "run"
-    link = tmp_path / "link"
-    link.parent.mkdir(exist_ok=True)
-    real.parent.mkdir()
-    link.symlink_to(real.parent)
-    for out in (real, link / "run"):                      # the real path, then the same dir through a symlink
-        rc, text, err = datagen(tmp_path, "all", spec=spec_with(tmp_path, out=str(out), **PLAIN))
-        assert rc == 0, err
-    assert (real / "manifest.json").is_file() and (real / "dataset" / "dataset.json").is_file()
-    assert "generate train: 3/3 accepted" in text                       # the second run found the first one's manifest
-    assert json.loads((real / "manifest.json").read_text())["splits"]["train"]["used"][0]["generate"]["paths"][
-        "episode"].startswith(str(real))                                 # resolved paths, symlink or not
-
-
+# ------------------------------------------------------------------ signals
 def interrupted(tmp_path, sig, extra=()):
     """Start a slow run (4 configs, 1.5 s each, 2 at a time), send `sig` once two are under way -> (rc, stderr)."""
     log = tmp_path / "calls.log"

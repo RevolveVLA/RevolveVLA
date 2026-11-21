@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .hostmounts import REPO
+REPO = Path(__file__).resolve().parents[4]
 
 LABEL = "revolve.component"
 

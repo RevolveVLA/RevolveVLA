@@ -1,0 +1,30 @@
+# Matrix variant: grasp in range mode, any TCP height inside the task's grasp range + the base (baseline: ../fridge_smoke.yaml). Outputs under runs/datagen_matrix/.
+task: open_fridge_door
+robot: mobile_panda
+out: runs/datagen_matrix/v21_grasp_range
+generator: {plugin: automoma, attempts: 10, checks: 1}
+recorder: {plugin: rosetta}
+converter: {plugin: rosetta, format: lerobot}
+randomisers:
+  robot_base:
+    x_m: [-0.1, 0.1]
+    y_m: [-0.1, 0.1]
+    yaw_deg: [-15, 15]
+  grasp:
+    along_m: [0.97, 1.08]
+seed: 0
+splits:
+  train:
+    target: 2
+    sampler: {strategy: random}
+    pool:
+      initial: [0, 5]
+      replacement: [6, 11]
+    record: true
+  heldout:
+    target: 1
+    sampler: {strategy: sobol}
+    pool:
+      initial: [500, 505]
+    min_distance: {from: train, value: 0.1, realised: true}
+    record: false

@@ -265,3 +265,12 @@ def test_a_range_grasp_only_spec_with_min_distance_keeps_the_distance(tmp_path):
 def test_the_listing_shows_both_modes_with_the_tasks_values():
     out = listing.render("open_fridge_door", "mobile_panda")
     assert "grasp.id" in out and "{0, 1, 2, 3, 4}" in out and "grasp.along_m" in out and "[0.955, 1.095]" in out
+
+
+@pytest.mark.parametrize("name, dim", [("v20_grasp_points", "grasp.id"), ("v21_grasp_range", "grasp.along_m")])
+def test_the_matrix_specs_of_both_modes_sample(tmp_path, name, dim):
+    spec = dataclasses.replace(S.load(specs_bridge.SPECS / "datagen" / "matrix" / f"{name}.yaml"), out=str(tmp_path))
+    Pipeline(spec, cli.build_plugins(spec, ("sample",)), tmp_path, log=lambda m: None).run(["sample"])
+    sampled = json.loads((tmp_path / "manifest.json").read_text())["splits"]["train"]["sampled"]
+    assert len(sampled) == 12 and {dim} <= set(sampled[0]["values"])
+    assert len({c["values"][dim] for c in sampled}) > (3 if dim == "grasp.along_m" else 1)

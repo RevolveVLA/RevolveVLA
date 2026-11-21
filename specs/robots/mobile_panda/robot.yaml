@@ -1,0 +1,14 @@
+# Mobile Panda: the shared omni base (../common/omni_base.urdf.xacro) + the moveit_resources Panda arm and hand.
+name: mobile_panda
+description: robot.urdf.xacro
+controllers: controllers.yaml
+poses:                                 # panda_joint1..7 [rad]
+  ready: [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
+  # fully folded (for driving): elbow tucked (q4 near its limit), hand down above the chassis
+  folded: [0.0, -1.10, 0.0, -2.95, 0.0, 1.85, 0.785]
+frames:
+  tcp: panda_tcp                       # panda_hand + 0.1034 m along its z (the approach axis)
+  hand: panda_hand
+  base: base_footprint
+groups:
+  fingers: [panda_leftfinger, panda_rightfinger]

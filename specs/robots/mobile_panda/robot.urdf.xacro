@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<!-- Mobile Panda: the shared omni base + the Franka Panda arm and hand of moveit_resources_panda_description
+     (panda_* names, included unchanged), panda_link0 0.12 m ahead of the base centre on the chassis top
+     (0.60 m above the floor). ros2_control through gz_ros2_control/GazeboSimSystem: wheels on velocity
+     (omni_wheel_drive_controller), arm and gripper on effort (joint_trajectory_controller PID). Only
+     panda_finger_joint1 is actuated: panda_finger_joint2 follows it through the URDF <mimic>, which gz-sim turns
+     into a MuJoCo equality constraint (a mimic joint listed in <ros2_control> would be velocity-servoed).
+     Args: initial_positions (the 7 arm joints [rad], default the `ready` pose), finger_initial [m] (default open),
+     controllers (the absolute path of the gz_ros2_control parameters file, controllers.yaml here: the launch
+     passes it). -->
+<robot name="mobile_panda" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="initial_positions" default="0.0 -0.785 0.0 -2.356 0.0 1.571 0.785"/>
+  <xacro:arg name="finger_initial" default="0.04"/>
+  <xacro:arg name="controllers" default=""/>
+
+  <xacro:include filename="../common/omni_base.urdf.xacro"/>
+  <xacro:omni_base/>
+
+  <xacro:include filename="$(find moveit_resources_panda_description)/urdf/panda.urdf.xacro"/>
+  <joint name="panda_mount_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="panda_link0"/>
+    <origin xyz="0.12 0 0.60"/>
+  </joint>
+  <link name="panda_tcp"/>
+  <joint name="panda_tcp_joint" type="fixed">
+    <parent link="panda_hand"/>
+    <child link="panda_tcp"/>
+    <origin xyz="0 0 0.1034"/>
+  </joint>
+
+  <xacro:property name="q0" value="${[float(v) for v in '$(arg initial_positions)'.split()]}"/>
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <xacro:omni_base_ros2_control_joints/>
+    <xacro:macro name="arm_joint" params="i">
+      <joint name="panda_joint${i}">
+        <command_interface name="effort"/>
+        <state_interface name="position">
+          <param name="initial_value">${q0[i - 1]}</param>
+        </state_interface>
+        <state_interface name="velocity"/>
+      </joint>
+      <xacro:if value="${i &lt; 7}">
+        <xacro:arm_joint i="${i + 1}"/>
+      </xacro:if>
+    </xacro:macro>
+    <xacro:arm_joint i="1"/>
+    <joint name="panda_finger_joint1">
+      <command_interface name="effort"/>
+      <state_interface name="position">
+        <param name="initial_value">$(arg finger_initial)</param>
+      </state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <!-- Cameras (D22 poses: the old base_link was on the floor, as base_footprint is; gz sensors, pose in the link frame, gz camera convention: looking along +x) -->
+  <xacro:macro name="camera" params="name link pose hfov near far">
+    <gazebo reference="${link}">
+      <sensor name="${name}" type="camera">
+        <pose>${pose}</pose>
+        <always_on>true</always_on>
+        <update_rate>30</update_rate>
+        <topic>${name}/image</topic>
+        <camera>
+          <horizontal_fov>${hfov}</horizontal_fov>
+          <image><width>480</width><height>480</height><format>R8G8B8</format></image>
+          <clip><near>${near}</near><far>${far}</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  <xacro:camera name="wrist_cam" link="panda_hand" pose="0.10 0 0.06 3.141593 -2.094395 0" hfov="1.8"
+                near="0.02" far="10.0"/>
+  <xacro:camera name="overhead_left_cam" link="base_footprint" pose="0.10 0.50 1.80 0 1.117011 -1.570796" hfov="1.68"
+                near="0.05" far="15.0"/>
+  <xacro:camera name="overhead_right_cam" link="base_footprint" pose="0.10 -0.50 1.80 0 1.117011 1.570796" hfov="1.68"
+                near="0.05" far="15.0"/>
+
+  <!-- Finger contact sensors (gz Contact system: /world/<w>/model/<m>/link/<link>/sensor/contact/contact) -->
+  <xacro:macro name="contact" params="link">
+    <gazebo reference="${link}">
+      <sensor name="contact" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact><collision>${link}_collision</collision></contact>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+  <xacro:contact link="panda_leftfinger"/>
+  <xacro:contact link="panda_rightfinger"/>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg controllers)</parameters>
+    </plugin>
+    <!-- ground-truth model pose (world frame) -->
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_nested_model_pose>false</publish_nested_model_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <update_frequency>100</update_frequency>
+    </plugin>
+  </gazebo>
+</robot>

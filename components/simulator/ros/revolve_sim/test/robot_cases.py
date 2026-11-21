@@ -4,8 +4,12 @@ CONTROL (check_control.py, test_control.py): the arm and hand JTCs and their joi
 space from the scene start), the hand joint's closed / fully open values and tolerance, and the contact probe: a
 static box of side `box` [m] spawned at the TCP (+ `box_offset` in the TCP frame; `box_aligned`: with the TCP's
 orientation, else world-aligned) while the hand is open; closing on it must stop the hand joint within `grasp`.
+
+MOVEIT (check_moveit.py, test_moveit.py): the MoveIt planning group and named TCP pose targets, each given as the arm
+joints whose TCP pose (forward kinematics) is the target, so that it is reachable by the 5-DoF arm; MoveIt plans to the
+pose (IK), not to the joints. `lin_m`: a Pilz LIN back along the approach (TCP -z) from the last target.
 """
-ROBOTS = ["mobile_panda", "mobile_so101"]
+ROBOTS = ["mobile_panda", "mobile_so101", "mobile_so101_xl"]
 
 CONTROL = {
     "mobile_panda": {
@@ -33,5 +37,34 @@ CONTROL = {
         # a 16 mm cube between the jaw tips, 0.5 mm into the fixed jaw's tip pad (its face 8 mm along TCP +y);
         # the moving jaw stops on it near 0 rad (a 16 mm gap)
         "box": 0.016, "box_offset": [0.0, 0.0005, 0.0], "box_aligned": True, "grasp": [-0.08, 0.08],
+    },
+    "mobile_so101_xl": {
+        "arm_controller": "arm_controller",
+        "arm_joints": ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"],
+        "arm_targets": {"A": [0.6, -0.8, 0.9, 0.6, 0.5],
+                        "B": [-0.7, -0.3, 0.6, 0.9, -0.8],
+                        "C": [0.0, 0.4, -0.4, 0.8, 1.2],
+                        "ready": [0.0, -1.57, 1.57, 0.0, 0.0]},
+        "hand_controller": "gripper_controller",
+        "hand_joint": "gripper",
+        "closed": -0.174533, "open": 1.74533, "hand_tol": 0.02,
+        # a 16 mm cube (about the drawer bar) 0.5 mm into the fixed jaw's tip pad (its face 8 mm along TCP +y, as
+        # mobile_so101's); the moving jaw (a 32 mm gap at 0 rad) closes on it
+        "box": 0.016, "box_offset": [0.0, 0.0005, 0.0], "box_aligned": True, "grasp": [-0.16, -0.03],
+    },
+}
+
+MOVEIT = {
+    # its T2 arm targets; the LIN from B (C has the elbow nearly stretched: the LIN's joint accelerations exceed the
+    # limits there)
+    "mobile_so101": {"group": "arm", "lin_m": 0.03,
+                     "targets": {k: CONTROL["mobile_so101"]["arm_targets"][k] for k in ("C", "A", "B")}},
+    "mobile_so101_xl": {
+        "group": "arm", "lin_m": 0.05,
+        "targets": {
+            "low": [0.0, 0.5096, 0.6768, 0.3844, 0.0],          # TCP (0.55, 0, 0.45) pointing down
+            "side": [0.6, -1.0982, 1.3459, 0.3523, 0.0],        # TCP (0.556, -0.225, 0.75), tilted 34 deg down
+            "bar": [0.0, -0.0738, 1.0206, -0.9467, 0.0],        # TCP (0.80, 0, 0.841): the drawer bar's height,
+        },                                                      # approach horizontal, the jaws closing vertically
     },
 }

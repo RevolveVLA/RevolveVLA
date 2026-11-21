@@ -10,12 +10,13 @@ episodes live (phases, metrics, sanity checks) and records them.
 ## Run
 ```
 ./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]] [--gui]
-./revolve sim --scene kitchen_partnet --robot mobile_so101
+./revolve sim --scene kitchen_partnet --robot mobile_so101        # or mobile_so101_xl
 ```
-Robots (`specs/robots/`): mobile_panda (the moveit_resources Panda) and mobile_so101 (the SO-101 arm), both on the
-shared omni base (`common/omni_base.urdf.xacro`); `common/so101.urdf.xacro` is the SO-101 macro (ported from
-ThirdParty/so_arm100 so101_new_calib.urdf, `scale` arg, box collisions), `common/sensors.urdf.xacro` the camera and
-contact sensor macros.
+Robots (`specs/robots/`): mobile_panda (the moveit_resources Panda), mobile_so101 (the SO-101 arm) and
+mobile_so101_xl (the same arm at scale 2 on a lower chassis), all on the shared omni base
+(`common/omni_base.urdf.xacro`); `common/so101.urdf.xacro` is the SO-101 macro (ported from ThirdParty/so_arm100
+so101_new_calib.urdf, `scale` arg, box collisions, its wrist camera and contact sensors), `common/sensors.urdf.xacro`
+the camera and contact sensor macros.
 One container (`--name`, default `revolve-sim`) on the GPU and the host network, isolated from other ROS 2 / gz
 instances on the host: its own `ROS_DOMAIN_ID` (`--domain-id`, default derived from the container name, 1..101,
 skipping the domains of the other running containers; printed at start: export it to use ROS 2 from the host) and
@@ -38,15 +39,19 @@ sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
   (ros_gz_interfaces/Contacts), `/<camera>/camera_info`; camera images through ros_gz_image: `/<camera>/image`.
 - Commands: `/omni_wheel_drive_controller/cmd_vel` (geometry_msgs/TwistStamped, robot frame; ramp changes over
   ~0.5 s, the controller has no limiter), FollowJointTrajectory on `/<arm controller>/follow_joint_trajectory`
-  and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller; mobile_so101:
-  arm_controller, gripper_controller).
+  and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller; mobile_so101 and
+  mobile_so101_xl: arm_controller, gripper_controller).
 - MoveIt 2: a robot's MoveIt config lives with its description in `specs/robots/<r>/moveit/` (mobile_panda: the
   moveit_resources Panda SRDF groups + the omni base's disabled collisions, no virtual joint so MoveIt plans in
   the base frame; moveit_controllers.yaml: arm and hand as FollowJointTrajectory; moveit_py.yaml: the planning
-  scene monitor, the OMPL and Pilz pipelines, named plan request parameters). `revolve_sim.moveit.moveit_params(repo,
-  robot)` builds the parameters (kinematics, joint limits, pipeline configs from moveit_resources_panda_moveit_config
-  unchanged) for `MoveItPy(config_dict=...)` or a move_group node. Nothing in the sim launch uses MoveIt: a client
-  (the T4 test) runs it next to the sim.
+  scene monitor, the OMPL and Pilz pipelines, named plan request parameters, shared by every robot:
+  `common/moveit_py.yaml`). The SO-101 robots: `common/so101.srdf.xacro` (groups `arm`, `gripper`, states, disabled
+  collisions) + `common/omni_base.srdf.xacro` in the robot's SRDF, and the shared `common/so101_moveit/` files
+  (kinematics: pick_ik, as the arm has 5 DoF; joint limits; Pilz Cartesian limits; MoveIt controllers) linked into
+  the robot's moveit/. `revolve_sim.moveit.moveit_params(repo, robot)` builds the parameters (kinematics, joint
+  limits, Pilz limits from the robot's moveit/ if there, else with the pipeline configs from
+  moveit_resources_panda_moveit_config unchanged) for `MoveItPy(config_dict=...)` or a move_group node. Nothing in
+  the sim launch uses MoveIt: a client (the MoveIt smoke and T4 tests) runs it next to the sim.
 - Contact sensors on every robot link with a collision except the omni rollers (the robot xacro; gz link and
   collision names after sdformat's fixed-joint lumping). robot_state_publisher publishes the moving links' tf at
   100 Hz.
@@ -91,12 +96,13 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
 ```
 ./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control,
                                       # revolve_sim
-./revolve test simulator              # T1 bring-up, T2 control (every robot), T3 evaluator, T4 open_fridge_door
-                                      # (MoveIt; mobile_panda) on a launched sim + the evaluator unit tests
+./revolve test simulator              # T1 bring-up, T2 control (every robot), MoveIt smoke (SO-101 robots), T3
+                                      # evaluator, T4 open_fridge_door (MoveIt; mobile_panda) on a launched sim + the
+                                      # evaluator unit tests
                                       # (ros/revolve_sim/test); -- -m "not slow" skips T4
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
-  moveit_py + the moveit_resources Panda, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
+  moveit_py + the moveit_resources Panda + pick_ik, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
   deps. Never the Lyrical ros-gz / gz-ros2-control binaries (built on Gazebo Jetty). Every bash in the image sources
   `/opt/revolve_env.sh`: ROS, then the ros_gz workspace, then Kura first on PATH / LD_LIBRARY_PATH /
   CMAKE_PREFIX_PATH (the binaries pull Jetty sdformat / gz-math / gz-tools vendors into /opt/ros/lyrical). Apt
@@ -111,8 +117,10 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
   through the repo mount; never copied into git or the image. They are made once by `./revolve assets`
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
-  check script in it (`check_bringup.py`, `check_control.py`, `check_evaluator.py`, `check_open_door.py`, rclpy;
+  check script in it (`check_bringup.py`, `check_control.py`, `check_moveit.py`, `check_evaluator.py`,
+  `check_open_door.py`, rclpy;
   each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. A module runs once per robot of its
-  `ROBOTS` (T1 / T2: `robot_cases.ROBOTS`, with the per-robot T2 targets in `robot_cases.CONTROL`);
+  `ROBOTS` (T1 / T2: `robot_cases.ROBOTS`, with the per-robot T2 targets in `robot_cases.CONTROL`; the MoveIt
+  smoke: the robots and TCP pose targets of `robot_cases.MOVEIT`);
   `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or
   `$REVOLVE_TEST_LOGS`.

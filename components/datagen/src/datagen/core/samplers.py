@@ -33,9 +33,16 @@ def value(dim: Dim, u: float) -> Any:
 
 
 def distance(a: Mapping[str, Any], b: Mapping[str, Any], dims: Mapping[str, Dim]) -> float:
-    """Euclidean over the continuous dims, each normalised by its range (choices and zero-width dims ignored)."""
-    return math.sqrt(sum(((a[k] - b[k]) / (d.hi - d.lo)) ** 2 for k, d in dims.items()
-                         if isinstance(d, Range) and d.hi > d.lo and k in a and k in b))
+    """Euclidean over the dims both have: a continuous dim counts its difference over its range (0..1), a choices dim
+    0 when equal and 1 when different, so one different choice is as far as a whole range. A zero-width range or a
+    one-choice dim never differs."""
+    return math.sqrt(sum(gap(d, a[k], b[k]) ** 2 for k, d in dims.items() if k in a and k in b))
+
+
+def gap(dim: Dim, x: Any, y: Any) -> float:
+    if isinstance(dim, Choices):
+        return float(x != y)
+    return (x - y) / (dim.hi - dim.lo) if dim.hi > dim.lo else 0.0
 
 
 def cell_order(sizes: Sequence[int]) -> list[tuple[int, ...]]:

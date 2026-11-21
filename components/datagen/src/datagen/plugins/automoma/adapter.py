@@ -7,7 +7,7 @@ Runs on the host (docker SDK; components/datagen/generate.py does the jobs). Rec
 the recorder's job, so a split with `record: false` ends here: its start states are the Result.
 
 Result.realised: {"attempt_id", "start_pose" (the accepted attempt's start, object frame), "robot_base.x_m", ".y_m",
-".yaw_deg" (offsets from the start-box centre and the facing, comparable with the sampled dims), "grasp_id" (when varied)};
+".yaw_deg" (offsets from the start-box centre and the facing, comparable with the sampled dims), "grasp_id" and "grasp.id" (when varied)};
 a reach / drive start reports "reach_start.<dim>" / "drive_start.<dim>" (grasp_m, d_m, yaw_deg, drive: back_m, side_m,
 heading_deg) of the accepted attempt, its jitter included, and its start_pose (the far start of a drive).
 Result.paths: plan (the plan run), check (the accepted check dir: actions.npz, live.json, episode.json, state_log.npz),
@@ -85,7 +85,7 @@ class AutoMoma(Generator):
         episode = rec["episodes"][0]
         plan_dir = Path(out) / rec["plan"]["dir"]
         realised = dict(attempt_id=episode["attempt_id"], **realised_start(plan_dir, episode["attempt_id"]),
-                        **({"grasp_id": layout["grasp_id"]} if "grasp_id" in layout else {}))
+                        **({"grasp_id": layout["grasp_id"], "grasp.id": layout["grasp_id"]} if "grasp_id" in layout else {}))
         return Result(True, "", realised, {"plan": str(plan_dir), "check": str(Path(out) / episode["check"]),
                                            "manifest": str(Path(out) / "manifest.json")})
 

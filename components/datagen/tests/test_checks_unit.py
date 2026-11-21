@@ -9,6 +9,7 @@ import yaml
 from datagen import cli
 from datagen.core import checks, manifest, pipeline, separation, spec as S
 from datagen.core.interfaces import Result
+from datagen.core.spec import Choices
 
 DIM = "fake_datagen.x"           # range [-0.5, 0.5]: distances are plain differences
 SPLITS = {"train": {"target": 4, "sampler": {"strategy": "stratified", "bins": {DIM: 2}}, "pool": {"initial": [0, 9]}},
@@ -236,3 +237,16 @@ def test_the_walk_replaces_a_realised_rejection_in_its_cell(tmp_path):
     assert rec["rejected"] == [{"seed": 20, "step": "realised", "reason": "min_distance (realised)"}]
     assert [e["config"]["seed"] for e in rec["used"]] == [21, 22]
     assert ("generate", 20) in F.CALLS                              # it was generated, then judged
+
+
+def test_realised_choices_count_in_the_distance_too():
+    """grasp only: a seed whose realised grasp equals a train one is `too close`, a different grasp is not."""
+    dims = {"grasp.id": Choices((0, 1, 2))}
+    sp = S.parse(RAW | {"randomisers": {"grasp": {"id": {"choices": [0, 1, 2]}}},
+                        "splits": {"train": {"target": 1, "pool": {"initial": [0, 9]}}, "heldout": SPLITS["heldout"]}})
+    held = sp.split("heldout")
+    m = {"splits": {"train": {"used": [{"config": {"seed": 0, "values": {"grasp.id": 1}},
+                                        "generate": {"realised": {"grasp.id": 1}}}]}}}
+    assert separation.too_close(held, sp.dims(), Result(realised={"grasp.id": 1}), m) == "min_distance (realised)"
+    assert separation.too_close(held, sp.dims(), Result(realised={"grasp.id": 2}), m) is None
+    assert separation.varied(dims, {"grasp.id": 2}) == dims and separation.varied({"g": Choices((4,))}, {"g": 4}) == {}

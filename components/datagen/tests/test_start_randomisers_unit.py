@@ -281,3 +281,16 @@ def test_list_randomisers_needs_a_task_and_a_robot():
 def test_usable_lists_the_randomisers_of_the_package():
     assert sorted(listing.usable("open_fridge_door", "mobile_panda")) == ["grasp", "robot_base"]
     assert sorted(listing.usable("open_drawer", "mobile_so101_xl")) == ["drive_start"]
+
+
+def test_a_grasp_only_spec_with_min_distance_samples_and_keeps_the_distance(tmp_path):
+    """The matrix' v06 had to drop heldout min_distance (a choices dim had no distance): grasp ids now differ by 1."""
+    raw = {"task": "open_fridge_door", "robot": "mobile_panda", "out": str(tmp_path), "generator": {"plugin": "automoma"},
+           "randomisers": {"grasp": {"id": {"choices": [0, 1, 2, 3, 4]}}},
+           "splits": {"train": {"target": 2, "sampler": {"overrides": {"grasp.id": 1}}, "pool": {"initial": [0, 5]}},
+                      "heldout": {"target": 3, "pool": {"initial": [500, 520]}, "record": False,
+                                  "min_distance": {"from": "train", "value": 0.5}}}}
+    spec = S.parse(raw)
+    Pipeline(spec, cli.build_plugins(spec, ("sample",)), tmp_path, log=lambda m: None).run(["sample"])
+    sampled = json.loads((tmp_path / "manifest.json").read_text())["splits"]["heldout"]["sampled"]
+    assert len(sampled) == 21 and all(c["values"]["grasp.id"] != 1 for c in sampled)

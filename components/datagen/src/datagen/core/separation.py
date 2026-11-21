@@ -1,25 +1,25 @@
 """How far apart two splits are: the closest pair of configs (sampled values) or of realised starts, and the per-seed
 rejection that enforces a split's `min_distance {realised: true}` while it is generated.
 
-A realised start is `Result.realised` of the generator: the dims it can report (e.g. `robot_base.x_m`) in the same units
-as the sampled dims, so both are compared with `samplers.distance` (continuous dims normalised by their spec range)
-restricted to the dims the start reports."""
+A realised start is `Result.realised` of the generator: the dims it can report (e.g. `robot_base.x_m`, `grasp.id`) in the
+same units as the sampled dims, so both are compared with `samplers.distance` (continuous dims normalised by their spec
+range, choices 0 / 1) restricted to the dims the start reports."""
 from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
 from .interfaces import Result
 from .samplers import distance
-from .spec import Dim, Range, SplitSpec
+from .spec import Choices, Dim, Range, SplitSpec
 
 REASON = "min_distance (realised)"
 TOLERANCE = 1e-9                                 # a distance exactly at `value` passes despite float error
 Point = tuple[int, Mapping[str, Any]]            # (seed, values)
 
 
-def varied(dims: Mapping[str, Dim], values: Mapping[str, Any]) -> dict[str, Range]:
-    """The continuous dims of `dims` that `values` has."""
-    return {k: d for k, d in dims.items() if isinstance(d, Range) and d.hi > d.lo and k in values}
+def varied(dims: Mapping[str, Dim], values: Mapping[str, Any]) -> dict[str, Dim]:
+    """The dims of `dims` that can differ (a range wider than a point, more than one choice) and `values` has."""
+    return {k: d for k, d in dims.items() if k in values and (d.hi > d.lo if isinstance(d, Range) else len(d.values) > 1)}
 
 
 def closest(a: Sequence[Point], b: Sequence[Point], dims: Mapping[str, Dim], own: bool = False):

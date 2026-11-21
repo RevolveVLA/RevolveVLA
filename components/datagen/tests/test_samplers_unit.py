@@ -143,11 +143,26 @@ def test_avoid_is_ignored_without_min_distance():
     assert run(avoid=avoid)[1] == run()[1]
 
 
-def test_distance_is_normalised_and_continuous_only():
+def test_distance_is_normalised_ranges_and_zero_or_one_per_choices_dim():
     a = {X: 0.17, Y: 0.0, YAW: 0.0, G: 0}
     b = {X: -0.17, Y: 0.1, YAW: 0.0, G: 4}
-    assert S.distance(a, b, DIMS) == pytest.approx((1 + 0.25) ** 0.5)
-    assert S.distance(a, a, {**DIMS, "z": Range(1, 1)}) == 0
+    assert S.distance(a, b, DIMS) == pytest.approx((1 + 0.25 + 1) ** 0.5)            # a different choice is one full range
+    assert S.distance(a, b | {G: 0}, DIMS) == pytest.approx((1 + 0.25) ** 0.5)       # the same choice adds nothing
+    assert S.distance(a, a, {**DIMS, "z": Range(1, 1), "c": Choices((7,))}) == 0
+    assert S.distance({G: 1}, {G: 3}, {G: DIMS[G]}) == 1 == S.distance({G: 0}, {G: 4}, {G: DIMS[G]})   # any two differ alike
+    assert S.distance({G: 1}, {X: 0.0}, DIMS) == 0                                       # only the dims both have
+
+
+def test_a_choices_only_split_keeps_its_min_distance():
+    """grasp only (no continuous dim): it was `always too close`; now a different choice is distance 1."""
+    dims = {G: DIMS[G]}
+    avoid = [Config("train", 100, (), {G: 0}), Config("train", 101, (), {G: 1})]
+    s, cs = run(seeds=range(8), dims=dims, md=MinDistance("train", 0.5), avoid=avoid, name="heldout")
+    assert {c.values[G] for c in cs} <= {2, 3, 4} and any(r["reason"] == "min_distance" for r in s.redrawn)
+    with pytest.raises(S.SamplingError, match="last: min_distance"):
+        run(seeds=range(3), dims=dims, md=MinDistance("train", 1.5), avoid=avoid, name="heldout")     # 1 < 1.5: none is far enough
+    _, own = run(seeds=range(4), dims=dims, md=MinDistance("train", 0.5))                # within one split: all different
+    assert len({c.values[G] for c in own}) == 4
 
 
 def test_summary_counts_and_distances():

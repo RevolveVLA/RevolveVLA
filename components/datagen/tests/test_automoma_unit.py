@@ -94,6 +94,7 @@ def test_generate_plans_from_the_layout_and_checks_the_attempts(automoma, tmp_pa
     assert st.layouts[0]["grasp_id"] == 2 and st.layouts[0]["start_pose"][:2] == pytest.approx([BOX[0] + 0.05, BOX[1]])
     assert res.ok and res.realised["attempt_id"] == 3
     assert res.realised["robot_base.x_m"] == pytest.approx(0.05 + 0.003) and res.realised["grasp_id"] == 2
+    assert res.realised["grasp.id"] == 2                                      # the dim's own name: min_distance realised
     assert res.realised["robot_base.y_m"] == pytest.approx(-0.02) and res.realised["robot_base.yaw_deg"] == pytest.approx(6.0)
     assert res.realised["start_pose"] == pytest.approx([BOX[0] + 0.053, BOX[1] - 0.02, np.pi + np.radians(6.0)])
     assert {k: v.replace(str(tmp_path), "") for k, v in res.paths.items()} == {

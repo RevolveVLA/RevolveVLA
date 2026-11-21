@@ -163,3 +163,12 @@ def test_pipeline_records_and_converts_only_the_record_true_split(tmp_path):
     stub.calls.clear()
     assert Pipeline(spec, plugins, tmp_path, log=lambda m: None).run(["record", "convert"])
     assert stub.calls == [] and len(launch.calls) == 1                          # resume: nothing replayed or converted again
+
+
+def test_the_recorder_asks_for_the_gui_of_a_gui_spec(tmp_path):
+    stub = PlanStub(planned=(1,))
+    gen = generated(tmp_path, stub)
+    stub.replay_kw.clear()
+    recorder.RosettaRecorder(S.parse(RAW | {"run": {"headless": False}}), {}, jobs=stub.jobs()).record(
+        Config("train", 0), gen, tmp_path)
+    assert stub.replay_kw == [{"gui": True}]

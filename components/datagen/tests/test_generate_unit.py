@@ -22,7 +22,7 @@ class Stub:
 
     def __init__(self, planned=(0, 1, 2), rejected=(), bad_record=(), bad_bag=(), plan_rc=0, delay=0.0, dirs=None):
         self.planned, self.rejected, self.bad_record, self.bad_bag = planned, rejected, bad_record, bad_bag
-        self.dirs, self.checked, self.layouts = dirs or {}, [], []
+        self.dirs, self.checked, self.layouts, self.replay_kw = dirs or {}, [], [], []
         self.plan_rc, self.delay, self.calls, self.lock, self.active, self.peak = plan_rc, delay, [], threading.Lock(), 0, 0
 
     def plan(self, task, seed, out, job_dir, attempts=None, layout=None):
@@ -42,10 +42,11 @@ class Stub:
             self.active -= 1
         return self.plan_rc
 
-    def replay(self, task, plan_dir, attempt, out, job_dir, cameras=0):
+    def replay(self, task, plan_dir, attempt, out, job_dir, cameras=0, **kw):
         kind = "record" if cameras else "check"
         with self.lock:
             self.calls.append((kind, int(plan_dir.name.split("_")[1]), attempt))
+            self.replay_kw.append(kw)
             self.checked += [] if cameras else [out.name]
         if self.dirs.get(out.name) == "crash":
             raise RuntimeError("docker died")
@@ -280,3 +281,28 @@ def test_record_attempt_needs_a_finished_run(tmp_path):
     gen(tmp_path, Stub(planned=(0,)), record=False)
     with pytest.raises(SystemExit):
         G.record_attempt("open_fridge_door", 0, 4, tmp_path, jobs=Stub().jobs())
+
+
+def test_gui_reaches_the_check_and_record_replays_only_when_set(tmp_path):
+    st = Stub(planned=(1,))
+    gen(tmp_path / "a", st)
+    assert st.replay_kw == [{}, {}]                                # headless: the replay call is as before
+    st = Stub(planned=(1,))
+    gen(tmp_path / "b", st, gui=True)
+    assert st.replay_kw == [{"gui": True}, {"gui": True}]
+    st = Stub(planned=(1,))
+    gen(tmp_path / "c", st, record=False)
+    G.record_attempt("open_fridge_door", 0, 1, tmp_path / "c", jobs=st.jobs(), say=lambda m: None, gui=True)
+    assert st.replay_kw == [{}, {"gui": True}]
+
+
+def test_docker_replay_adds_the_gui_flag_and_a_gpu(monkeypatch):
+    runs = []
+    sim = types.SimpleNamespace(run=lambda args, job_dir, **kw: runs.append((args, kw)) or {"exit": 0})
+    monkeypatch.setitem(sys.modules, "launch", types.SimpleNamespace(sim_launch=sim))
+    G.docker_replay("t", "/p", 1, "/o", "/j")
+    G.docker_replay("t", "/p", 1, "/o", "/j", gui=True)
+    G.docker_replay("t", "/p", 1, "/o", "/j", 30, gui=True)
+    argv = [a for a, _ in runs]
+    assert "--gui" not in argv[0] and argv[1] == argv[0] + ["--gui"] and argv[2][-3:] == ["--cameras", "30", "--gui"]
+    assert [(kw["gpu"], kw["gui"]) for _, kw in runs] == [(False, False), (True, True), (True, True)]

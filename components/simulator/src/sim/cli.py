@@ -7,7 +7,7 @@
   cli.py episode       --name fridge|drawer --task T --out D [--video]
                        scripted episode (`episode <name>`), fed through the live phase validator: its own
                        checks + per-phase verdicts from specs/tasks/T/task.yaml + phase_states/
-  cli.py replay        --plan RUN --attempt A [--task T] --out D [--cameras HZ] [--feed 1khz|30hz] [--no-bag] [--video]
+  cli.py replay        --plan RUN --attempt A [--task T] --out D [--cameras HZ] [--feed 1khz|30hz] [--no-bag] [--video] [--gui]
                        one AutoMoMa plan attempt: offline verdict + per-phase verdicts + phase_states/
                        + state_log.npz + MCAP bag (bag/, bag.json, bag_check.json)
   cli.py restore-check --source D0 --phase P --out D
@@ -239,7 +239,7 @@ def can_demo(a):
     return demo.run(a, sys.modules[__name__])
 
 
-def phase_run(out, r, label, video=False, cameras=0, camera=None, timeout=840):
+def phase_run(out, r, label, video=False, cameras=0, camera=None, timeout=840, gui=False):
     """The world copy of the task's scene with phase_replay_system on <out>/actions.npz + episode.json."""
     import live_validate
     cam_model, _ = models(r)
@@ -257,7 +257,7 @@ def phase_run(out, r, label, video=False, cameras=0, camera=None, timeout=840):
                 env=dict(REPLAY_DIR=str(out), REPLAY_RTF=str(spec.SIM["real_time_factor"]),
                          KITCHEN_TEST_OUT=str(out / "gz_result.json"), SKILL="automoma_replay",
                          EPISODE=label.lower()),
-                render=render, wait_level=True, side=side)
+                render=render, wait_level=True, side=side, gui=gui)
     if not (out / "phase_live.json").is_file():
         print(f"no phase_live.json (driver rc {rc})")
         return 3
@@ -300,7 +300,7 @@ def replay(a):
         print("spawn in collision: rejected before gz")
         return 1
     cam_pose = EPISODE_CAM["drawer" if r.task.object.hold.part == "drawer" else "fridge"] if a.video else None
-    rc = phase_run(out, r, "REPLAY", video=a.video, cameras=a.cameras, camera=cam_pose, timeout=600)
+    rc = phase_run(out, r, "REPLAY", video=a.video, cameras=a.cameras, camera=cam_pose, timeout=600, gui=a.gui)
     if rc in (0, 1) and not a.no_bag:
         progress(stage="bag")
         subprocess.run([sys.executable, str(SIM / "bag.py"), "write", str(out)], check=True)
@@ -466,6 +466,7 @@ def main(argv=None):
     p["replay"].add_argument("--cameras", type=int, default=0, help="training camera rate Hz (0 = render off)")
     p["replay"].add_argument("--feed", default="1khz", choices=("1khz", "30hz"))
     p["replay"].add_argument("--no-bag", action="store_true")
+    p["replay"].add_argument("--gui", action="store_true", help="also show the gz GUI on $DISPLAY (launch.py gui)")
     p["replay"].add_argument("--video", action="store_true",
                              help="render the scene camera into <out>/video.mp4 (GPU; with --cameras 0)")
     p["restore-check"].add_argument("--source", required=True)

@@ -80,3 +80,19 @@ def test_scene_spec_points_at_the_ported_world():
     r = spec.task("open_fridge_door")
     assert spec.path(r.scene.world).is_file() and spec.path(r.scene.world).parent == spec.WORLDS
     assert spec.path(r.robot.description).joinpath("robots").is_dir()
+
+
+def test_replay_gui_flag_reaches_the_gz_run(tmp_path, monkeypatch):
+    """`replay --gui` -> phase_run(gui=True) -> run_gz(gui=True); without it the gz run is as before (no GUI)."""
+    seen = []
+    monkeypatch.setattr(cli, "replay", lambda a: seen.append(a.gui))
+    base = ["replay", "--plan", "p", "--attempt", "0", "--out", "o"]
+    cli.main(base), cli.main(base + ["--gui"])
+    assert seen == [False, True]
+    kw = []
+    monkeypatch.setattr(cli, "models", lambda r: (tmp_path / "m" / "robot", None))
+    monkeypatch.setattr(cli, "world_copy", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "run_gz", lambda *a, **k: kw.append(k.get("gui", False)) or 0)
+    r = spec.task("open_fridge_door")
+    assert cli.phase_run(tmp_path, r, "REPLAY") == 3 and cli.phase_run(tmp_path, r, "REPLAY", gui=True) == 3
+    assert kw == [False, True]

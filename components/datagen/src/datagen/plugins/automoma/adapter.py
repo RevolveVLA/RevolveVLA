@@ -78,7 +78,7 @@ class AutoMoma(Generator):
         layout = self.realiser.layout(config)
         m = G.generate(self.spec.task, [config.seed], out, 1, 1, self.params.get("attempts"),
                        self.jobs or G.DOCKER, layouts={config.seed: layout} if layout else None, checks=self.checks,
-                       record=False)
+                       record=False, **generate_module.gui_kw(self.spec))
         rec = m["seeds"][str(config.seed)]
         if rec["state"] != "done":
             return Result.fail(self.failure(G, Path(out), rec))

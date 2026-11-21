@@ -28,7 +28,7 @@ class RosettaRecorder(Recorder):
         G = generate_module.load(self.spec.robot, self.spec.task)
         try:
             e = G.record_attempt(self.spec.task, config.seed, generated.realised["attempt_id"], out,
-                                 self.jobs or G.DOCKER)
+                                 self.jobs or G.DOCKER, **generate_module.gui_kw(self.spec))
         except Exception as err:         # an infrastructure error fails this episode, not the run
             return Result.fail(repr(err))
         if not e["accepted"]:

@@ -6,8 +6,10 @@ episodes_per_seed accepted episodes or its planned attempts run out. `workers` s
   python components/datagen/generate.py --task T --seeds 0-9 --out runs/<exp>/turn_0/data \
       [--episodes-per-seed 1] [--workers 2] [--attempts N] [--variant NAME] [--checks 1]
   generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
-           checks=1, record=True) -> manifest
-  record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None) -> episode record  (the recorder of a record=False run)
+           checks=1, record=True, gui=False) -> manifest
+  record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None, gui=False) -> episode record  (the recorder of a record=False run)
+
+gui=True: the replays also open the gz GUI client on the host's $DISPLAY (simulator `replay --gui`); use workers=1.
 
 --checks N (N > 1): an attempt passes its check only when N camera-off replays of the same plan from the
 same start are all accepted (repeat_check: repeats 1..N-1 run into checks/seed_<s>_a<a>_r<k>/, stopping
@@ -68,7 +70,7 @@ RECORD_TIMEOUT_S = 900           # a camera replay takes 36-50 s
 @dataclass(frozen=True)
 class Jobs:
     plan: Callable[..., int | None]       # (task, seed, out, job_dir, attempts[, layout=]) -> exit code
-    replay: Callable[..., int | None]     # (task, plan_dir, attempt, out, job_dir, cameras_hz) -> exit code
+    replay: Callable[..., int | None]     # (task, plan_dir, attempt, out, job_dir, cameras_hz[, gui=True]) -> exit code
 
 
 def docker_plan(task, seed, out, job_dir, attempts=None, layout=None):
@@ -78,13 +80,14 @@ def docker_plan(task, seed, out, job_dir, attempts=None, layout=None):
     return launch.run(args + (["--attempts", str(attempts)] if attempts else []), job_dir, timeout=PLAN_TIMEOUT_S)["exit"]
 
 
-def docker_replay(task, plan_dir, attempt, out, job_dir, cameras=0):
+def docker_replay(task, plan_dir, attempt, out, job_dir, cameras=0, gui=False):
     import launch
     env = {f"ROUND_{k.upper()}": json.dumps(v) for k, v in specs_bridge.round_blocks(task).items()
            if k in ("timing", "pull")}
     args = ["replay", "--plan", str(plan_dir), "--attempt", str(attempt), "--task", task, "--out", str(out)]
     args += ["--cameras", str(cameras)] if cameras else ["--no-bag"]
-    return launch.sim_launch.run(args, job_dir, gpu=bool(cameras), env=env,
+    args += ["--gui"] if gui else []
+    return launch.sim_launch.run(args, job_dir, gpu=bool(cameras) or gui, env=env, gui=gui,
                                  timeout=RECORD_TIMEOUT_S if cameras else CHECK_TIMEOUT_S)["exit"]
 
 
@@ -195,8 +198,9 @@ class Manifest:
 # ------------------------------------------------------------------ one seed
 class Generation:
     def __init__(self, task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER,
-                 say=lambda msg: print(msg, flush=True), layouts=None, checks=1, record=True):
+                 say=lambda msg: print(msg, flush=True), layouts=None, checks=1, record=True, gui=False):
         self.task, self.seeds, self.out = task, list(seeds), Path(out).resolve()
+        self.gui_kw = {"gui": True} if gui else {}          # only passed when set: a custom Jobs.replay needs no gui
         self.eps, self.workers, self.attempts, self.jobs, self._say = episodes_per_seed, workers, attempts, jobs, say
         self.layouts, self.checks, self.recording = layouts or {}, checks, record
         robot = specs_bridge.task_spec(task).robot
@@ -281,7 +285,7 @@ class Generation:
         """Camera-off replay k of an attempt (k 0: the check; k >= 1: its repeats) -> judge + dir."""
         name = f"seed_{s}_a{a}" + (f"_r{k}" if k else "")
         cdir = self.out / "checks" / name
-        rc = self.jobs.replay(self.task, plan_dir, a, cdir, self.out / "jobs" / f"check_{name}", 0)
+        rc = self.jobs.replay(self.task, plan_dir, a, cdir, self.out / "jobs" / f"check_{name}", 0, **self.gui_kw)
         return dict(judge(cdir, rc), dir=self.rel(cdir))
 
     @staticmethod
@@ -307,7 +311,7 @@ class Generation:
     def record(self, s, a, plan_dir, chk):
         name = f"seed_{s}_a{a}"
         d = self.out / "episodes" / name
-        rc = self.jobs.replay(self.task, plan_dir, a, d, self.out / "jobs" / f"record_{name}", self.fps)
+        rc = self.jobs.replay(self.task, plan_dir, a, d, self.out / "jobs" / f"record_{name}", self.fps, **self.gui_kw)
         v, bc = judge(d, rc), read(d / "bag_check.json") or {}
         reasons = ([] if v["accepted"] else [f"replay exit {rc}: {v['failed_phase']} {v['reasons']}"]) + \
             ([] if v["state_log_sha256"] == chk["state_log_sha256"] else ["state_log.npz differs from the check's"]) + \
@@ -340,7 +344,7 @@ class Generation:
         return e
 
 
-def record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None):
+def record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None, gui=False):
     """Camera replay + bag of the accepted check of `attempt` in a finished record=False run at `out` (its
     manifest gives attempts, checks and the seed's layout) -> the episode record (name, dir, accepted, reasons)."""
     m = read(Path(out) / "manifest.json")
@@ -349,7 +353,7 @@ def record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None):
     layouts = {int(k): r["layout"] for k, r in m["seeds"].items() if "layout" in r}
     kw = {} if say is None else dict(say=say)
     return Generation(task, [seed], out, 1, 1, m["attempts"], jobs, layouts=layouts, checks=m.get("checks", 1),
-                      **kw).record_checked(seed, attempt)
+                      gui=gui, **kw).record_checked(seed, attempt)
 
 
 def set_variant(variant, task):
@@ -362,10 +366,10 @@ def set_variant(variant, task):
 
 
 def generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
-             checks=1, record=True):
+             checks=1, record=True, gui=False):
     kw = {} if say is None else dict(say=say)
     return Generation(task, seeds, out, episodes_per_seed, workers, attempts, jobs, layouts=layouts, checks=checks,
-                      record=record, **kw).run()
+                      record=record, gui=gui, **kw).run()
 
 
 def main(argv=None):

@@ -174,3 +174,16 @@ ASSETS = layout_check.specs_bridge.ROOT / "assets" / "generated_partnet" / "frid
 def test_clearance_validator_on_the_real_scene():
     v = clearance.ChassisClearance(make_spec(), {})
     assert v.validate(config()).ok and v.validate(config(**{"robot_base.x_m": -0.17, "robot_base.yaw_deg": 10})).ok
+
+
+def test_a_gui_spec_asks_the_replays_for_the_gui_and_a_headless_one_does_not(automoma, tmp_path):
+    gen, st = automoma(PlanStub(planned=(1,)))
+    gen.generate(config(), tmp_path / "a")
+    assert st.replay_kw == [{}]
+    spec = S.parse({
+        "task": "open_fridge_door", "robot": "mobile_panda", "out": "unused", "generator": {"plugin": "automoma"},
+        "randomisers": {"grasp": {"id": [0, 4]}}, "run": {"headless": False},
+        "splits": {"train": {"target": 2, "pool": {"initial": [0, 9]}}}})
+    st = PlanStub(planned=(1,))
+    adapter.AutoMoma(spec, {}, jobs=st.jobs()).generate(config(), tmp_path / "b")
+    assert st.replay_kw == [{"gui": True}]

@@ -15,6 +15,11 @@ def use_robot(robot: str):
     os.environ[specs.ROBOT_ENV] = robot
 
 
+def gui_kw(spec) -> dict:
+    """generate.py's `gui=True` for a spec with `run.headless: false` (nothing otherwise: a headless run is unchanged)."""
+    return {} if spec.run.headless else {"gui": True}
+
+
 def load(robot: str, task: str, variant: str | None = None):
     if str(COMPONENT) not in sys.path:
         sys.path.append(str(COMPONENT))

@@ -11,7 +11,7 @@
                                      steps are kept as they are; the change is logged in state.json spec_changes)
   ./revolve status <experiment>      seed x phase table per turn + the running step's live progress
   ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
-  ./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run]
+  ./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
   ./revolve datagen --list-randomisers --task T --robot R [--variant V]   what a task + robot can vary (dims, ranges)
   ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
@@ -132,7 +132,7 @@ def main():
     sub.choices["resume"].add_argument("--accept-spec-change", action="store_true",
                                        help="the yaml changed since the run started: continue with the new one")
     sub.add_parser("datagen").add_argument("datagen_args", nargs=argparse.REMAINDER,
-                                           help="<spec.yaml> [step] [--split S] [--dry-run] | --list-randomisers --task T --robot R")
+                                           help="<spec.yaml> [step] [--split S] [--dry-run] [--workers N] [--gui] | --list-randomisers --task T --robot R")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="+")
     a = ap.parse_args()

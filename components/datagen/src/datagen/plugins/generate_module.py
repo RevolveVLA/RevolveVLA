@@ -9,11 +9,16 @@ from pathlib import Path
 COMPONENT = Path(__file__).resolve().parents[3]          # components/datagen: generate.py, launch.py
 
 
+def use_robot(robot: str):
+    """$REVOLVE_ROBOT for the task-level spec loads of the jobs (a step run alone has nothing else that sets it)."""
+    from revolve_common import specs
+    os.environ[specs.ROBOT_ENV] = robot
+
+
 def load(robot: str, task: str, variant: str | None = None):
     if str(COMPONENT) not in sys.path:
         sys.path.append(str(COMPONENT))
-    from revolve_common import specs
-    os.environ[specs.ROBOT_ENV] = robot
+    use_robot(robot)
     import generate
     if variant:
         generate.set_variant(variant, task)

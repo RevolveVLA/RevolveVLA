@@ -43,6 +43,7 @@ class RosettaConverter(Converter):
     def convert(self, episodes: Sequence[Path], out: Path) -> Result:
         if not episodes:
             return Result.fail("no recorded episodes to convert")
+        generate_module.use_robot(self.spec.robot)
         res = (self.launch or load_launch()).convert(self.spec.task, [str(Path(e).resolve()) for e in episodes],
                                                      str(Path(out).resolve()), self.turn)
         paths = {"dataset": str(out), "job": str(res["dir"])}

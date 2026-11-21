@@ -2,6 +2,7 @@
 the replay, episode paths, resume, failures), the converter's call of components/dataset (argv, output dir), and a CPU pipeline
 automoma -> rosetta recorder -> rosetta converter that records only the `record: true` splits."""
 import json
+import os
 import subprocess
 import sys
 
@@ -123,6 +124,13 @@ def test_the_converter_calls_the_dataset_launcher(tmp_path):
     res = converter.RosettaConverter(S.parse(RAW), {"format": "lerobot", "turn": 2}, launch).convert(eps, tmp_path / "dataset")
     assert launch.calls == [(TASK, [str(eps[0])], str(tmp_path / "dataset"), 2)]
     assert res.ok and res.paths["dataset"] == str(tmp_path / "dataset") and res.realised == {"episodes": 1}
+
+
+def test_the_converter_names_the_robot_for_the_dataset_job(tmp_path, monkeypatch):
+    """`convert` run alone (no generator loaded) still gives the dataset job $REVOLVE_ROBOT: a task spec is robot-free."""
+    monkeypatch.delenv("REVOLVE_ROBOT", raising=False)
+    converter.RosettaConverter(S.parse(RAW), {}, FakeLaunch()).convert([tmp_path], tmp_path / "dataset")
+    assert os.environ["REVOLVE_ROBOT"] == S.parse(RAW).robot
 
 
 def test_the_converter_reports_a_failed_job_and_an_empty_list(tmp_path):

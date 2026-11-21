@@ -96,12 +96,14 @@
     <xacro:macro name="omni_wheel_rc" params="name">
       <joint name="${name}_wheel_joint">
         <command_interface name="velocity">
-          <param name="initial_value">0.0</param>
           <param name="min">${-wheel_cmd_max}</param>
           <param name="max">${wheel_cmd_max}</param>
         </command_interface>
         <state_interface name="position"/>
-        <state_interface name="velocity"/>
+        <!-- initial_value: also the velocity command's start value in gz_ros2_control (else NaN) -->
+        <state_interface name="velocity">
+          <param name="initial_value">0.0</param>
+        </state_interface>
       </joint>
     </xacro:macro>
     <xacro:omni_wheel_rc name="front_left"/>

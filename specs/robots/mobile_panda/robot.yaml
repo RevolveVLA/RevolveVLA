@@ -1,4 +1,5 @@
 # Mobile Panda: the shared omni base (../common/omni_base.urdf.xacro) + the moveit_resources Panda arm and hand.
+# MoveIt 2 config: moveit/ (SRDF, MoveIt controllers, moveit_py options; revolve_sim.moveit loads it).
 name: mobile_panda
 description: robot.urdf.xacro
 controllers: controllers.yaml

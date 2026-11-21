@@ -1,0 +1,103 @@
+<?xml version="1.0"?>
+<!-- MoveIt SRDF of mobile_panda: the moveit_resources_panda_moveit_config Panda (panda_arm + hand groups, their named
+     states, end effector and disabled collisions), plus the omni base's links. The arm group is copied from upstream
+     config/panda_arm.xacro without its virtual joint (that one attaches panda_link0 to `world`; here the URDF root is
+     base_footprint). No virtual joint: MoveIt plans in the base frame, base_footprint (the base is driven outside
+     MoveIt). panda_tcp (panda_hand + 0.1034 m along z) is a plain link of the URDF: use it as the pose link. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mobile_panda">
+  <xacro:include filename="$(find moveit_resources_panda_moveit_config)/config/hand.xacro"/>
+  <xacro:hand/>
+
+  <!-- from upstream config/panda_arm.xacro (moveit_resources_panda_moveit_config 2.15) -->
+  <group name="panda_arm">
+    <chain base_link="panda_link0" tip_link="panda_link8"/>
+  </group>
+  <group_state name="ready" group="panda_arm">
+    <joint name="panda_joint1" value="0"/>
+    <joint name="panda_joint2" value="-0.785"/>
+    <joint name="panda_joint3" value="0"/>
+    <joint name="panda_joint4" value="-2.356"/>
+    <joint name="panda_joint5" value="0"/>
+    <joint name="panda_joint6" value="1.571"/>
+    <joint name="panda_joint7" value="0.785"/>
+  </group_state>
+  <group_state name="extended" group="panda_arm">
+    <joint name="panda_joint1" value="0"/>
+    <joint name="panda_joint2" value="0"/>
+    <joint name="panda_joint3" value="0"/>
+    <joint name="panda_joint4" value="0"/>
+    <joint name="panda_joint5" value="0"/>
+    <joint name="panda_joint6" value="1.571"/>
+    <joint name="panda_joint7" value="0.785"/>
+  </group_state>
+  <group_state name="transport" group="panda_arm">
+    <joint name="panda_joint1" value="0"/>
+    <joint name="panda_joint2" value="-0.5599"/>
+    <joint name="panda_joint3" value="0"/>
+    <joint name="panda_joint4" value="-2.97"/>
+    <joint name="panda_joint5" value="0"/>
+    <joint name="panda_joint6" value="0"/>
+    <joint name="panda_joint7" value="0.785"/>
+  </group_state>
+  <disable_collisions link1="panda_link0" link2="panda_link1" reason="Adjacent"/>
+  <disable_collisions link1="panda_link0" link2="panda_link2" reason="Never"/>
+  <disable_collisions link1="panda_link0" link2="panda_link3" reason="Never"/>
+  <disable_collisions link1="panda_link0" link2="panda_link4" reason="Never"/>
+  <disable_collisions link1="panda_link1" link2="panda_link2" reason="Adjacent"/>
+  <disable_collisions link1="panda_link1" link2="panda_link3" reason="Never"/>
+  <disable_collisions link1="panda_link1" link2="panda_link4" reason="Never"/>
+  <disable_collisions link1="panda_link2" link2="panda_link3" reason="Adjacent"/>
+  <disable_collisions link1="panda_link2" link2="panda_link4" reason="Never"/>
+  <disable_collisions link1="panda_link2" link2="panda_link6" reason="Never"/>
+  <disable_collisions link1="panda_link3" link2="panda_link4" reason="Adjacent"/>
+  <disable_collisions link1="panda_link3" link2="panda_link5" reason="Never"/>
+  <disable_collisions link1="panda_link3" link2="panda_link6" reason="Never"/>
+  <disable_collisions link1="panda_link3" link2="panda_link7" reason="Never"/>
+  <disable_collisions link1="panda_link4" link2="panda_link5" reason="Adjacent"/>
+  <disable_collisions link1="panda_link4" link2="panda_link6" reason="Never"/>
+  <disable_collisions link1="panda_link4" link2="panda_link7" reason="Never"/>
+  <disable_collisions link1="panda_link5" link2="panda_link6" reason="Adjacent"/>
+  <disable_collisions link1="panda_link6" link2="panda_link7" reason="Adjacent"/>
+
+  <!-- from upstream config/panda_arm_hand.srdf.xacro -->
+  <group name="panda_arm_hand">
+    <group name="panda_arm"/>
+    <group name="hand"/>
+  </group>
+  <group_state name="open" group="hand">
+    <joint name="panda_finger_joint1" value="0.035"/>
+    <joint name="panda_finger_joint2" value="0.035"/>
+  </group_state>
+  <group_state name="close" group="hand">
+    <joint name="panda_finger_joint1" value="0"/>
+    <joint name="panda_finger_joint2" value="0"/>
+  </group_state>
+  <end_effector name="hand" parent_link="panda_link8" group="hand" parent_group="panda_arm"/>
+  <disable_collisions link1="panda_hand" link2="panda_link3" reason="Never"/>
+  <disable_collisions link1="panda_hand" link2="panda_link4" reason="Never"/>
+  <disable_collisions link1="panda_hand" link2="panda_link6" reason="Never"/>
+  <disable_collisions link1="panda_hand" link2="panda_link7" reason="Adjacent"/>
+  <disable_collisions link1="panda_leftfinger" link2="panda_link3" reason="Never"/>
+  <disable_collisions link1="panda_leftfinger" link2="panda_link4" reason="Never"/>
+  <disable_collisions link1="panda_leftfinger" link2="panda_link6" reason="Never"/>
+  <disable_collisions link1="panda_leftfinger" link2="panda_link7" reason="Never"/>
+  <disable_collisions link1="panda_link3" link2="panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="panda_link4" link2="panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="panda_link6" link2="panda_rightfinger" reason="Never"/>
+  <disable_collisions link1="panda_link7" link2="panda_rightfinger" reason="Never"/>
+
+  <!-- the omni base (../../common/omni_base.urdf.xacro): panda_link0 sits on the chassis; the rollers sit under it,
+       out of the arm's reach (the chassis comes first), and touch only the floor (not in the planning scene) -->
+  <disable_collisions link1="base_link" link2="panda_link0" reason="Adjacent"/>
+  <disable_collisions link1="base_link" link2="panda_link1" reason="Never"/>
+  <xacro:macro name="rollers" params="wheels k:=0 n:=12">
+    <disable_default_collisions link="${wheels[0]}_roller_${k}"/>
+    <xacro:if value="${k + 1 &lt; n}">
+      <xacro:rollers wheels="${wheels}" k="${k + 1}" n="${n}"/>
+    </xacro:if>
+    <xacro:if value="${k + 1 == n and len(wheels) &gt; 1}">
+      <xacro:rollers wheels="${wheels[1:]}" k="0" n="${n}"/>
+    </xacro:if>
+  </xacro:macro>
+  <xacro:rollers wheels="${['front_left', 'rear_left', 'rear_right', 'front_right']}"/>
+</robot>

@@ -1,0 +1,34 @@
+# MoveIt trajectory execution (moveit_simple_controller_manager): upstream gripper_moveit_controllers.yaml, except
+# that the hand is a joint_trajectory_controller (FollowJointTrajectory, not GripperCommand: ../controllers.yaml)
+# and the start tolerance and the execution time allow for the effort JTC (steady-state error up to ~0.015 rad, lag).
+trajectory_execution:
+  allowed_execution_duration_scaling: 2.0
+  allowed_goal_duration_margin: 1.0
+  allowed_start_tolerance: 0.05
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - panda_arm_controller
+    - panda_hand_controller
+
+  panda_arm_controller:
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - panda_joint1
+      - panda_joint2
+      - panda_joint3
+      - panda_joint4
+      - panda_joint5
+      - panda_joint6
+      - panda_joint7
+
+  panda_hand_controller:
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - panda_finger_joint1

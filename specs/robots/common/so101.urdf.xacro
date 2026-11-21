@@ -1,0 +1,222 @@
+<?xml version="1.0"?>
+<!-- SO-101 arm (TheRobotStudio SO-ARM100, Apache-2.0) as a xacro macro with a `scale` arg, ported from
+     ThirdParty/so_arm100/Simulation/SO101/so101_new_calib.urdf (onshape-to-robot): same links, joints, limits,
+     inertials and visual meshes (read in place from the submodule), the URDF's base_link renamed so101_base_link.
+     Scale s: every origin x s, mesh scale s, mass x s^3, inertia x s^5. Collisions are primitive boxes (MuJoCo
+     collides a mesh as its convex hull, and the URDF reuses one mesh in several links): the boxes MuJoCo Menagerie's
+     robotstudio_so101 (Apache-2.0) puts on the same link frames, the jaw pads 5 mm thick outwards from their inner
+     faces. Joint damping (<dynamics>) is the implicit damping of the effort control loop (MuJoCo). rotor_inertia
+     [kg m^2] (shoulder, upper_arm, lower_arm, wrist, gripper, moving jaw link; x s^5) is added to each moving link's
+     principal moments as a stand-in for the servos' rotor inertia (MuJoCo armature, which gz-physics does not map):
+     the bare links (2e-6 .. 1.6e-4 kg m^2) make contacts soft (the jaw sank 4.3 mm into a box at a 6 N squeeze).
+     so101_tcp: between the jaw tips (gripper_link (0, 0, -0.092) x s, 8 mm above the fixed jaw's tip pad face),
+     +z out of the jaws (the approach axis), +y along the closing direction from the moving jaw to the fixed jaw
+     (gripper_link -x), x = y cross z: the panda_tcp convention.
+     Joints: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll (arm), gripper (the moving jaw [rad];
+     lower limit = closed, upper = fully open). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- absolute path of the upstream meshes (evaluated now: relative to this file) -->
+  <xacro:property name="so101_meshes" lazy_eval="false"
+                  value="${xacro.abs_filename('../../../ThirdParty/so_arm100/Simulation/SO101/assets')}"/>
+
+  <xacro:macro name="so101" params="parent xyz:='0 0 0' rpy:='0 0 0' scale:=1.0
+      arm_damping:='1.5 1.5 1.0 0.6 0.3' jaw_damping:=0.08 effort:=10.0
+      rotor_inertia:='0.01 0.01 0.01 0.01 0.005 0.001'">
+    <xacro:property name="s" value="${float(scale)}"/>
+    <xacro:property name="b" value="${[float(v) for v in arm_damping.split()]}"/>
+    <xacro:property name="ri" value="${[float(v) for v in rotor_inertia.split()]}"/>
+
+    <xacro:macro name="so101_visual" params="mesh xyz rpy material">
+      <visual>
+        <origin xyz="${' '.join([str(float(v) * s) for v in xyz.split()])}" rpy="${rpy}"/>
+        <geometry><mesh filename="file://${so101_meshes}/${mesh}.stl" scale="${s} ${s} ${s}"/></geometry>
+        <material name="so101_${material}"/>
+      </visual>
+    </xacro:macro>
+    <xacro:macro name="so101_inertial" params="xyz mass ixx ixy ixz iyy iyz izz add:=0.0">
+      <inertial>
+        <origin xyz="${' '.join([str(float(v) * s) for v in xyz.split()])}"/>
+        <mass value="${mass * s**3}"/>
+        <inertia ixx="${(ixx + add) * s**5}" ixy="${ixy * s**5}" ixz="${ixz * s**5}" iyy="${(iyy + add) * s**5}"
+                 iyz="${iyz * s**5}" izz="${(izz + add) * s**5}"/>
+      </inertial>
+    </xacro:macro>
+    <xacro:macro name="so101_box" params="name xyz rpy size">
+      <collision name="${name}">
+        <origin xyz="${' '.join([str(float(v) * s) for v in xyz.split()])}" rpy="${rpy}"/>
+        <geometry><box size="${' '.join([str(float(v) * s) for v in size.split()])}"/></geometry>
+      </collision>
+    </xacro:macro>
+    <xacro:macro name="so101_joint" params="name parent child xyz rpy lower upper damping">
+      <joint name="${name}" type="revolute">
+        <origin xyz="${' '.join([str(float(v) * s) for v in xyz.split()])}" rpy="${rpy}"/>
+        <parent link="${parent}"/>
+        <child link="${child}"/>
+        <axis xyz="0 0 1"/>
+        <limit effort="${effort}" velocity="10" lower="${lower}" upper="${upper}"/>
+        <dynamics damping="${damping}"/>
+      </joint>
+    </xacro:macro>
+
+    <material name="so101_3d_printed"><color rgba="1.0 0.82 0.12 1.0"/></material>
+    <material name="so101_sts3215"><color rgba="0.1 0.1 0.1 1.0"/></material>
+
+    <joint name="so101_mount_joint" type="fixed">
+      <parent link="${parent}"/>
+      <child link="so101_base_link"/>
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+    </joint>
+
+    <link name="so101_base_link">
+      <xacro:so101_inertial xyz="0.0137179 -5.19711e-05 0.0334843" mass="0.147" ixx="0.000114686" ixy="-4.59787e-07"
+                            ixz="4.97151e-06" iyy="0.000136117" iyz="9.75275e-08" izz="0.000130364"/>
+      <xacro:so101_visual mesh="base_motor_holder_so101_v1" xyz="-0.00636471 -9.94414e-05 -0.0024"
+                          rpy="1.5708 -1.67685e-15 1.5708" material="3d_printed"/>
+      <xacro:so101_visual mesh="base_so101_v2" xyz="-0.00636471 -8.97657e-09 -0.0024"
+                          rpy="1.5708 -2.78073e-29 1.5708" material="3d_printed"/>
+      <xacro:so101_visual mesh="sts3215_03a_v1" xyz="0.0263353 -8.97657e-09 0.0437"
+                          rpy="-8.21148e-16 7.84513e-18 1.249e-15" material="sts3215"/>
+      <xacro:so101_visual mesh="waveshare_mounting_plate_so101_v2" xyz="-0.0309827 -0.000199441 0.0474"
+                          rpy="1.5708 -1.35493e-14 1.5708" material="3d_printed"/>
+    </link>
+
+    <link name="shoulder_link">
+      <xacro:so101_inertial xyz="-0.0307604 -1.66727e-05 -0.0252713" mass="0.100006" ixx="8.3759e-05" ixy="7.55525e-08"
+                            ixz="-1.16342e-06" iyy="8.10403e-05" iyz="1.54663e-07" izz="2.39783e-05" add="${ri[0]}"/>
+      <xacro:so101_visual mesh="sts3215_03a_v1" xyz="-0.0303992 0.000422241 -0.0417" rpy="1.5708 1.5708 0"
+                          material="sts3215"/>
+      <xacro:so101_visual mesh="motor_holder_so101_base_v1" xyz="-0.0675992 -0.000177759 0.0158499"
+                          rpy="1.5708 -1.5708 0" material="3d_printed"/>
+      <xacro:so101_visual mesh="rotation_pitch_so101_v1" xyz="0.0122008 2.22413e-05 0.0464"
+                          rpy="-1.5708 2.35221e-33 0" material="3d_printed"/>
+      <xacro:so101_box name="shoulder_link_box0" xyz="-0.030399 0.000422 -0.0387" rpy="1.5708 1.5708 0"
+                       size="0.046 0.03 0.02"/>
+      <xacro:so101_box name="shoulder_link_box1" xyz="-0.025 0 0" rpy="1.5708 -1.5708 0" size="0.076 0.05 0.04"/>
+    </link>
+
+    <link name="upper_arm_link">
+      <xacro:so101_inertial xyz="-0.0898471 -0.00838224 0.0184089" mass="0.103" ixx="4.08002e-05" ixy="-1.97819e-05"
+                            ixz="-4.03016e-08" iyy="0.000147318" iyz="8.97326e-09" izz="0.000142487" add="${ri[1]}"/>
+      <xacro:so101_visual mesh="sts3215_03a_v1" xyz="-0.11257 -0.0155 0.0187" rpy="-3.14159 -5.27356e-16 -1.5708"
+                          material="sts3215"/>
+      <xacro:so101_visual mesh="upper_arm_so101_v1" xyz="-0.065085 0.012 0.0182" rpy="3.14159 -0 -1.30911e-30"
+                          material="3d_printed"/>
+      <xacro:so101_box name="upper_arm_link_box0" xyz="-0.06 0 0.02" rpy="3.14159 0 -1.5708" size="0.02 0.14 0.06"/>
+      <xacro:so101_box name="upper_arm_link_box1" xyz="-0.12 -0.014 0.0182" rpy="3.14159 0 0" size="0.02 0.04 0.03"/>
+    </link>
+
+    <link name="lower_arm_link">
+      <xacro:so101_inertial xyz="-0.0980701 0.00324376 0.0182831" mass="0.104" ixx="2.87438e-05" ixy="7.41152e-06"
+                            ixz="1.26409e-06" iyy="0.000159844" iyz="-4.90188e-08" izz="0.00014529" add="${ri[2]}"/>
+      <xacro:so101_visual mesh="under_arm_so101_v1" xyz="-0.0648499 -0.032 0.0182" rpy="3.14159 -0 6.67202e-31"
+                          material="3d_printed"/>
+      <xacro:so101_visual mesh="motor_holder_so101_wrist_v1" xyz="-0.0648499 -0.032 0.018"
+                          rpy="-3.14159 -2.55351e-15 -1.83387e-30" material="3d_printed"/>
+      <xacro:so101_visual mesh="sts3215_03a_v1" xyz="-0.1224 0.0052 0.0187" rpy="-3.14159 -7.88861e-31 -3.14159"
+                          material="sts3215"/>
+      <xacro:so101_box name="lower_arm_link_box0" xyz="-0.05 0 0.0182" rpy="3.14159 0 0" size="0.14 0.02 0.06"/>
+      <xacro:so101_box name="lower_arm_link_box1" xyz="-0.125 0.005 0.018" rpy="3.14159 0 0"
+                       size="0.046 0.026 0.036"/>
+    </link>
+
+    <link name="wrist_link">
+      <xacro:so101_inertial xyz="-0.000103312 -0.0386143 0.0281156" mass="0.079" ixx="3.68263e-05" ixy="1.7893e-08"
+                            ixz="-5.28128e-08" iyy="2.5391e-05" iyz="3.6412e-06" izz="2.1e-05" add="${ri[3]}"/>
+      <xacro:so101_visual mesh="sts3215_03a_no_horn_v1" xyz="8.32667e-17 -0.0424 0.0306" rpy="1.5708 1.5708 0"
+                          material="sts3215"/>
+      <xacro:so101_visual mesh="wrist_roll_pitch_so101_v2" xyz="0 -0.028 0.0181" rpy="-1.5708 -1.5708 0"
+                          material="3d_printed"/>
+      <xacro:so101_box name="wrist_link_box0" xyz="0 -0.0424 0.0256" rpy="1.5708 1.5708 0" size="0.058 0.03 0.036"/>
+      <xacro:so101_box name="wrist_link_box1" xyz="0 -0.02 0.0191" rpy="-1.5708 -1.5708 0" size="0.054 0.02 0.06"/>
+    </link>
+
+    <link name="gripper_link">
+      <xacro:so101_inertial xyz="0.000213627 0.000245138 -0.025187" mass="0.087" ixx="2.75087e-05" ixy="-3.35241e-07"
+                            ixz="-5.7352e-06" iyy="4.33657e-05" iyz="-5.17847e-08" izz="3.45059e-05" add="${ri[4]}"/>
+      <xacro:so101_visual mesh="sts3215_03a_v1" xyz="0.0077 0.0001 -0.0234" rpy="-1.5708 -5.19179e-17 -1.66533e-16"
+                          material="sts3215"/>
+      <xacro:so101_visual mesh="wrist_roll_follower_so101_v1" xyz="8.32667e-17 -0.000218214 0.000949706"
+                          rpy="-3.14159 -5.55112e-17 0" material="3d_printed"/>
+      <xacro:so101_box name="gripper_link_box0" xyz="0 -0.000218 0.00095" rpy="3.14159 0 0" size="0.02 0.02 0.036"/>
+      <xacro:so101_box name="gripper_link_box1" xyz="-0.0025 0 -0.022" rpy="0 0 0" size="0.065 0.03 0.03"/>
+      <xacro:so101_box name="gripper_link_box2" xyz="-0.024 0 -0.04" rpy="0 0 0" size="0.02 0.03 0.01"/>
+      <!-- fixed jaw pads (inner faces at x -0.008 (tip) .. -0.0133) -->
+      <xacro:so101_box name="gripper_link_pad3" xyz="-0.0105 0 -0.0982" rpy="0 0 0" size="0.005 0.008 0.008"/>
+      <xacro:so101_box name="gripper_link_pad4" xyz="-0.0123 0 -0.0905" rpy="0 0 0" size="0.005 0.01 0.012"/>
+      <xacro:so101_box name="gripper_link_pad5" xyz="-0.014 0 -0.0727" rpy="0 0 0" size="0.005 0.018 0.016"/>
+      <xacro:so101_box name="gripper_link_pad6" xyz="-0.0158 0 -0.053" rpy="0 0 0" size="0.005 0.02 0.016"/>
+    </link>
+
+    <!-- the upstream gripper frame (dummy link + fixed joint), kept -->
+    <link name="gripper_frame_link"/>
+    <joint name="gripper_frame_joint" type="fixed">
+      <origin xyz="${' '.join([str(float(v) * s) for v in '-0.0079 -0.000218121 -0.0981274'.split()])}"
+              rpy="0 3.14159 0"/>
+      <parent link="gripper_link"/>
+      <child link="gripper_frame_link"/>
+    </joint>
+
+    <link name="moving_jaw_so101_v1_link">
+      <xacro:so101_inertial xyz="-0.00157495 -0.0300244 0.0192755" mass="0.012" ixx="6.61427e-06" ixy="-3.19807e-07"
+                            ixz="-5.90717e-09" iyy="1.89032e-06" iyz="-1.09945e-07" izz="5.28738e-06" add="${ri[5]}"/>
+      <xacro:so101_visual mesh="moving_jaw_so101_v1" xyz="-5.55112e-17 -5.55112e-17 0.0189"
+                          rpy="9.53145e-17 6.93889e-18 1.24077e-24" material="3d_printed"/>
+      <xacro:so101_box name="moving_jaw_so101_v1_link_box0" xyz="0 -0.013 0.019" rpy="0 0 0" size="0.02 0.02 0.03"/>
+      <!-- moving jaw pads (inner faces at x -0.0123 (tip), -0.0103) -->
+      <xacro:so101_box name="moving_jaw_so101_v1_link_pad1" xyz="-0.0098 -0.076 0.01875" rpy="0 0 0"
+                       size="0.005 0.008 0.008"/>
+      <xacro:so101_box name="moving_jaw_so101_v1_link_pad2" xyz="-0.0078 -0.067 0.01875" rpy="0 0 0"
+                       size="0.005 0.01 0.012"/>
+    </link>
+
+    <link name="so101_tcp"/>
+    <joint name="so101_tcp_joint" type="fixed">
+      <origin xyz="0 0 ${-0.092 * s}" rpy="${pi} 0 ${-pi / 2}"/>
+      <parent link="gripper_link"/>
+      <child link="so101_tcp"/>
+    </joint>
+
+    <xacro:so101_joint name="shoulder_pan" parent="so101_base_link" child="shoulder_link"
+                       xyz="0.0388353 -8.97657e-09 0.0624" rpy="3.14159 4.18253e-17 -3.14159"
+                       lower="-1.91986" upper="1.91986" damping="${b[0]}"/>
+    <xacro:so101_joint name="shoulder_lift" parent="shoulder_link" child="upper_arm_link"
+                       xyz="-0.0303992 -0.0182778 -0.0542" rpy="-1.5708 -1.5708 0"
+                       lower="-1.74533" upper="1.74533" damping="${b[1]}"/>
+    <xacro:so101_joint name="elbow_flex" parent="upper_arm_link" child="lower_arm_link"
+                       xyz="-0.11257 -0.028 1.73763e-16" rpy="-3.63608e-16 8.74301e-16 1.5708"
+                       lower="-1.69" upper="1.69" damping="${b[2]}"/>
+    <xacro:so101_joint name="wrist_flex" parent="lower_arm_link" child="wrist_link"
+                       xyz="-0.1349 0.0052 3.62355e-17" rpy="4.02456e-15 8.67362e-16 -1.5708"
+                       lower="-1.65806" upper="1.65806" damping="${b[3]}"/>
+    <xacro:so101_joint name="wrist_roll" parent="wrist_link" child="gripper_link"
+                       xyz="5.55112e-17 -0.0611 0.0181" rpy="1.5708 0.0486795 3.14159"
+                       lower="-2.74385" upper="2.84121" damping="${b[4]}"/>
+    <xacro:so101_joint name="gripper" parent="gripper_link" child="moving_jaw_so101_v1_link"
+                       xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.24284e-08 -1.41553e-15"
+                       lower="-0.174533" upper="1.74533" damping="${jaw_damping}"/>
+  </xacro:macro>
+
+  <!-- ros2_control joints of the arm and the jaw for gz_ros2_control: effort commands; the effort state interfaces
+       have initial_value 0 (gz_ros2_control starts a command interface at the same-kind state interface's
+       initial_value, else at NaN). initial_positions: the 5 arm joints [rad]; jaw_initial [rad]. -->
+  <xacro:macro name="so101_ros2_control_joints" params="initial_positions jaw_initial:=0.0">
+    <xacro:property name="q0" value="${[float(v) for v in initial_positions.split()] + [float(jaw_initial)]}"/>
+    <xacro:macro name="so101_rc_joint" params="names i">
+      <xacro:if value="${names}">
+        <joint name="${names[0]}">
+          <command_interface name="effort"/>
+          <state_interface name="position">
+            <param name="initial_value">${q0[i]}</param>
+          </state_interface>
+          <state_interface name="velocity"/>
+          <state_interface name="effort">
+            <param name="initial_value">0.0</param>
+          </state_interface>
+        </joint>
+        <xacro:so101_rc_joint names="${names[1:]}" i="${i + 1}"/>
+      </xacro:if>
+    </xacro:macro>
+    <xacro:so101_rc_joint i="0"
+        names="${['shoulder_pan', 'shoulder_lift', 'elbow_flex', 'wrist_flex', 'wrist_roll', 'gripper']}"/>
+  </xacro:macro>
+</robot>

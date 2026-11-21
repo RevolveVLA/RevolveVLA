@@ -1,23 +1,25 @@
-"""T3 evaluator, idle episode (see conftest.py and check_evaluator.py): with no command, open_fridge_door fails phase
-`approach` on its timeout_s; before it, the evaluator's TCP-to-handle distance matches the scene geometry."""
+"""T3 evaluator, idle episode (see conftest.py and check_evaluator.py), per robot of robot_cases.TASKS: with no
+command, the robot's task fails phase `approach` on its timeout_s; before it, the evaluator's TCP-to-handle distance
+matches the scene geometry."""
 import json
 
+import robot_cases
 from conftest import host_path, problem_lines, result
 
-ROBOTS = ["mobile_panda"]
-TASK = "open_fridge_door"
-SIM_ARGS = ["--task", TASK, "--no-autostart"]
-TIMEOUT_S = 20.0                   # the task's approach timeout_s
+ROBOTS = list(robot_cases.TASKS)
+SIM_ARGS = {r: ["--task", c["task"], "--no-autostart"] for r, c in robot_cases.TASKS.items()}
+TIMEOUT_S = 20.0                   # the tasks' approach timeout_s
 
 
 def test_idle_episode(sim):
-    r = result(sim, "check_evaluator.py", f"--task {TASK} --mode idle", 240, sim["logs"] / "check_idle.log")
+    task = robot_cases.TASKS[sim["robot"]]["task"]
+    r = result(sim, "check_evaluator.py", f"--task {task} --mode idle", 240, sim["logs"] / "check_idle.log")
     (sim["logs"] / "evaluator_idle.json").write_text(json.dumps(r, indent=1))
     assert r["ready"] and r["start"][0], r["start"]
     # the plumbing: the evaluator's distance (gz PosePublisher, tf) vs the static scene geometry, within 1 cm
     assert abs(r["distance_evaluator"] - r["distance_geometry"]) <= 0.01, r
     v = r["state_before"]["values"]
-    assert v["grasp.done[0]"] == 0 and abs(v["open.done[0]"]) < 0.01, v          # no finger contacts, door closed
+    assert v["grasp.done[0]"] == 0 and abs(v["open.done[0]"]) < 0.01, v          # no finger contacts, closed
     assert all(v[f"sanity.{k}"] == 0 for k in ("penetration", "robot_contacts", "finite_cmds", "gz_log")), v
     assert v["sanity.body_speed"] is not None and v["sanity.body_speed"] < 0.1, v
     res = r["result"]

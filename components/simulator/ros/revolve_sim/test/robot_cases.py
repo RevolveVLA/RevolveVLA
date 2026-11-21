@@ -8,7 +8,13 @@ orientation, else world-aligned) while the hand is open; closing on it must stop
 MOVEIT (check_moveit.py, test_moveit.py): the MoveIt planning group and named TCP pose targets, each given as the arm
 joints whose TCP pose (forward kinematics) is the target, so that it is reachable by the 5-DoF arm; MoveIt plans to the
 pose (IK), not to the joints. `lin_m`: a Pilz LIN back along the approach (TCP -z) from the last target.
+
+TASKS (T3: test_evaluator_idle.py, test_evaluator_push.py, check_evaluator.py; T4: test_positive.py): the robot's
+task; the T3 push: the base first drives (before the episode) to `to` [x, y, yaw] in the world (None: it stays at
+robot_start), then forward at `speed` m/s into what is in front of it, failing within `t_fail` [s]; the T4 check
+script and the value its task's open phase needs (`open_ge`, the joint's unit).
 """
+import math
 ROBOTS = ["mobile_panda", "mobile_so101", "mobile_so101_xl"]
 
 CONTROL = {
@@ -67,4 +73,16 @@ MOVEIT = {
             "bar": [0.0, -0.0738, 1.0206, -0.9467, 0.0],        # TCP (0.80, 0, 0.841): the drawer bar's height,
         },                                                      # approach horizontal, the jaws closing vertically
     },
+}
+
+TASKS = {
+    "mobile_panda": {"task": "open_fridge_door",
+                     # robot_start: ~1 m in front of the fridge
+                     "push": {"to": None, "speed": 0.3, "t_fail": [2.0, 8.0]},
+                     "positive": "check_open_door.py", "open_ge": 1.047},
+    "mobile_so101_xl": {"task": "open_drawer",
+                        # facing the counter, centred on the drawer bar, the chassis front 0.5 m from it (the
+                        # folded jaws ~0.25 m ahead of the chassis)
+                        "push": {"to": [-1.50, 0.286, math.pi], "speed": 0.3, "t_fail": [0.5, 6.0]},
+                        "positive": "check_open_drawer.py", "open_ge": 0.15},
 }

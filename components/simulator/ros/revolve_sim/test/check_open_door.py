@@ -35,7 +35,6 @@ from sensor_msgs.msg import JointState
 from revolve_common import specs
 from shape_msgs.msg import SolidPrimitive
 
-from check_control import RAMP_S, RATE_HZ
 from check_evaluator import EvalProbe
 from robot_cases import CONTROL
 from revolve_sim.metrics import rpy_matrix
@@ -106,23 +105,6 @@ class Door(EvalProbe):
     def on_door(self, m):
         if self.hinge_joint in m.name:
             self.door = m.position[m.name.index(self.hinge_joint)]
-
-    def segment(self, v, amount, rate):
-        """Ramped (RAMP_S) constant body twist v (unit direction scaled by rate) covering `amount` (m or rad)."""
-        hold = max(0.0, amount / rate - RAMP_S)
-        total, t0 = hold + 2 * RAMP_S, self.now()
-        while (t := self.now() - t0) < total:
-            s = min(1.0, t / RAMP_S, (total - t) / RAMP_S)
-            self.twist(tuple(s * rate * c for c in v))
-            self.wait(1.0 / RATE_HZ)
-        for _ in range(5):
-            self.twist((0.0, 0.0, 0.0))
-            self.wait(1.0 / RATE_HZ)
-
-    def base(self):
-        with self.lock:
-            _, x, y, z, yaw = self.poses[-1]
-        return rpy_matrix(x, y, z, 0, 0, yaw), (x, y, yaw)
 
     def phase(self):
         with self.lock:
@@ -242,16 +224,7 @@ def main():
     try:
         # --- drive: rotate to the grasp yaw, then straight to the grasp base pose
         h = T_h[:3, 3]
-        yaw_g = math.radians(YAW_DEG)
-        goal_xy = np.array([h[0] + SIDE, h[1] - DIST])
-        _, (x, y, yaw) = n.base()
-        dyaw = math.atan2(math.sin(yaw_g - yaw), math.cos(yaw_g - yaw))
-        n.segment((0.0, 0.0, math.copysign(1.0, dyaw)), abs(dyaw), W_DRIVE)
-        _, (x, y, yaw) = n.base()
-        d = goal_xy - (x, y)
-        c, s = math.cos(yaw), math.sin(yaw)
-        body = np.array([c * d[0] + s * d[1], -s * d[0] + c * d[1]])
-        n.segment((*(body / np.linalg.norm(body)), 0.0), float(np.linalg.norm(body)), V_DRIVE)
+        n.drive_to((h[0] + SIDE, h[1] - DIST), math.radians(YAW_DEG), V_DRIVE, W_DRIVE)
         n.wait(0.3)
         T_b, pb = n.base()
         mark('drive_done', base=[round(v, 4) for v in pb])

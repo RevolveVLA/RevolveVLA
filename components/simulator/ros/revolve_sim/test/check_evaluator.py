@@ -5,13 +5,15 @@ conftest.py): prints one RESULT JSON line. Uses only the evaluator's interfaces 
   idle: before the episode, the evaluator's TCP-to-handle distance vs the same distance from the scene geometry
         (the scene pose of the handle's model, its SDF link and collision poses at joint 0, the box size) and the
         robot's ground-truth pose + tf; then an episode with no command until the result.
-  push: an episode while the base drives (ramped TwistStamped, `--speed` m/s forward) into what is in front of it,
+  push: (`--to x,y,yaw`: first, before the episode, the base drives to that world pose: rotate, then translate)
+        an episode while the base drives (ramped TwistStamped, `--speed` m/s forward) into what is in front of it,
         until the result, then on for `--after` s, recording the evaluator's sanity values.
 
-  python3 check_evaluator.py --scene S --robot R --task T --mode idle|push [--speed 0.3] [--after 3]
+  python3 check_evaluator.py --scene S --robot R --task T --mode idle|push [--speed 0.3] [--after 3] [--to x,y,yaw]
 """
 import argparse
 import json
+import math
 import sys
 import threading
 import time
@@ -60,6 +62,34 @@ class EvalProbe(Probe):
         assert self.wait_for(f.done, 30), '/evaluator/start timed out'
         return f.result().success, f.result().message
 
+    def segment(self, v, amount, rate):
+        """Ramped (RAMP_S) constant body twist v (unit direction scaled by rate) covering `amount` (m or rad)."""
+        hold = max(0.0, amount / rate - RAMP_S)
+        total, t0 = hold + 2 * RAMP_S, self.now()
+        while (t := self.now() - t0) < total:
+            s = min(1.0, t / RAMP_S, (total - t) / RAMP_S)
+            self.twist(tuple(s * rate * c for c in v))
+            self.wait(1.0 / RATE_HZ)
+        for _ in range(5):
+            self.twist((0.0, 0.0, 0.0))
+            self.wait(1.0 / RATE_HZ)
+
+    def base(self):
+        with self.lock:
+            _, x, y, z, yaw = self.poses[-1]
+        return rpy_matrix(x, y, z, 0, 0, yaw), (x, y, yaw)
+
+    def drive_to(self, goal_xy, yaw_g, v, w):
+        """Open loop to a world pose: rotate to yaw_g (at w rad/s), then translate straight to goal_xy (v m/s)."""
+        _, (x, y, yaw) = self.base()
+        dyaw = math.atan2(math.sin(yaw_g - yaw), math.cos(yaw_g - yaw))
+        self.segment((0.0, 0.0, math.copysign(1.0, dyaw)), abs(dyaw), w)
+        _, (x, y, yaw) = self.base()
+        d = np.asarray(goal_xy) - (x, y)
+        c, s = math.cos(yaw), math.sin(yaw)
+        body = np.array([c * d[0] + s * d[1], -s * d[0] + c * d[1]])
+        self.segment((*(body / np.linalg.norm(body)), 0.0), float(np.linalg.norm(body)), v)
+
 
 def handle_from_scene(resolved, target):
     """World pose (4x4) + geometry of a collision from the scene pose and the model SDF (joints at 0)."""
@@ -83,6 +113,7 @@ def main():
     ap.add_argument('--mode', choices=('idle', 'push'), required=True)
     ap.add_argument('--speed', type=float, default=0.3)
     ap.add_argument('--after', type=float, default=3.0)
+    ap.add_argument('--to', type=lambda v: [float(x) for x in v.split(',')])
     ap.add_argument('--repo', default='/repo')
     a = ap.parse_args()
     _, scene, _, _ = make_world(a.scene, a.repo)
@@ -98,6 +129,10 @@ def main():
     ok = n.wait_for(lambda: n.states and n.states[-1]['ready'], 60)
     out['ready'] = ok
     n.wait(1.0)
+    if a.mode == 'push' and a.to:
+        n.drive_to(a.to[:2], a.to[2], 0.3, 0.5)
+        n.wait(1.0)
+        out['push_from'] = [round(v, 4) for v in n.base()[1]]
     with n.lock:
         out['state_before'] = n.states[-1] if n.states else None
         _, bx, by, bz, byaw = n.poses[-1]

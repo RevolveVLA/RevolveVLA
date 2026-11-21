@@ -5,14 +5,16 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
      cameras at rate with non-empty images, the finger contact topics, no gz/ROS error lines.
   T2 control (test_control.py): base drive / strafe / rotate tracking against the gz ground truth, arm joint targets
      reached and held (effort JTC), gripper open / close, finger contacts.
-  T3 evaluator negatives (test_evaluator_idle.py, test_evaluator_push.py; the sim with the task, episodes started
-     on /evaluator/start): an idle episode fails `approach` on its timeout; driving the base into the fridge fails
-     on a sanity check; the evaluator's metric values at the start match the scene geometry.
-  T4 positive (test_open_door.py, marker `slow`): MoveIt 2 (moveit_py) plans the arm, the base gets open-loop
-     ramped TwistStamped segments (test code only): open_fridge_door passes approach, grasp and open.
+  T3 evaluator negatives (test_evaluator_idle.py, test_evaluator_push.py; the sim with the robot's task of
+     robot_cases.TASKS, episodes started on /evaluator/start): an idle episode fails `approach` on its timeout;
+     driving the base into the fridge / the counter fails on a sanity check; the evaluator's metric values at the
+     start match the scene geometry.
+  T4 positive (test_positive.py, marker `slow`): MoveIt 2 (moveit_py) plans the arm, the base gets open-loop
+     ramped TwistStamped segments (test code only): open_fridge_door (mobile_panda, check_open_door.py) and
+     open_drawer (mobile_so101_xl, check_open_drawer.py) pass approach, grasp and open.
   Unit tests of the evaluator logic without a sim: test_episode_unit.py.
 A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot
-of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task) for its sim.
+of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task, or a dict of them per robot) for its sim.
 
 Env: REVOLVE_TEST_SCENE (default kitchen_partnet), REVOLVE_TEST_ROBOT (comma-separated: only these of each module's
 ROBOTS), REVOLVE_TEST_LOGS (default runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's
@@ -75,9 +77,12 @@ def sim(request, robot):
     controllers = [k for k, v in yaml.safe_load(cfile.read_text())["controller_manager"]["ros__parameters"].items()
                    if isinstance(v, dict) and "type" in v]
     launch_log = logs / "launch.log"
+    sim_args = getattr(request.module, "SIM_ARGS", [])
+    if isinstance(sim_args, dict):
+        sim_args = sim_args[robot]
     with open(launch_log, "w") as f:
         p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", robot, "--name", name,
-                              *getattr(request.module, "SIM_ARGS", [])],
+                              *sim_args],
                              stdout=f, stderr=subprocess.STDOUT, cwd=REPO, start_new_session=True)
     try:
         deadline = time.time() + 240

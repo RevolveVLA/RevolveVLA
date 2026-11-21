@@ -1,0 +1,13 @@
+# The sanity checks of every task (a task overrides or adds one by key, and removes one with `key: null`).
+# Only checks here. Timed (default): a violation fails the phase active at that moment; `timed: false`: the
+# episode fails as phase `global`. The ground is never a contact partner (the wheels stand on it).
+body_speed: {metric: peak_body_speed, lt: 5.0}         # m/s, any robot link
+penetration: {metric: penetration, lt: 0.01}           # m, the deepest robot contact
+robot_contacts: {metric: contacts, from: robot, to: any_except_targets, eq: 0}   # robot links touching anything else
+finite_cmds: {metric: non_finite_commands, eq: 0, timed: false}
+gz_log:
+  metric: gz_log_problem_lines
+  eq: 0
+  timed: false
+  # the gz-physics MuJoCo plugin logs this once at load in every world with the robot (benign)
+  ignore: ['Nan, Inf or huge value in CTRL at ACTUATOR \d+.*Time = 0\b']

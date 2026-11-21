@@ -1,0 +1,14 @@
+# Mobile SO-101 XL: the shared omni base (../common/omni_base.urdf.xacro, chassis top at 0.60 m) + mobile_so101's SO-101
+# arm (../common/so101.urdf.xacro) at scale 2. MoveIt 2 config: moveit/ (revolve_sim.moveit loads it).
+name: mobile_so101_xl
+description: robot.urdf.xacro
+controllers: controllers.yaml
+poses:                                 # shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll [rad]
+  ready: [0.0, -1.57, 1.57, 0.0, 0.0]  # folded, forearm forward, tool horizontal (closing vertical)
+  folded: [0.0, -1.70, 1.60, 1.30, 0.0]   # fully folded rest (for driving): the jaws ahead of the chassis
+frames:
+  tcp: so101_tcp                       # between the jaw tips: +z out of the jaws, +y from the moving to the fixed jaw
+  hand: gripper_link
+  base: base_footprint
+groups:
+  fingers: [gripper_link, moving_jaw_so101_v1_link]   # (fixed jaw, moving jaw)

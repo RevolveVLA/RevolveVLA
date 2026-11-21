@@ -2,7 +2,8 @@
 
 Resolves only the plugins the requested steps need, so `sample` runs on the host without docker. Extra plugin
 modules are found through $DATAGEN_PLUGIN_PATH (os.pathsep separated). `--workers` / `--gui` override the spec's `run:`
-block. Exit code: 0 ok, 1 failed check or error."""
+block. Exit code: 0 ok, 1 failed check or error, 128 + n when stopped by signal n (SIGINT 130, SIGTERM 143): the
+manifest is saved and the run's docker jobs are stopped."""
 from __future__ import annotations
 
 import argparse
@@ -11,8 +12,10 @@ import os
 import sys
 from pathlib import Path
 
+from . import hostmounts
 from .core import checks, registry
 from .core.errors import DatagenError
+from .core.interrupt import Interrupted, interruptible
 from .core.pipeline import STEPS, Pipeline, PluginSet
 from .core.spec import DatagenSpec, load
 
@@ -74,11 +77,19 @@ def main(argv=None, root: Path | None = None) -> int:
     steps = STEPS if a.step == "all" else (a.step,)
     try:
         spec = with_run(load(a.spec), a)
-        out = Path(spec.out) if Path(spec.out).is_absolute() else (root or Path.cwd()) / spec.out
-        return 0 if Pipeline(spec, build_plugins(spec, steps), out, a.dry_run).run(steps, a.split) else 1
+        out = (Path(spec.out) if Path(spec.out).is_absolute() else (root or Path.cwd()) / spec.out).resolve()
+        hostmounts.add(out)              # an out outside the repo's runs/ is mounted into the jobs (hostmounts.apply)
+        pipeline = Pipeline(spec, build_plugins(spec, steps), out, a.dry_run, abort=lambda: stop_jobs(out))
+        with interruptible():
+            return 0 if pipeline.run(steps, a.split) else 1
+    except Interrupted as e:
+        print(f"datagen: {e}", file=sys.stderr)
+        return e.code
     except DatagenError as e:
         print(f"datagen: {e}", file=sys.stderr)
         return 1
+    finally:
+        hostmounts.clear()
 
 
 def with_run(spec: DatagenSpec, a) -> DatagenSpec:
@@ -86,3 +97,8 @@ def with_run(spec: DatagenSpec, a) -> DatagenSpec:
     run = dataclasses.replace(spec.run, **{**({"workers": a.workers} if a.workers else {}),
                                            **({"headless": False} if a.gui else {"headless": True} if a.headless else {})})
     return dataclasses.replace(spec, run=run)
+
+
+def stop_jobs(out: Path):
+    from .containers import stop_jobs as stop
+    stop(out, log=lambda m: print(f"datagen: {m}", file=sys.stderr))

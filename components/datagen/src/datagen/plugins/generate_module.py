@@ -6,6 +6,8 @@ import os
 import sys
 from pathlib import Path
 
+from .. import hostmounts
+
 COMPONENT = Path(__file__).resolve().parents[3]          # components/datagen: generate.py, launch.py
 
 
@@ -25,6 +27,9 @@ def load(robot: str, task: str, variant: str | None = None):
         sys.path.append(str(COMPONENT))
     use_robot(robot)
     import generate
+    if hostmounts.MOUNTS:                        # an `out` outside the repo: the launchers must know it before a job starts
+        import launch  # noqa: F401  (generate.py imports it lazily; the mounts patch the loaded launchers)
+        hostmounts.apply()
     if variant:
         generate.set_variant(variant, task)
     return generate

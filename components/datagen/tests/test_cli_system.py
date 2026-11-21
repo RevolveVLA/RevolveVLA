@@ -1,6 +1,7 @@
 """System test: `./revolve datagen` as a subprocess on the host venv with the fake plugins (CPU, no docker)."""
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -181,3 +182,48 @@ def test_the_run_block_never_refuses_an_existing_out(tmp_path):
     assert datagen(tmp_path, "all", spec=spec_with(tmp_path, **PLAIN))[0] == 0
     rc, _, err = datagen(tmp_path, "all", spec=spec_with(tmp_path, **PLAIN | {"run": {"workers": 4, "headless": False}}))
     assert rc == 0, err
+
+
+# ------------------------------------------------------------------ out outside the repo, signals
+def test_an_absolute_out_anywhere_and_a_symlinked_one_resume(tmp_path):
+    real = tmp_path / "disk2" / "run"
+    link = tmp_path / "link"
+    link.parent.mkdir(exist_ok=True)
+    real.parent.mkdir()
+    link.symlink_to(real.parent)
+    for out in (real, link / "run"):                      # the real path, then the same dir through a symlink
+        rc, text, err = datagen(tmp_path, "all", spec=spec_with(tmp_path, out=str(out), **PLAIN))
+        assert rc == 0, err
+    assert (real / "manifest.json").is_file() and (real / "dataset" / "dataset.json").is_file()
+    assert "generate train: 3/3 accepted" in text                       # the second run found the first one's manifest
+    assert json.loads((real / "manifest.json").read_text())["splits"]["train"]["used"][0]["generate"]["paths"][
+        "episode"].startswith(str(real))                                 # resolved paths, symlink or not
+
+
+def interrupted(tmp_path, sig, extra=()):
+    """Start a slow run (4 configs, 1.5 s each, 2 at a time), send `sig` once two are under way -> (rc, stderr)."""
+    log = tmp_path / "calls.log"
+    spec = spec_with(tmp_path, **PLAIN | {"generator": {"plugin": "fake_datagen", "delay": 1.5}, "run": {"workers": 2}})
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump(spec, sort_keys=False))
+    env = os.environ | {"DATAGEN_PLUGIN_PATH": str(TESTS), "FAKE_DATAGEN_LOG": str(log)}
+    p = subprocess.Popen([sys.executable, str(REVOLVE), "datagen", str(tmp_path / "spec.yaml"), "generate", *extra],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=tmp_path, env=env)
+    for _ in range(100):
+        if log.exists() and len(log.read_text().split()) >= 4:
+            break
+        time.sleep(0.1)
+    p.send_signal(sig)
+    out, err = p.communicate(timeout=30)
+    return p.returncode, err, spec
+
+
+@pytest.mark.parametrize("sig,code", [(signal.SIGINT, 130), (signal.SIGTERM, 143)])
+def test_a_signal_stops_cleanly_keeps_the_manifest_and_the_run_resumes(tmp_path, sig, code):
+    rc, err, spec = interrupted(tmp_path, sig)
+    assert rc == code and f"interrupted by {sig.name}" in err and "Traceback" not in err
+    m = manifest(tmp_path)                                        # valid JSON, nothing half-decided
+    assert m["splits"]["train"]["used"] == [] and (tmp_path / "run" / "report.md").exists()
+    assert not list((tmp_path / "run" / "train" / "episodes").glob("seed_*"))        # unfinished episodes are not kept
+    rc, out, err = datagen(tmp_path, "generate", "--workers", "4", spec=spec)
+    assert rc == 0, err
+    assert used_seeds(tmp_path, "train") == [0, 1, 2] and used_seeds(tmp_path, "heldout") == [10]

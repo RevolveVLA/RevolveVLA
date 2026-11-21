@@ -6,7 +6,7 @@ the planner image, the start-state scripts and the tests on the host).
 All positions and yaws are in the object (planner) frame of frames.py, where the base faces the
 object at yaw FACING_YAW_OBJ. A round's cluster centres come from its first seed and lie in the box
 `box_m` and the yaw window `yaw_half_deg`, both shrunk by the largest offset. Attempt a of a plan run
-belongs to cluster a mod clusters and plans grasp cluster mod 5; its start is the cluster centre plus
+belongs to cluster a mod clusters and plans grasp cluster mod (the task's grasp count, 5); its start is the cluster centre plus
 a base offset of 1 cm to `offset_m` and a yaw offset of 1 deg to `offset_deg`, drawn from the plan
 run's seed. Centres and offsets come from separate seeded generators, never from numpy's or
 random's global state (plan.py seeds numpy globally for AutoMoMa).
@@ -28,7 +28,9 @@ A plan run with a layout (env ROUND_LAYOUT; the generator plugin's realised rand
 would draw per seed. A clustered block has no clusters then (layout_starts): every attempt starts at the layout's
 `start_pose` plus its offset and plans the layout's `grasp_id`. A reach / drive block takes the layout's `reach`
 {grasp_m, d_m, yaw_deg} and (drive) `drive` {back_m, side_m, heading_deg} in place of the matching seeded draw; a value
-the layout does not name keeps its own draw (check_layout_mode says which keys a block takes).
+the layout does not name keeps its own draw (check_layout_mode says which keys a block takes). Every block takes the
+layout's grasp: `grasp_id` (one of the task's defined points) or `grasp` {along_m[, depth_m, roll_deg]} (a value in the
+task's range, grasp_design.py); the planner turns both into the one grasp of the run.
 """
 import json
 import math
@@ -40,7 +42,7 @@ import numpy as np
 FACING_YAW_OBJ = math.pi
 # The box centre per task and the nominal arm are the robot's: task.yaml starts.<robot>.centre and
 # robot.yaml arm.ready (plan.py passes them in).
-GRASPS = 5
+GRASPS = 5                      # the grasp points of the shipped tasks (a task's own count: grasps= below)
 
 # D0 core.ROUND_BLOCKS["starts"]: kind, low, high, low excluded (checked again here: the
 # environment is a trust boundary).
@@ -269,9 +271,9 @@ def _nonneg_int(v, name):
         raise ValueError(f"{name} {v!r} is not an int >= 0")
 
 
-def grasp_of_cluster(cluster: int) -> int:
+def grasp_of_cluster(cluster: int, grasps: int = GRASPS) -> int:
     _nonneg_int(cluster, "cluster")
-    return cluster % GRASPS
+    return cluster % grasps
 
 
 def cluster_of_attempt(attempt_id: int, clusters: int) -> int:
@@ -310,14 +312,14 @@ def start_offsets(seed: int, attempts: int, spec: StartsSpec) -> list[tuple[floa
 
 
 def plan_starts(centre_seed: int, plan_seed: int, attempts: int, spec: StartsSpec,
-                box_centre: tuple[float, float], facing: float = FACING_YAW_OBJ) -> list[Start]:
+                box_centre: tuple[float, float], facing: float = FACING_YAW_OBJ, grasps: int = GRASPS) -> list[Start]:
     """The starts of one plan run: centres from the round's first seed, offsets from the run's seed."""
     centres = cluster_centres(centre_seed, spec, box_centre, facing)
     out = []
     for a, (dx, dy, dyaw) in enumerate(start_offsets(plan_seed, attempts, spec)):
         c = cluster_of_attempt(a, spec.clusters)
         cx, cy, cyaw = centres[c]
-        out.append(Start(a, c, grasp_of_cluster(c), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
+        out.append(Start(a, c, grasp_of_cluster(c, grasps), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
     return out
 
 
@@ -353,7 +355,7 @@ def request_centres(centre_seeds, spec: StartsSpec, box_centre: tuple[float, flo
 
 
 def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box_centre: tuple[float, float],
-                   facing: float = FACING_YAW_OBJ) -> list[Start]:
+                   facing: float = FACING_YAW_OBJ, grasps: int = GRASPS) -> list[Start]:
     """The starts of a requested plan run: attempt a in cluster clusters[a], from that cluster's
     request centre, offsets from the run's seed. clusters a mod C and one centre seed give plan_starts."""
     centres = request_centres(centre_seeds, spec, box_centre, facing)
@@ -361,21 +363,26 @@ def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box
     for a, (dx, dy, dyaw) in enumerate(start_offsets(plan_seed, len(clusters), spec)):
         c = clusters[a]
         cx, cy, cyaw = centres[c]
-        out.append(Start(a, c, grasp_of_cluster(c), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
+        out.append(Start(a, c, grasp_of_cluster(c, grasps), cx + dx, cy + dy, cyaw + dyaw, dx, dy, dyaw))
     return out
 
 
 # A layout: the base start pose (x, y, yaw) in the object frame and the planner grasp id (clustered block), the reach
-# and drive values of a reach / drive block; every key optional (the realised outputs of the robot_base, grasp,
-# reach_start and drive_start randomisers); a missing pose is the box centre facing the object.
-LAYOUT_KEYS = ("start_pose", "grasp_id", "reach", "drive")
+# and drive values of a reach / drive block, the grasp by value (the task's range); every key optional (the realised
+# outputs of the robot_base, grasp, reach_start and drive_start randomisers); a missing pose is the box centre facing
+# the object.
+LAYOUT_KEYS = ("start_pose", "grasp_id", "grasp", "reach", "drive")
+GRASP_DIMS = ("along_m", "depth_m", "roll_deg")            # layout["grasp"]: the TCP along the grasp axis, depth, roll
 REACH_DIMS = ("grasp_m", "d_m", "yaw_deg")                 # layout["reach"]: the grasp point, reach distance, base turn
 DRIVE_DIMS = ("back_m", "side_m", "heading_deg")           # layout["drive"]: the far start behind / aside / heading
-_MODE_KEYS = {StartsSpec: ("start_pose", "grasp_id"), ReachSpec: ("reach",), DriveSpec: ("reach", "drive")}
+_GRASP_KEYS = ("grasp_id", "grasp")
+_MODE_KEYS = {StartsSpec: ("start_pose", *_GRASP_KEYS), ReachSpec: ("reach", *_GRASP_KEYS),
+              DriveSpec: ("reach", "drive", *_GRASP_KEYS)}
 
 
-def parse_layout(layout: Mapping) -> dict:
-    """The checked layout: known keys, a finite 3-number start_pose, a grasp id in 0..GRASPS-1."""
+def parse_layout(layout: Mapping, grasps: int = GRASPS) -> dict:
+    """The checked layout: known keys, a finite 3-number start_pose, a grasp id in 0..grasps-1 or a grasp by value
+    ({along_m[, depth_m, roll_deg]}, one grasp source only; reach.grasp_m is one too)."""
     if not isinstance(layout, Mapping):
         raise ValueError(f"layout: {type(layout).__name__} is not a mapping")
     unknown = sorted(set(layout) - set(LAYOUT_KEYS))
@@ -386,8 +393,15 @@ def parse_layout(layout: Mapping) -> dict:
             isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in pose)):
         raise ValueError(f"layout.start_pose: {pose!r} is not three finite numbers (x, y, yaw)")
     grasp = layout.get("grasp_id")
-    if grasp is not None and (isinstance(grasp, bool) or not isinstance(grasp, int) or not 0 <= grasp < GRASPS):
-        raise ValueError(f"layout.grasp_id: {grasp!r} is not an int in 0..{GRASPS - 1}")
+    if grasp is not None and (isinstance(grasp, bool) or not isinstance(grasp, int) or not 0 <= grasp < grasps):
+        raise ValueError(f"layout.grasp_id: {grasp!r} is not an int in 0..{grasps - 1}")
+    value = layout.get("grasp")
+    if value is not None:
+        if not isinstance(value, Mapping) or "along_m" not in value or set(value) - set(GRASP_DIMS):
+            raise ValueError(f"layout.grasp: {value!r} is not a mapping of {list(GRASP_DIMS)} with along_m")
+        for dim, v in value.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f"layout.grasp.{dim}: {v!r} is not a finite number")
     for key, dims in (("reach", REACH_DIMS), ("drive", DRIVE_DIMS)):
         part = layout.get(key)
         if part is None:
@@ -397,20 +411,24 @@ def parse_layout(layout: Mapping) -> dict:
         for dim, v in part.items():
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
                 raise ValueError(f"layout.{key}.{dim}: {v!r} is not a finite number")
+    sources = [k for k in _GRASP_KEYS if layout.get(k) is not None] + (
+        ["reach.grasp_m"] if "grasp_m" in (layout.get("reach") or {}) else [])
+    if len(sources) > 1:
+        raise ValueError(f"layout: {sources} each give the grasp, use one")
     return dict(layout)
 
 
 def check_layout_mode(layout: Mapping, spec: StartsSpec | ReachSpec) -> None:
-    """ValueError when the layout has a key the block's method does not take: a clustered block takes start_pose /
-    grasp_id, a reach block reach, a drive block reach and drive."""
+    """ValueError when the layout has a key the block's method does not take: a clustered block takes start_pose, a
+    reach block reach, a drive block reach and drive; every block takes the grasp (grasp_id or grasp)."""
     take = _MODE_KEYS[DriveSpec if isinstance(spec, DriveSpec) else ReachSpec if isinstance(spec, ReachSpec)
                       else StartsSpec]
     if extra := sorted(set(layout) - set(take)):
         raise ValueError(f"layout keys {extra}: a {type(spec).__name__} block takes {list(take)}")
 
 
-def layout_from_env(environ: Mapping[str, str]) -> dict | None:
-    """The layout of ROUND_LAYOUT, None without it. Reads no other key."""
+def layout_from_env(environ: Mapping[str, str], grasps: int = GRASPS) -> dict | None:
+    """The layout of ROUND_LAYOUT, None without it (grasps: the task's grasp count). Reads no other key."""
     try:
         text = environ["ROUND_LAYOUT"]
     except KeyError:
@@ -421,7 +439,7 @@ def layout_from_env(environ: Mapping[str, str]) -> dict | None:
         raise ValueError(f"ROUND_LAYOUT is not JSON: {e}") from None
     if not isinstance(layout, dict):
         raise ValueError("ROUND_LAYOUT is not a JSON object")
-    return parse_layout(layout)
+    return parse_layout(layout, grasps)
 
 
 def layout_spot(layout: Mapping, box_centre: tuple[float, float],
@@ -432,19 +450,19 @@ def layout_spot(layout: Mapping, box_centre: tuple[float, float],
 
 
 def layout_starts(layout: Mapping, plan_seed: int, attempts: int, spec: StartsSpec,
-                  box_centre: tuple[float, float], facing: float = FACING_YAW_OBJ) -> list[Start]:
+                  box_centre: tuple[float, float], facing: float = FACING_YAW_OBJ, grasps: int = GRASPS) -> list[Start]:
     """The starts of a plan run with a layout: every attempt at the layout's spot plus its offset from the run's
-    seed (start_offsets), cluster 0, the layout's grasp (else attempt mod GRASPS). ValueError when the spot with
-    the offsets can leave the box or the yaw window."""
-    layout = parse_layout(layout)
+    seed (start_offsets), cluster 0, the layout's grasp id (else attempt mod grasps; a grasp by value is the run's one
+    grasp, id 0). ValueError when the spot with the offsets can leave the box or the yaw window."""
+    layout = parse_layout(layout, grasps)
     _check_feasible(spec)
     x, y, yaw = layout_spot(layout, box_centre, facing)
     if (max(abs(x - box_centre[0]), abs(y - box_centre[1])) + spec.offset_m > spec.box_m / 2 + _EPS
             or abs(yaw_dev_deg(yaw, facing)) + spec.offset_deg > spec.yaw_half_deg + 1e-9):
         raise ValueError(f"layout {layout}: the spot +- the offsets ({spec.offset_m} m, {spec.offset_deg} deg) "
                          f"leaves the box (+-{spec.box_m / 2} m) or the yaw window (+-{spec.yaw_half_deg} deg)")
-    grasp = layout.get("grasp_id")
-    return [Start(a, 0, a % GRASPS if grasp is None else grasp, x + dx, y + dy, yaw + dyaw, dx, dy, dyaw)
+    grasp = 0 if "grasp" in layout else layout.get("grasp_id")
+    return [Start(a, 0, a % grasps if grasp is None else grasp, x + dx, y + dy, yaw + dyaw, dx, dy, dyaw)
             for a, (dx, dy, dyaw) in enumerate(start_offsets(plan_seed, attempts, spec))]
 
 

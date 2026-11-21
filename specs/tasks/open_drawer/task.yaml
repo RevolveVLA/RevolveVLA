@@ -23,8 +23,12 @@ object:
 
 planner:
   grasp:
-    # TCP positions along the bar (model y; its centre is at -0.004); the TCP stays in -0.246..0.238
-    y: [-0.204, -0.104, -0.004, 0.096, 0.196]
+    # TCP positions along the bar (model y; its centre is at -0.004); the TCP stays in -0.246..0.238. `points` are the
+    # defined grasps (ids 0..4, datagen grasp.id), `range` the continuous option (datagen grasp.along_m). Optional:
+    # depth_range / roll_range_deg (datagen grasp.depth_m / grasp.roll_deg).
+    axis: y
+    points: [-0.204, -0.104, -0.004, 0.096, 0.196]
+    range: [-0.20, 0.20]
     depth: 0.0
     roll_deg: -90.0
   # One row of spheres 2.1 cm in front of the drawer front, between the door and the bar

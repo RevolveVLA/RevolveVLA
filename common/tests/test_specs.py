@@ -210,3 +210,45 @@ def test_starts_robot_must_exist_and_a_drive_needs_a_folded_arm(specs_copy):
     edit(specs_copy / "robots" / "mobile_panda" / "robot.yaml", lambda d: d["arm"].pop("folded", None))
     with pytest.raises(specs.SpecError, match="no arm.folded"):
         specs.load(p, robot="mobile_panda")
+
+
+# ---- planner.grasp: defined points and an optional continuous range (PRD 11)
+def test_shipped_tasks_have_points_and_a_range_inside_the_tcp_reach():
+    for name, axis in (("open_drawer", "y"), ("open_fridge_door", "z")):
+        g = specs.load(SPECS / "tasks" / name / "task.yaml", robot="mobile_panda").task.grasp
+        assert g.axis == axis and len(g.points) == 5 and g.range is not None
+        assert g.depth_range is None and g.roll_range_deg is None
+
+
+def test_per_robot_grasp_override_is_checked(specs_copy):
+    p = specs_copy / "tasks" / "open_drawer" / "task.yaml"
+    edit(p, lambda d: d["robots"]["mobile_so101"]["planner"].update(grasp={"axis": "y", "points": [0.0], "depth": 0.0,
+                                                                      "roll_deg": -90.0}))
+    assert specs.load(p, robot="mobile_so101").task.grasp.points == [0.0]
+    assert len(specs.load(p, robot="mobile_panda").task.grasp.points) == 5
+
+
+@pytest.mark.parametrize("change, needle", [
+    (lambda g: g.pop("axis"), "axis"),
+    (lambda g: g.update(axis="w"), "axis"),
+    (lambda g: g.update(points=[]), "points"),
+    (lambda g: g.update(y=[0.0]), "y"),                                   # the old key: axis + points now
+    (lambda g: g.update(range=[0.2, -0.2]), "grasp.range"),
+    (lambda g: g.update(range=[0.1]), "range"),
+    (lambda g: g.update(depth_range=[0.01, 0.05]), "grasp.depth_range"),   # does not hold the fixed depth 0.0
+    (lambda g: g.update(roll_range_deg=[-80.0, -10.0]), "grasp.roll_range_deg"),
+    (lambda g: g.pop("roll_deg"), "roll_deg"),
+])
+def test_bad_grasp_names_the_problem(specs_copy, change, needle):
+    p = specs_copy / "tasks" / "open_drawer" / "task.yaml"
+    edit(p, lambda d: change(d["planner"]["grasp"]))
+    with pytest.raises(specs.SpecError) as e:
+        specs.load(p, robot="mobile_panda")
+    assert needle in str(e.value)
+
+
+def test_optional_depth_and_roll_ranges(specs_copy):
+    p = specs_copy / "tasks" / "open_drawer" / "task.yaml"
+    edit(p, lambda d: d["planner"]["grasp"].update(depth_range=[0.0, 0.03], roll_range_deg=[-100.0, -80.0]))
+    g = specs.load(p, robot="mobile_panda").task.grasp
+    assert (g.depth_range, g.roll_range_deg) == ([0.0, 0.03], [-100.0, -80.0])

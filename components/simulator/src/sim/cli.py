@@ -384,7 +384,8 @@ def rollout_spec(start, out, r, seed=None, restore=None, budget_s=None, wait_s=N
               subtasks=["closed_loop"], event_subtask=["closed_loop"], restore=rest)
     (out / "closed_loop.json").write_text(json.dumps(cl, indent=1, default=float))
     grasp = np.asarray(slive["grasp_pose_world"], float)
-    zs = (t.planner.get("grasp") or {}).get("z")     # a vertical bar: any trained grasp height (policy_episode.py)
+    g = t.planner.get("grasp") or {}
+    zs = g["points"] if g.get("axis") == "z" else None     # a vertical bar: any trained grasp height (policy_episode.py)
     p0 = grasp[:3, 3]
     seg = [[*p0[:2].tolist(), min(zs)], [*p0[:2].tolist(), max(zs)]] if zs else None
     label = f"rollout seed {seed} from {start.name}" + (f" restored at {restore[1]}" if restore else "")

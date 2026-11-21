@@ -183,12 +183,12 @@ def task_object(rd, task, rob, out):
     obj_urdf.write_text(urdf(task["object"], links, joints))
 
     # Grasps: the hand facing the handle head-on in the model frame (front = +x), closing along y, then
-    # rolled roll_deg about its z (-90: the gripper closes vertically across a horizontal bar). The TCP positions run along the handle: the grasp key x, y or z.
+    # rolled roll_deg about its z (-90: the gripper closes vertically across a horizontal bar). The TCP positions (grasp points) run along the handle: the grasp axis x, y or z.
     H0 = m.pose(door, {}) @ T_lh
     n = np.array([1.0, 0.0, 0.0])
     R = hand_rot(-n, sdf.rot((0, 0, 1), math.atan2(-n[1], -n[0])) @ [0.0, 1.0, 0.0])
     R = R @ sdf.rot((0, 0, 1), math.radians(task["grasp"]["roll_deg"]))
-    along, = (k for k in "xyz" if k in task["grasp"])
+    along = task["grasp"]["axis"]
     # Door spheres: the plugin's grid in the model frame (door closed), in the door link frame.
     ds, L = task["door_spheres"], np.linalg.inv(m.zero(door))
     grid = [np.linspace(a, b, int(np.ceil(abs(b - a) / ds["step"] - 1e-9)) + 1) for a, b in (ds["y"], ds["z"])]
@@ -212,7 +212,7 @@ def task_object(rd, task, rob, out):
         ln = pj["parent"]
     root = f"{task['object']}_root"
     spots = []
-    for at in task["grasp"][along]:
+    for at in task["grasp"]["points"]:
         G = np.eye(4)
         pos = H0[:3, 3].copy()
         pos["xyz".index(along)] = at

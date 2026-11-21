@@ -244,6 +244,31 @@ class DriveEntry(DriveStarts):
     variants: _Variants = {}
 
 
+class Grasp(Strict):
+    """planner.grasp: how the TCP takes the handle, along `axis` of the object model frame. `points` are the defined
+    grasps (ids 0..n-1, the planner's grasp set); `range` is the optional continuous interval along the axis a spec
+    may draw a grasp from instead. depth (the TCP behind the handle centre, towards the door) and roll_deg are fixed
+    unless depth_range / roll_range_deg allow a draw too."""
+    axis: Literal["x", "y", "z"]
+    points: list[Num] = Field(min_length=1)
+    range: Pair | None = None
+    depth: Num
+    roll_deg: Num
+    depth_range: Pair | None = None
+    roll_range_deg: Pair | None = None
+
+    @model_validator(mode="after")
+    def _ordered_and_holding(self):
+        for name, pair, fixed in (("range", self.range, None), ("depth_range", self.depth_range, self.depth),
+                                  ("roll_range_deg", self.roll_range_deg, self.roll_deg)):
+            if pair is None:
+                continue
+            _ordered(f"grasp.{name}", pair)
+            if fixed is not None and not pair[0] <= fixed <= pair[1]:
+                raise ValueError(f"grasp.{name} {pair} does not hold the fixed value {fixed}")
+        return self
+
+
 class TaskRobot(Strict):
     """A task's settings for one robot (task.yaml `robots: {<robot>: ...}`): merged over the task's own
     planner block (key by key) and replay block when the task is resolved for that robot."""
@@ -280,6 +305,16 @@ class Task(Strict):
                 if c.joint is not None and c.joint != self.object.joint:
                     raise ValueError(f"phases.{p.name}: joint {c.joint!r} is not the task joint {self.object.joint!r}")
         return self
+
+    @model_validator(mode="after")
+    def _grasp(self):
+        Grasp.model_validate(self.planner.get("grasp"))
+        return self
+
+    @property
+    def grasp(self) -> Grasp:
+        """planner.grasp, checked (as the robot's override merges it when the task is resolved for the robot)."""
+        return Grasp.model_validate(self.planner["grasp"])
 
     def phase(self, name):
         return next(p for p in self.phases if p.name == name)

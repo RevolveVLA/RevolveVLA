@@ -55,6 +55,13 @@ def starts(task, robot=None, variant=None):
     return resolved_task(task, robot).task.starts_for(robot, variant)
 
 
+def grasp(task, robot=None):
+    """The task's grasp set for a robot (task.yaml planner.grasp): a specs.Grasp (.points, .range, .depth_range ...).
+    robot: default $REVOLVE_ROBOT."""
+    robot = robot or os.environ.get(specs.ROBOT_ENV)
+    return resolved_task(task, robot).task.grasp
+
+
 def round_blocks(task):
     """The generator's per-task round blocks (timing, pull) -> {KEY: block} for ROUND_<KEY> env. The start blocks
     are the task's (starts)."""

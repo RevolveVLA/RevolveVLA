@@ -49,8 +49,12 @@ start_pose with the layout's grasp; the "starts" record holds the layout and tha
 A reach / drive block with a layout takes the layout's `reach` {grasp_m, d_m, yaw_deg} and `drive` {back_m, side_m,
 heading_deg} as the seed's sample in place of the matching draw (start_design.reach_sample / drive_sample); the "starts"
 record's sample and attempts then hold those values.
+A layout's grasp (`grasp_id` of the task's defined points, or `grasp` {along_m, depth_m, roll_deg} by value inside the
+task's range, grasp_design.py) makes it the run's one grasp: the task's grasp block is narrowed to it (id 0) and every
+start method plans that grasp; a box block plans a `grasp_id` as one of the task's grasps instead.
 """
 import copy
+import dataclasses
 import json
 import os
 import subprocess
@@ -64,6 +68,7 @@ import yaml
 
 import frames
 import gen_assets
+import grasp_design
 import specs_bridge as plugins
 import start_design
 
@@ -466,7 +471,8 @@ def main(out, sel):
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
-    layout = start_design.layout_from_env(os.environ)
+    grasps = len(task["grasp"]["points"])                 # the task's defined grasps (task.yaml planner.grasp)
+    layout = start_design.layout_from_env(os.environ, grasps)
     if layout is not None and spec is not None:
         start_design.check_layout_mode(layout, spec)
     reach = isinstance(spec, start_design.ReachSpec)     # a drive block is a reach block plus a far start
@@ -478,25 +484,31 @@ def main(out, sel):
             raise SystemExit(f"{start_design.REQUEST_FILE} needs a clustered starts block, not mode reach")
         if attempts < 1:
             raise SystemExit("no attempts: ATTEMPTS is 0")
-        # One grasp: the seed's sampled point along the task's grasp axis (the attempts only jitter the base).
+        # One grasp: the layout's (a defined point or a value in the task's range) or the seed's sampled point along the
+        # task's grasp axis (the attempts only jitter the base).
         sample = start_design.reach_sample(seed, spec, layout)
-        along, = (k for k in "xyz" if k in task["grasp"])
-        task["grasp"] = {**task["grasp"], along: [sample.grasp]}
+        value = grasp_design.given(layout, task["grasp"], by_id=True)
+        if value is None:
+            value = grasp_design.fixed(task["grasp"], sample.grasp)
+        sample = dataclasses.replace(sample, grasp=value["along"])
+        task["grasp"] = grasp_design.narrowed(task["grasp"], value)
     elif spec is not None:
         design = plugins.starts(task["name"])          # the task.yaml block ROUND_STARTS was made from
         if design is None or design.method != "box":
             raise SystemExit(f"starts: ROUND_STARTS is a clustered block but task {task['name']} has no `method: box` "
                              f"start design for robot {r.robot.name} (task.yaml starts)")
         box = tuple(design.centre)
+        if value := grasp_design.given(layout, task["grasp"]):         # a grasp by value: the run's one grasp (id 0)
+            task["grasp"] = grasp_design.narrowed(task["grasp"], value)
         centre_seed = round_first_seed(out, seed)
         request = start_design.read_plan_request(out / start_design.REQUEST_FILE, seed, attempts, spec)
         if layout is not None:
             if request is not None:
                 raise SystemExit(f"ROUND_LAYOUT and {start_design.REQUEST_FILE} exclude each other")
-            starts = start_design.layout_starts(layout, seed, attempts, spec, box)
+            starts = start_design.layout_starts(layout, seed, attempts, spec, box, grasps=grasps)
         else:
-            starts = (start_design.plan_starts(centre_seed, seed, attempts, spec, box) if request is None
-                      else start_design.request_starts(*request, seed, spec, box))
+            starts = (start_design.plan_starts(centre_seed, seed, attempts, spec, box, grasps=grasps) if request is None
+                      else start_design.request_starts(*request, seed, spec, box, grasps=grasps))
         if not starts:
             raise SystemExit("no attempts: ATTEMPTS is 0")
     elif (out / start_design.REQUEST_FILE).exists():

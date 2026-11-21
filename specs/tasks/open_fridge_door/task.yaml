@@ -27,8 +27,11 @@ object:
 # AutoMoMa planner inputs, unchanged from the plugin (see its comments for the derivations)
 planner:
   grasp:
-    # TCP heights in the model frame along the bar (z 0.90..1.15); the TCP stays in 0.949..1.101
-    z: [0.965, 0.995, 1.025, 1.055, 1.085]
+    # TCP heights in the model frame along the bar (z 0.90..1.15); the TCP stays in 0.949..1.101. `points` are the
+    # defined grasps (ids 0..4, datagen grasp.id), `range` the continuous option (datagen grasp.along_m).
+    axis: z
+    points: [0.965, 0.995, 1.025, 1.055, 1.085]
+    range: [0.955, 1.095]
     depth: 0.0                      # TCP behind the handle centre, towards the door [m]
     roll_deg: 0.0
   # Spheres on the moving door: a grid in the model frame at the closed door (8 x 22 spheres; grid +

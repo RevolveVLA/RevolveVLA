@@ -5,7 +5,7 @@ from datagen.core import registry
 from datagen.core.interfaces import Config
 from datagen.core.spec import DatagenSpec
 
-PLAN_KEYS = ("start_pose", "grasp_id", "reach", "drive")        # start_design.LAYOUT_KEYS
+PLAN_KEYS = ("start_pose", "grasp_id", "grasp", "reach", "drive")        # start_design.LAYOUT_KEYS
 
 
 class Realiser:
@@ -33,6 +33,7 @@ class Realiser:
 
     def layout(self, config: Config) -> dict:
         """{"start_pose": [x, y, yaw], "grasp_id": g} (object frame) of a box start, {"reach": {...}, "drive": {...}} of a
-        reach / drive start: the keys that are varied; {} when none is."""
+        reach / drive start, {"grasp": {along_m, ...}} of a grasp by value (any start): the keys that are varied; {}
+        when none is."""
         r = self.realise(config)
         return {k: list(r[k]) if k == "start_pose" else r[k] for k in PLAN_KEYS if k in r}

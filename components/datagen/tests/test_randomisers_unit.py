@@ -37,7 +37,7 @@ def test_robot_base_limits():
 
 
 def test_grasp_limits():
-    assert limits("grasp") == {"grasp.id": S.Choices((0, 1, 2, 3, 4))}
+    assert limits("grasp") == {"grasp.id": S.Choices((0, 1, 2, 3, 4)), "grasp.along_m": S.Range(0.955, 1.095)}
 
 
 def test_hard_limits_come_from_the_tasks_start_design():

@@ -72,7 +72,6 @@ def test_limits_follow_the_generators_variant(reach_design):
     ("reach_start", "mobile_so101_xl", "mobile_so101_xl on open_drawer uses drive: use drive_start, not reach_start"),
     ("drive_start", "mobile_panda", "mobile_panda on open_drawer uses box: use robot_base, not drive_start"),
     ("reach_start", "mobile_panda", "mobile_panda on open_drawer uses box: use robot_base, not reach_start"),
-    ("grasp", "mobile_so101_xl", "mobile_so101_xl on open_drawer uses drive: use drive_start, not grasp"),
     ("drive_start", "mobile_so101", "no start design"),
 ])
 def test_a_randomiser_of_another_method_is_a_clear_error(randomiser, robot, needle):
@@ -146,12 +145,14 @@ def test_a_bad_reach_or_drive_layout_is_rejected(bad):
 def test_layout_keys_must_fit_the_blocks_method():
     D.check_layout_mode({"reach": {"d_m": 0.7}}, RSPEC)
     D.check_layout_mode({"reach": {"d_m": 0.7}, "drive": {"back_m": 1.2}}, DSPEC)
+    D.check_layout_mode({"grasp_id": 1}, DSPEC)                         # every block takes a grasp
+    D.check_layout_mode({"grasp": {"along_m": 0.0}}, RSPEC)
     D.check_layout_mode({"start_pose": [0, 0, 0], "grasp_id": 1}, D.parse_starts(
         dict(clusters=10, per_cluster=10, box_m=0.4, yaw_half_deg=30, offset_m=0.03, offset_deg=3, nominal_arm="ready")))
     with pytest.raises(ValueError, match="drive"):
         D.check_layout_mode({"drive": {"back_m": 1.2}}, RSPEC)
-    with pytest.raises(ValueError, match="grasp_id"):
-        D.check_layout_mode({"grasp_id": 1}, DSPEC)
+    with pytest.raises(ValueError, match="start_pose"):
+        D.check_layout_mode({"start_pose": [0, 0, 0]}, DSPEC)
     with pytest.raises(ValueError, match="reach"):
         D.check_layout_mode({"reach": {"d_m": 0.7}}, D.parse_starts(
             dict(clusters=1, per_cluster=1, box_m=0.4, yaw_half_deg=30, offset_m=0.03, offset_deg=3, nominal_arm="ready")))
@@ -246,8 +247,9 @@ def test_list_randomisers_of_a_drive_pair(capsys):
     assert cli.main(["--list-randomisers", "--task", "open_drawer", "--robot", "mobile_so101_xl"]) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[0] == "open_drawer on mobile_so101_xl: start design drive"
-    assert [l.split()[0] for l in out[1:]] == [f"drive_start.{d}" for d in DRIVE_DIMS]
-    assert out[1].split(None, 1)[1].strip() == "[-0.1, 0.1]" and "[-20, 20]" in out[-1]
+    assert [l.split()[0] for l in out[1:]] == [f"drive_start.{d}" for d in DRIVE_DIMS] + ["grasp.id", "grasp.along_m"]
+    assert out[1].split(None, 1)[1].strip() == "[-0.1, 0.1]" and "[-20, 20]" in out[6]
+    assert out[7].split(None, 1)[1].strip() == "{0, 1, 2, 3, 4}" and out[8].split(None, 1)[1].strip() == "[-0.2, 0.2]"
 
 
 def test_list_randomisers_of_a_box_pair(capsys):
@@ -280,7 +282,7 @@ def test_list_randomisers_needs_a_task_and_a_robot():
 
 def test_usable_lists_the_randomisers_of_the_package():
     assert sorted(listing.usable("open_fridge_door", "mobile_panda")) == ["grasp", "robot_base"]
-    assert sorted(listing.usable("open_drawer", "mobile_so101_xl")) == ["drive_start"]
+    assert sorted(listing.usable("open_drawer", "mobile_so101_xl")) == ["drive_start", "grasp"]
 
 
 def test_a_grasp_only_spec_with_min_distance_samples_and_keeps_the_distance(tmp_path):

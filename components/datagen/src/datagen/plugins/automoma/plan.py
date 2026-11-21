@@ -487,9 +487,7 @@ def main(out, sel):
         # One grasp: the layout's (a defined point or a value in the task's range) or the seed's sampled point along the
         # task's grasp axis (the attempts only jitter the base).
         sample = start_design.reach_sample(seed, spec, layout)
-        value = grasp_design.given(layout, task["grasp"], by_id=True)
-        if value is None:
-            value = grasp_design.fixed(task["grasp"], sample.grasp)
+        value = grasp_design.for_reach(layout, task["grasp"], sample.grasp)
         sample = dataclasses.replace(sample, grasp=value["along"])
         task["grasp"] = grasp_design.narrowed(task["grasp"], value)
     elif spec is not None:

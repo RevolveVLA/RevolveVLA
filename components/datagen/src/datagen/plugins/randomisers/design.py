@@ -28,3 +28,12 @@ def design_for(spec, method: str, who: str | None = None):
         raise StartDesignError(f"{spec.robot} on {spec.task} uses {design.method}: use {BY_METHOD[design.method]}, "
                                f"not {who}")
     return design
+
+
+def any_design(spec, who: str):
+    """The start design of spec.robot on spec.task whatever its method; a StartDesignError without one."""
+    from datagen.specs_bridge import starts
+    design = starts(spec.task, spec.robot, variant_of(spec))
+    if design is None:
+        raise StartDesignError(f"{who}: {spec.robot} on {spec.task} has no start design (task.yaml starts.{spec.robot})")
+    return design

@@ -39,6 +39,11 @@ def given(layout: Mapping | None, grasp: Mapping, by_id: bool = False) -> dict |
     return None
 
 
+def for_reach(layout: Mapping | None, grasp: Mapping, sampled: float) -> dict:
+    """The one grasp of a reach / drive run: the layout's (a defined point or a value), else the seed's sampled point."""
+    return given(layout, grasp, by_id=True) or fixed(grasp, sampled)
+
+
 def narrowed(grasp: Mapping, value: Mapping) -> dict:
     """The task's grasp block with `value` as its one grasp (the planner builds its assets from it)."""
     return {**grasp, "points": [value["along"]], "depth": value["depth"], "roll_deg": value["roll_deg"]}

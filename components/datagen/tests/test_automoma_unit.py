@@ -103,6 +103,13 @@ def test_generate_plans_from_the_layout_and_checks_the_attempts(automoma, tmp_pa
     assert res.to_dict()["ok"] and json.dumps(res.to_dict())              # plain JSON for the manifest
 
 
+def test_a_range_grasp_is_planned_by_value_and_realised_as_its_own_dim(automoma, tmp_path):
+    gen, st = automoma(PlanStub(planned=(1,)), randomisers={"grasp": {"along_m": [0.97, 1.08]}})
+    res = gen.generate(Config("train", 3, (), {"grasp.along_m": 1.01}), tmp_path / "seed_3")
+    assert res.ok and st.layouts[0] == {"grasp": {"along_m": 1.01}}
+    assert res.realised["grasp.along_m"] == 1.01 and "grasp.id" not in res.realised and "grasp_id" not in res.realised
+
+
 def test_generate_without_a_varied_start_plans_the_clustered_way(automoma, tmp_path):
     gen, st = automoma(PlanStub(planned=(0,)), randomisers={})
     assert gen.generate(Config("train", 1), tmp_path / "e").ok and st.layouts == [None]

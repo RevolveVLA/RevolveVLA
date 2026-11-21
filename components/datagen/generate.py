@@ -17,7 +17,7 @@ at the first rejection). The check record then adds repeats and repeat_check {n,
 (one per repeat run), identical, reason "repeat check k/N failed"}, and its `accepted` is the N-of-N
 verdict; the manifest adds checks. A resume continues from the repeats already recorded.
 
-layouts {seed: layout} (start_design.parse_layout: start_pose and / or grasp_id, what the datagen plugin
+layouts {seed: layout} (start_design.parse_layout: start_pose, grasp_id or grasp, what the datagen plugin
 realised): the seed's plan run starts from it (entry.py --layout) and episode.json "datagen" adds the layout.
 record=False stops a seed at its first accepted check (the "episodes" are those checks, label "check": no camera
 replay, no bag): a split whose episodes are not recorded, e.g. held-out start states (datagen.plugins.automoma).

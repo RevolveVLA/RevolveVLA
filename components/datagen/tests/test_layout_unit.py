@@ -71,6 +71,9 @@ def test_entry_layout_env():
     assert json.loads(entry.layout_env(json.dumps(LAYOUT))["ROUND_LAYOUT"]) == LAYOUT
     with pytest.raises(ValueError):
         entry.layout_env('{"grasp_id": 9}')
+    assert entry.layout_env('{"grasp": {"along_m": 1.0}}', "open_fridge_door")      # a grasp by value
+    with pytest.raises(ValueError, match="0..4"):
+        entry.layout_env('{"grasp_id": 5}', "open_fridge_door")                      # the task has 5 points
 
 
 def test_entry_plan_refuses_a_bad_layout_before_any_job(capsys, tmp_path):

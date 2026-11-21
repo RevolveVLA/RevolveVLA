@@ -7,8 +7,9 @@
       fk_check.py (planner FK against the gz model). Exit 0 = planned and the FK check passed (as the
       the earlier pipeline's planner adapter), 1 = planned but the FK check failed (kept: the
       same seed plans the same), 3 = plan.py failed (retried on a resume).
-      --layout: {"start_pose": [x, y, yaw], "grasp_id": g} (either key optional; start_design.parse_layout) goes to
-      plan.py as ROUND_LAYOUT: every attempt starts at that pose (object frame) plus its own jitter. A bad one: exit 2.
+      --layout: {"start_pose": [x, y, yaw], "grasp_id": g | "grasp": {"along_m": v}} (keys optional; start_design.parse_layout)
+      goes to plan.py as ROUND_LAYOUT: every attempt starts at that pose (object frame) plus its own jitter and plans
+      that grasp (a defined point or a value in the task's range). A bad one: exit 2.
 
 The replay, acceptance and recording of the planned attempts run in the simulator component; the host
 composition is components/datagen/generate.py.
@@ -57,18 +58,20 @@ def call(cmd, env):
         kill(signal.SIGKILL)
 
 
-def layout_env(layout):
-    """{"ROUND_LAYOUT": layout} (the --layout JSON text, checked) or {} without one. ValueError for a bad layout."""
+def layout_env(layout, task=None):
+    """{"ROUND_LAYOUT": layout} (the --layout JSON text, checked against the task's grasp count) or {} without one.
+    ValueError for a bad layout."""
     if layout is None:
         return {}
     import start_design                       # on PYTHONPATH (plugins/automoma): imported only for a layout
-    start_design.layout_from_env({"ROUND_LAYOUT": layout})
+    grasps = len(specs_bridge.task_spec(task).task.grasp.points) if task else start_design.GRASPS
+    start_design.layout_from_env({"ROUND_LAYOUT": layout}, grasps)
     return {"ROUND_LAYOUT": layout}
 
 
 def plan(a):
     try:
-        layout = layout_env(a.layout)
+        layout = layout_env(a.layout, a.task)
     except ValueError as e:
         print(e)
         return 2                      # not 1 (a kept FK failure): nothing planned
@@ -110,7 +113,7 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--attempts", type=int, default=None, help="default: generator.yaml attempts")
     p.add_argument("--centre-seed", type=int, default=None, help="starts block centre seed (default: --seed)")
-    p.add_argument("--layout", default=None, help='JSON {"start_pose": [x, y, yaw], "grasp_id": g}: plan from it')
+    p.add_argument("--layout", default=None, help='JSON {"start_pose": [x, y, yaw], "grasp_id": g | "grasp": {"along_m": v}}: plan from it')
     a = ap.parse_args(argv)
     return {"plan": plan}[a.cmd](a)
 

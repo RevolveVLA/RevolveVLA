@@ -10,8 +10,9 @@ Adding a stream (lighting, object pose, ...) = one new module here, no core edit
 
     @register("randomiser", "lighting")        # the name a spec uses: randomisers: {lighting: {lux: [300, 800]}}
     class Lighting(Randomiser):
-        def limits(self):                      # {"<name>.<dim>": Range(lo, hi) | Choices((...))}: the widest each dim
+        def limits(self, spec):                # {"<name>.<dim>": Range(lo, hi) | Choices((...))}: the widest each dim
             return {"lighting.lux": Range(100.0, 1000.0)}   # may take; spec validation rejects anything outside
+                                                   # (spec: the DatagenSpec: limits may depend on its task and robot)
 
         def realise(self, values, context):    # values: {dim: v} (plain dim names, `Config.of("lighting")`)
             return {"intensity": values["lux"] / 1000.0}    # -> what the generator applies; JSON-friendly, torch-free

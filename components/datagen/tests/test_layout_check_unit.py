@@ -7,8 +7,8 @@ import numpy as np
 import pytest
 
 import layout_check as L
+import specs_bridge
 import start_design as S
-from datagen.plugins.randomisers.robot_base import box_centre_obj
 
 WORLD = """<?xml version="1.0"?>
 <sdf version="1.9"><world name="w">
@@ -91,5 +91,5 @@ def test_real_fridge_scene():
     assert c({}) is None
     assert c({**at(-0.17, 0.17, 27, c.box_centre), "grasp_id": 0}) is None
     assert c(at(-0.6, box=c.box_centre)).startswith("collision: chassis")     # pushed into the fridge
-    assert box_centre_obj("mobile_panda")["open_fridge_door"] == c.box_centre
+    assert tuple(specs_bridge.starts("open_fridge_door", "mobile_panda").centre) == c.box_centre
     assert c.size[2] == pytest.approx(0.595) and c.z == pytest.approx(0.3025)

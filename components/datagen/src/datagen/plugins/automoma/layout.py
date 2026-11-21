@@ -18,10 +18,10 @@ class Realiser:
 
     @property
     def context(self) -> dict:
-        """The generator's data for Randomiser.realise: the task's start-box centre (read from the simulator sources)."""
+        """The generator's data for Randomiser.realise: the task's start-box centre (task.yaml starts)."""
         if self._context is None:
-            from datagen.plugins.randomisers.robot_base import box_centre_obj
-            self._context = {"box_centre": box_centre_obj(self.spec.robot)[self.spec.task]}
+            from datagen.plugins.randomisers.robot_base import box_design
+            self._context = {"box_centre": tuple(box_design(self.spec.task, self.spec.robot).centre)}
         return self._context
 
     def realise(self, config: Config) -> dict:

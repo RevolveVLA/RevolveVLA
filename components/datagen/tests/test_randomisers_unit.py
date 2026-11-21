@@ -18,13 +18,16 @@ BOX = (0.95, -0.05)
 
 
 def raw(randomisers):
-    return {"task": "t", "robot": "mobile_panda", "out": "unused", "generator": {"plugin": "fake_datagen"},
-            "randomisers": randomisers,
+    return {"task": "open_fridge_door", "robot": "mobile_panda", "out": "unused",
+            "generator": {"plugin": "fake_datagen"}, "randomisers": randomisers,
             "splits": {"train": {"target": 4, "sampler": {"strategy": "stratified"}, "pool": {"initial": [0, 9]}}}}
 
 
-def limits(name):
-    return registry.create("randomiser", name).limits()
+SPEC = S.parse(raw({}))
+
+
+def limits(name, spec=SPEC):
+    return registry.create("randomiser", name).limits(spec)
 
 
 def test_robot_base_limits():
@@ -36,25 +39,24 @@ def test_grasp_limits():
     assert limits("grasp") == {"grasp.id": S.Choices((0, 1, 2, 3, 4))}
 
 
-def test_hard_limits_match_what_the_planner_realises():
-    """generator.yaml starts (box and yaw window) shrunk by the attempt jitter; the planner's grasp count."""
+def test_hard_limits_come_from_the_tasks_start_design():
+    """task.yaml starts (box and yaw window) shrunk by the attempt jitter; the planner's grasp count."""
     lim = limits("robot_base")
-    for task in specs_bridge.generator()["tasks"]:
-        s = specs_bridge.round_blocks(task, "mobile_panda")["starts"]
-        assert math.isclose(s["box_m"] / 2 - s["offset_m"], lim["robot_base.x_m"].hi), task
-        assert math.isclose(s["yaw_half_deg"] - s["offset_deg"], lim["robot_base.yaw_deg"].hi), task
-        assert task in RB.box_centre_obj("mobile_panda")
+    s = specs_bridge.starts("open_fridge_door", "mobile_panda").block()
+    assert math.isclose(s["box_m"] / 2 - s["offset_m"], lim["robot_base.x_m"].hi)
+    assert math.isclose(s["yaw_half_deg"] - s["offset_deg"], lim["robot_base.yaw_deg"].hi)
+    drawer = S.parse(dict(raw({}), task="open_drawer"))
+    assert limits("robot_base", drawer) == limits("robot_base")
     assert limits("grasp")["grasp.id"].values == tuple(range(start_design.GRASPS))
 
 
-def test_box_centre_is_read_without_importing_the_planner(tmp_path):
-    assert RB.box_centre_obj("mobile_panda")["open_fridge_door"] == BOX
-    (tmp_path / "bot").mkdir()
-    (tmp_path / "bot" / "planner.py").write_text("import not_installed_anywhere\nBOX_CENTRE_OBJ = {'t': (1.0, 2.0)}\n")
-    assert RB.box_centre_obj("bot", tmp_path) == {"t": (1.0, 2.0)}
-    (tmp_path / "bot" / "planner.py").write_text("X = 1\n")
-    with pytest.raises(KeyError, match="BOX_CENTRE_OBJ"):
-        RB.box_centre_obj("bot", tmp_path)
+@pytest.mark.parametrize("task, robot, needle", [
+    ("open_drawer", "mobile_so101", "no start design"),
+    ("open_drawer", "mobile_so101_xl", "a drive start design"),
+])
+def test_robot_base_needs_a_box_start_design(task, robot, needle):
+    with pytest.raises(RB.RobotBaseError, match=needle):
+        limits("robot_base", S.parse(dict(raw({}), task=task, robot=robot)))
 
 
 def test_robot_base_realises_a_start_pose_from_the_box_centre():
@@ -89,12 +91,12 @@ def test_config_of_splits_values_by_randomiser():
 def test_spec_outside_the_hard_limits_is_rejected(randomisers, needle):
     s = S.parse(raw(randomisers))
     with pytest.raises(S.SpecError, match=needle):
-        S.check_limits(s, {k: d for n in s.randomisers for k, d in limits(n).items()})
+        S.check_limits(s, {k: d for n in s.randomisers for k, d in limits(n, s).items()})
 
 
 def test_spec_at_the_hard_limits_is_accepted():
     s = S.parse(raw({"robot_base": {"x_m": [-0.17, 0.17], "yaw_deg": [-27, 27]}, "grasp": {"id": {"choices": [0, 4]}}}))
-    S.check_limits(s, {k: d for n in s.randomisers for k, d in limits(n).items()})
+    S.check_limits(s, {k: d for n in s.randomisers for k, d in limits(n, s).items()})
 
 
 def test_sampling_and_realising_are_torch_free():
@@ -108,7 +110,7 @@ def test_a_new_randomiser_needs_no_core_edit(tmp_path):
     """Defined and registered here only; the spec, the pipeline's limit check and the sampler pick it up as is."""
     @registry.register("randomiser", "lighting")
     class Lighting(Randomiser):
-        def limits(self):
+        def limits(self, spec):
             return {"lighting.lux": S.Range(100.0, 1000.0)}
 
         def realise(self, values, context):

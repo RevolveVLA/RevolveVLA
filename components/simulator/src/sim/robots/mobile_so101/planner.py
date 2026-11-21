@@ -4,8 +4,6 @@ spheres and the kinematics cfg; robots/base.py Robot.planner loads this module).
   chain(robot, rd)     so101_base_link -> the 5 arm joints and the jaw (so101_new_calib.urdf origins and axes,
                        the gz model's limits) -> so101_tcp on gripper_link (TCP_IN_GRIPPER), all x robot.yaml scale
   self_collision(robot, rd, links)   links up to two joints apart along the chain ignore each other
-  BOX_CENTRE_OBJ       start design: none (generator.yaml drops the starts block for this robot: a start IK
-                       with the base locked has no solution for a 5-DoF arm off its plane)
 
 Collision spheres: cuRobo's own fit (Cuboid.get_bounding_spheres) of the gz model's collision boxes
 (model.py COLLISIONS, read from the generated model.sdf, robot.yaml gz_sdf), except the fixed jaw's pads: the
@@ -22,7 +20,6 @@ import gen_assets as ga
 import specs_bridge as plugins
 from robots.mobile_so101.robot import ARM, ARM_LINKS, JAW, JAW_LINK, RENAME, load_urdf
 
-BOX_CENTRE_OBJ = {}
 SKIP_BOXES = ("gripper_link_pad",)     # fixed jaw pads (see the module doc)
 SPHERE_PITCH = 0.02                    # one fitted sphere per this much (x scale) of a box's longest side [m]
 MAX_SPHERES_PER_BOX = 4

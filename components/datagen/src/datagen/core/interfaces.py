@@ -72,8 +72,8 @@ class Randomiser(ABC):
     """One stream of variation (robot_base, grasp, ...): its hard limits and how a generator realises its values."""
 
     @abstractmethod
-    def limits(self) -> Mapping[str, Dim]:
-        """{`<randomiser>.<dim>`: Dim}: the widest range each dim may take."""
+    def limits(self, spec: DatagenSpec) -> Mapping[str, Dim]:
+        """{`<randomiser>.<dim>`: Dim}: the widest range each dim may take for the spec's task and robot."""
 
     @abstractmethod
     def realise(self, values: Mapping[str, Any], context: Mapping[str, Any]) -> Mapping[str, Any]:

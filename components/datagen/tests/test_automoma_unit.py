@@ -9,16 +9,16 @@ import numpy as np
 import pytest
 
 import layout_check
+import specs_bridge
 from datagen.core import registry, spec as S
 from datagen.core.interfaces import Config, Generator, Validator
 from datagen.core.pipeline import Pipeline, PluginSet
 from datagen.plugins import generate_module
 from datagen.plugins.automoma import adapter, clearance
 from datagen.plugins.automoma.layout import Realiser
-from datagen.plugins.randomisers.robot_base import box_centre_obj
 from test_generate_unit import Stub
 
-BOX = box_centre_obj("mobile_panda")["open_fridge_door"]
+BOX = tuple(specs_bridge.starts("open_fridge_door", "mobile_panda").centre)
 
 
 def make_spec(randomisers=None, generator=None):

@@ -26,7 +26,7 @@ def called(kind, n):
 
 @register("randomiser", "fake_datagen")
 class Knob(Randomiser):
-    def limits(self):
+    def limits(self, spec):
         return {"fake_datagen.x": Range(-1.0, 1.0), "fake_datagen.y": Range(0.0, 10.0)}
 
     def realise(self, values, context):

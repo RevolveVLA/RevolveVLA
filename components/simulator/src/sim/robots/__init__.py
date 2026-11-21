@@ -5,7 +5,7 @@ spec name of specs/robots/<robot>/robot.yaml; several specs may share one), each
   robot.py     make(spec) -> the Robot (kinematics, IK, gravity, arm and gripper laws)
   model.py     main(robot, description, out_dir) -> the gz model (model.sdf) from robot.yaml `description`
   scripted.py  smoke_plan, SCENARIOS (skill tests), EPISODES (scripted episodes) for the kitchen
-  planner.py   chain, self_collision, BOX_CENTRE_OBJ: the cuRobo planner robot (datagen's gen_assets; cuRobo only)
+  planner.py   chain, self_collision: the cuRobo planner robot (datagen's gen_assets; cuRobo only)
 
 load(name) builds a robot from its spec (cached); current() is the robot named by $REVOLVE_ROBOT, which the
 CLI sets for every job and gz run from the experiment's `robot:`. There is no default robot.

@@ -6,7 +6,6 @@ spheres and the kinematics cfg; robots/base.py Robot.planner loads this module).
                                  both fingers (as robots/mobile_panda/model.py's finger links); cuRobo's
                                  franka.yml spheres per link
   self_collision(robot, rd, links)   franka.yml's self-collision ignore pairs and buffers
-  BOX_CENTRE_OBJ                 start design (start_design.py): box centre per task in the object frame
 """
 import math
 
@@ -15,11 +14,6 @@ import yaml
 import gen_assets as ga
 import specs_bridge as plugins
 from robots.mobile_panda.robot import HAND_YAW
-
-# Box centre [m] per task in the object frame, in front of the handle (a starts block needs one). A D1 plan
-# smoke (seed 60, 50 attempts) found no start IK for drawer bases under x 0.85 m (the counter) and few fridge
-# trajectories from y under -0.28 m (the handle side of the door).
-BOX_CENTRE_OBJ = {"open_fridge_door": (0.95, -0.05), "open_drawer": (0.98, 0.0)}
 
 ARM_LINKS = [f"panda_link{n}" for n in range(8)] + ["panda_hand", "panda_leftfinger", "panda_rightfinger"]
 DROP = "attached_object"

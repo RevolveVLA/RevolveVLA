@@ -8,7 +8,7 @@ GRASPS = 5
 
 @register("randomiser", "grasp")
 class Grasp(Randomiser):
-    def limits(self):
+    def limits(self, spec):
         return {"grasp.id": Choices(tuple(range(GRASPS)))}
 
     def realise(self, values, context):

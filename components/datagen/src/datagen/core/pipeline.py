@@ -38,7 +38,7 @@ class PluginSet:
 class Pipeline:
     def __init__(self, spec: DatagenSpec, plugins: PluginSet, out: Path, dry_run: bool = False,
                  log: Callable[[str], None] = print):
-        check_limits(spec, {k: d for r in plugins.randomisers.values() for k, d in r.limits().items()})
+        check_limits(spec, {k: d for r in plugins.randomisers.values() for k, d in r.limits(spec).items()})
         self.spec, self.plugins, self.out, self.dry_run, self.log = spec, plugins, out, dry_run, log
         self.manifest = mf.Manifest.open(out / "manifest.json", spec, persist=not dry_run)
 

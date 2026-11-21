@@ -6,11 +6,12 @@ import pytest
 
 import entry
 import start_design as S
-from datagen.plugins.randomisers.robot_base import RobotBase, box_centre_obj
+import specs_bridge
+from datagen.plugins.randomisers.robot_base import RobotBase
 
 SPEC = S.parse_starts(dict(clusters=10, per_cluster=10, box_m=0.40, yaw_half_deg=30, offset_m=0.03, offset_deg=3,
                            nominal_arm="ready"))
-BOX = box_centre_obj("mobile_panda")["open_fridge_door"]
+BOX = tuple(specs_bridge.starts("open_fridge_door", "mobile_panda").centre)
 POSE = (BOX[0] + 0.1, BOX[1] - 0.05, S.FACING_YAW_OBJ + math.radians(12.0))
 LAYOUT = {"start_pose": list(POSE), "grasp_id": 3}
 

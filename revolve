@@ -13,6 +13,7 @@
   ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
   ./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
+  ./revolve datagen --list-randomisers --task T --robot R [--variant V]   what a task + robot can vary (dims, ranges)
   ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
 
 Python: the repo's .venv (git-ignored; see common/README.md), with the host's PYTHONPATH (ROS) dropped.
@@ -107,14 +108,16 @@ def cmd_test(a):
     return subprocess.call([sys.executable, "-m", "pytest", "-q", *map(str, dirs), *extra], cwd=REPO)
 
 
-def cmd_datagen(a):
+def cmd_datagen(args):
     sys.path[:0] = [str(REPO / "components" / "datagen" / "src")]
     from datagen import cli
-    return cli.main(a.datagen_args, root=REPO)
+    return cli.main(args, root=REPO)
 
 
 def main():
     reexec_in_venv()
+    if sys.argv[1:2] == ["datagen"]:             # its own parser: argparse's REMAINDER rejects a leading --option
+        return cmd_datagen(sys.argv[2:])
     ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -129,7 +132,7 @@ def main():
     sub.choices["resume"].add_argument("--accept-spec-change", action="store_true",
                                        help="the yaml changed since the run started: continue with the new one")
     sub.add_parser("datagen").add_argument("datagen_args", nargs=argparse.REMAINDER,
-                                           help="<spec.yaml> [step] [--split S] [--dry-run]")
+                                           help="<spec.yaml> [step] [--split S] [--dry-run] | --list-randomisers --task T --robot R")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="+")
     a = ap.parse_args()
@@ -137,8 +140,6 @@ def main():
         return cmd_validate(a)
     if a.cmd == "test":
         return cmd_test(a)
-    if a.cmd == "datagen":
-        return cmd_datagen(a)
     if a.cmd == "build":
         return cmd_build(a)
     sys.path[:0] = [str(REPO / "components" / "manager" / "src")]

@@ -35,14 +35,33 @@ def build_plugins(spec: DatagenSpec, steps) -> PluginSet:
     return p
 
 
+def list_randomisers(a, ap) -> int:
+    from .plugins.randomisers import listing
+    if not (a.task and a.robot):
+        ap.error("--list-randomisers needs --task and --robot")
+    try:
+        print(listing.render(a.task, a.robot, a.variant))
+    except DatagenError as e:
+        print(f"datagen: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv=None, root: Path | None = None) -> int:
     ap = argparse.ArgumentParser(prog="revolve datagen", description=__doc__.split("\n\n")[0])
-    ap.add_argument("spec")
+    ap.add_argument("spec", nargs="?")
     ap.add_argument("step", nargs="?", default="all", choices=(*STEPS, "all"))
     ap.add_argument("--split", action="append", help="only this split (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="say what would run; no plugin call, nothing written")
+    ap.add_argument("--list-randomisers", action="store_true",
+                    help="print the randomisers usable for --task and --robot (no spec), their dims and ranges")
+    ap.add_argument("--task"), ap.add_argument("--robot"), ap.add_argument("--variant", help="the generator's variant")
     a = ap.parse_args(argv)
     sys.path[:0] = [p for p in os.environ.get("DATAGEN_PLUGIN_PATH", "").split(os.pathsep) if p]
+    if a.list_randomisers:
+        return list_randomisers(a, ap)
+    if not a.spec:
+        ap.error("a spec is required (or --list-randomisers --task T --robot R)")
     steps = STEPS if a.step == "all" else (a.step,)
     try:
         spec = load(a.spec)

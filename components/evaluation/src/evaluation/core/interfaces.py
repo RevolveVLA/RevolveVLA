@@ -17,9 +17,10 @@ from .spec import RunnerSpec, SetSpec
 
 @dataclass(frozen=True)
 class ResolvedCkpt:
-    """A checkpoint ready to serve: a dir under runs/, where it came from and what was changed to serve it."""
+    """A checkpoint ready to serve: a dir under runs/, where it came from (source, repo, commit, hashes, ...) and what
+    was changed to serve it."""
     path: str
-    origin: str
+    origin: Mapping[str, Any] | str
     changes: Mapping[str, Any] | None = None
 
 
@@ -44,6 +45,8 @@ class Verdict:
 
 
 class CkptSource(ABC):
+    relabel: bool = True            # False: the dir is served as it is (the CLI wraps the others in the `relabel` plugin)
+
     @abstractmethod
     def resolve(self, out: Path) -> ResolvedCkpt:
         """Make the checkpoint available (download, relabel, ...) under `out` / runs/ and say where it is."""

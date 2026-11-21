@@ -21,6 +21,8 @@ def logged(line):
 
 @REGISTRY.register("ckpt", "fake_eval")
 class FakeCkpt(CkptSource):
+    relabel = False
+
     def __init__(self, spec, params):
         self.params = params
 

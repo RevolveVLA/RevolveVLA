@@ -31,6 +31,8 @@ def build_plugins(spec: EvalSpec, stages) -> PluginSet:
         p.judge = REGISTRY.create("judge", spec.judge.plugin, spec, spec.judge.params)
         if spec.ckpt:
             p.ckpt = REGISTRY.create("ckpt", spec.ckpt.source, spec, spec.ckpt.params)
+            if p.ckpt.relabel:                       # whatever the source, serve it under the robot contract's cameras
+                p.ckpt = REGISTRY.create("ckpt", "relabel", spec, {"of": p.ckpt})
     return p
 
 

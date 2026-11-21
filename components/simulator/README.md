@@ -34,6 +34,13 @@ sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
 - Commands: `/omni_wheel_drive_controller/cmd_vel` (geometry_msgs/TwistStamped, robot frame; ramp changes over
   ~0.5 s, the controller has no limiter), FollowJointTrajectory on `/<arm controller>/follow_joint_trajectory`
   and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller).
+- MoveIt 2: a robot's MoveIt config lives with its description in `specs/robots/<r>/moveit/` (mobile_panda: the
+  moveit_resources Panda SRDF groups + the omni base's disabled collisions, no virtual joint so MoveIt plans in
+  the base frame; moveit_controllers.yaml: arm and hand as FollowJointTrajectory; moveit_py.yaml: the planning
+  scene monitor, the OMPL and Pilz pipelines, named plan request parameters). `revolve_sim.moveit.moveit_params(repo,
+  robot)` builds the parameters (kinematics, joint limits, pipeline configs from moveit_resources_panda_moveit_config
+  unchanged) for `MoveItPy(config_dict=...)` or a move_group node. Nothing in the sim launch uses MoveIt: a client
+  (the T4 test) runs it next to the sim.
 - Contact sensors on every robot link with a collision except the omni rollers (the robot xacro; gz link and
   collision names after sdformat's fixed-joint lumping). robot_state_publisher publishes the moving links' tf at
   100 Hz.
@@ -48,7 +55,10 @@ base pose x robot_state_publisher tf; scene links = the PosePublishers; scene jo
 contacts = the robot's contact sensors (depth = MuJoCo penetration; the ground is never a contact partner, but
 counts for penetration); commands = non-finite messages on the controllers' command topics (`<omni>/cmd_vel`,
 `<jtc>/joint_trajectory`; FollowJointTrajectory goals are not seen); gz log = `[error]` / `[critical]` lines of
-the gz server's `~/.gz/sim/log/<time>/server_console.log`. Distance to a collision is to its box / sphere /
+the gz server's `~/.gz/sim/log/<time>/server_console.log`. Each tick takes the poses and contacts at one common
+stamp (the oldest of the newest gz pose and tf data; tf interpolated, gz poses from a 2 s history, contacts within
+50 ms before it): under load the node's callback queues fall behind by tens of ms, and mixing inputs of different
+ages showed slip, speed and lost contacts that were only these offsets. Distance to a collision is to its box / sphere /
 cylinder / capsule (a mesh: to its origin). An episode counts only the non-finite commands and gz log lines since its
 start.
 - Episodes: the first starts once every input is live (autostart), or on `/evaluator/start` (std_srvs/Trigger)
@@ -75,8 +85,9 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
 ```
 ./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control,
                                       # revolve_sim
-./revolve test simulator              # T1 bring-up, T2 control, T3 evaluator on a launched sim + the evaluator
-                                      # unit tests (ros/revolve_sim/test)
+./revolve test simulator              # T1 bring-up, T2 control, T3 evaluator, T4 open_fridge_door (MoveIt) on
+                                      # a launched sim + the evaluator unit tests (ros/revolve_sim/test);
+                                      # -- -m "not slow" skips T4
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
   moveit_py + the moveit_resources Panda, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
@@ -94,6 +105,6 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
   through the repo mount; never copied into git or the image. They are made once by `./revolve assets`
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
-  check script in it (`check_bringup.py`, `check_control.py`, `check_evaluator.py`, rclpy; each prints one RESULT
-  JSON line); `test_episode_unit.py` needs no sim. Logs:
+  check script in it (`check_bringup.py`, `check_control.py`, `check_evaluator.py`, `check_open_door.py`, rclpy;
+  each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. Logs:
   `runs/test_simulator/<time>/` or `$REVOLVE_TEST_LOGS`.

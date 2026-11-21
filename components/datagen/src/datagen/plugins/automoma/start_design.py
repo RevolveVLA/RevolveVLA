@@ -35,7 +35,7 @@ from dataclasses import dataclass
 import numpy as np
 
 FACING_YAW_OBJ = math.pi
-# The box centre per task and the nominal arm are the robot's: robots/<robot>/planner.py BOX_CENTRE_OBJ and
+# The box centre per task and the nominal arm are the robot's: task.yaml starts.<robot>.centre and
 # robot.yaml arm.ready (plan.py passes them in).
 GRASPS = 5
 

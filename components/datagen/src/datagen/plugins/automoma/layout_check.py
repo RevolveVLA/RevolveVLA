@@ -119,14 +119,16 @@ class Clearance:
 
 
 def clearance_reject(task, robot, starts=None):
-    """The Clearance of a task (specs/tasks/<task>) for a robot: its scene, object pose, the robot's start-box
-    centre (robots/<implementation>/planner.py), chassis and mount, replay.spawn_clearance_min_m and its
-    starts block (generator.yaml unless given)."""
-    from datagen.plugins.randomisers.robot_base import box_centre_obj
+    """The Clearance of a task (specs/tasks/<task>) for a robot: its scene, object pose, chassis and mount,
+    replay.spawn_clearance_min_m and the robot's box start design (centre, jitter; task.yaml starts.<robot> unless
+    given)."""
     r = specs.load(specs_bridge.SPECS / "tasks" / task / "task.yaml", robot)
-    rb, sc, st = r.robot, r.scene, starts or specs_bridge.round_blocks(task, robot)["starts"]
+    rb, sc, st = r.robot, r.scene, starts or specs_bridge.starts(task, robot)
+    if st is None or st.method != "box":
+        raise ValueError(f"clearance: task {task} has no `method: box` start design for robot {robot} "
+                         "(task.yaml starts)")
     boxes = scene_boxes(specs_bridge.path(sc.world), lambda uri: specs_bridge.model_dir(sc.assets, uri),
                         sc.skip, sc.detailed, r.task.object.name)
-    return Clearance(boxes, list(r.task.object.world_pose), box_centre_obj(rb.implementation)[task],
-                     r.task.replay.spawn_clearance_min_m, st["offset_m"], st["offset_deg"],
+    return Clearance(boxes, list(r.task.object.world_pose), tuple(st.centre),
+                     r.task.replay.spawn_clearance_min_m, st.offset_m, st.offset_deg,
                      (*rb.chassis.size_xy, rb.mount.xyz[2]))

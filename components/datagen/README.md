@@ -38,8 +38,9 @@ live in `src/datagen/plugins/automoma/`, flat modules on PYTHONPATH in the image
 ## Inputs
 specs/tasks/<t>/task.yaml (-> robot, scene) through `src/datagen/specs_bridge.py` (the old plugin dicts the
 planner reads). Generator settings: `src/datagen/generator.yaml` (the old generator plugin.yaml: attempts 50,
-cuRobo settings) + per task the v2 rounds' `starts` (clustered starts; plan job ROUND_STARTS) and
-`timing`/`pull` blocks (replay ROUND_TIMING / ROUND_PULL). The starts' centre seed is the seed itself.
+cuRobo settings) + per task the `timing`/`pull` blocks (replay ROUND_TIMING / ROUND_PULL). The robot's start design is the
+task's `starts:` block (task.yaml, per robot: method box / reach / drive, centre, ranges; plan job ROUND_STARTS),
+read through `specs_bridge.starts(task, robot, variant)`. The starts' centre seed is the seed itself.
 
 ## Outputs (`<out>/`)
 `manifest.json` (seeds -> plan, checks, episodes, state done|short|failed|error; `episodes` = accepted names;

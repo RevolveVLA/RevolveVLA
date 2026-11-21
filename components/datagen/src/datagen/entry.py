@@ -3,7 +3,7 @@
 
   entry.py plan --task T --seed S --out D [--attempts N] [--centre-seed C] [--layout JSON]
       one AutoMoMa plan run into D (removed first): the robot's gz models (the simulator's generator,
-      runs/models, shared), plan.py with the task's starts block (generator.yaml -> ROUND_STARTS), then
+      runs/models, shared), plan.py with the robot's starts block (task.yaml -> ROUND_STARTS), then
       fk_check.py (planner FK against the gz model). Exit 0 = planned and the FK check passed (as the
       the earlier pipeline's planner adapter), 1 = planned but the FK check failed (kept: the
       same seed plans the same), 3 = plan.py failed (retried on a resume).
@@ -84,8 +84,9 @@ def plan(a):
     gen = specs_bridge.load("generator", "automoma")
     env = dict(os.environ, SEED=str(a.seed), ATTEMPTS=str(a.attempts or gen["attempts"]),
                CENTRE_SEED=str(a.seed if a.centre_seed is None else a.centre_seed))
-    env.update({f"ROUND_{k.upper()}": json.dumps(v) for k, v in specs_bridge.round_blocks(a.task).items()
-                if k == "starts"})
+    design = specs_bridge.starts(a.task)               # the task.yaml block of $REVOLVE_ROBOT (+ the datagen variant)
+    if design is not None:
+        env["ROUND_STARTS"] = json.dumps(design.block())
     env.update(layout)
     progress(stage="plan", attempts=int(env["ATTEMPTS"]))
     rc = call([sys.executable, str(AUTOMOMA / "plan.py"), str(out), f"task={a.task}"], env)

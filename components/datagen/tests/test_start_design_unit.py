@@ -25,13 +25,12 @@ def test_parse():
         with pytest.raises(ValueError):
             S.parse_starts(bad)
     # a clustered block (no mode) parses as before
-    assert isinstance(S.parse_starts(specs_bridge.generator()["tasks"]["open_drawer"]["starts"]), S.StartsSpec)
+    assert isinstance(S.parse_starts(specs_bridge.starts("open_drawer", "mobile_panda").block()), S.StartsSpec)
 
 
 def test_xl_block_is_data():
-    blocks = specs_bridge.round_blocks("open_drawer", "mobile_so101_xl")
-    assert S.parse_starts(blocks["starts"]) == S.parse_starts(DRIVE)
-    assert "starts" not in specs_bridge.round_blocks("open_drawer", "mobile_so101")
+    assert S.parse_starts(specs_bridge.starts("open_drawer", "mobile_so101_xl").block()) == S.parse_starts(DRIVE)
+    assert specs_bridge.starts("open_drawer", "mobile_so101") is None
 
 
 def test_parse_drive():
@@ -59,18 +58,17 @@ def test_optional_bearing_and_sequence():
 
 
 def test_variant_blocks_are_opt_in(monkeypatch):
-    """A datagen variant (generator.yaml tasks.<task>.variants) applies only when named; unknown ones fail."""
+    """A datagen variant (task.yaml starts.<robot>.variants) applies only when named; unknown ones fail."""
     monkeypatch.delenv(specs.VARIANT_ENV, raising=False)
-    default = specs_bridge.round_blocks("open_fridge_door", "mobile_panda")
-    assert isinstance(S.parse_starts(default["starts"]), S.StartsSpec)
-    seq = S.parse_starts(specs_bridge.round_blocks("open_fridge_door", "mobile_panda", "drive_seq")["starts"])
+    default = specs_bridge.starts("open_fridge_door", "mobile_panda")
+    assert isinstance(S.parse_starts(default.block()), S.StartsSpec)
+    seq = S.parse_starts(specs_bridge.starts("open_fridge_door", "mobile_panda", "drive_seq").block())
     assert isinstance(seq, S.DriveSpec) and seq.sequence == "drive_then_arm" and seq.grasp_m == (0.965, 1.085)
     monkeypatch.setenv(specs.VARIANT_ENV, "drive_seq")
-    assert specs_bridge.round_blocks("open_fridge_door", "mobile_panda")["starts"]["sequence"] == "drive_then_arm"
-    assert specs_bridge.round_blocks("open_fridge_door", "mobile_panda")["timing"] == default["timing"]
+    assert specs_bridge.starts("open_fridge_door", "mobile_panda").block()["sequence"] == "drive_then_arm"
     for task, robot in (("open_drawer", "mobile_panda"), ("open_fridge_door", "mobile_so101_xl")):
         with pytest.raises(ValueError):
-            specs_bridge.round_blocks(task, robot)
+            specs_bridge.starts(task, robot)
 
 
 def test_drive_sample_box_and_attempts():

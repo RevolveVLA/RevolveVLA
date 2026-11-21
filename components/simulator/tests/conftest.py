@@ -48,7 +48,7 @@ def so101_replay_env():
     components/datagen/generate.py docker_replay passes them to a check."""
     sys.path.append(str(REPO / "components" / "datagen" / "src" / "datagen"))
     import specs_bridge
-    blocks = specs_bridge.round_blocks("open_drawer", SO101)
+    blocks = specs_bridge.round_blocks("open_drawer")
     return {"REVOLVE_ROBOT": SO101, **{f"ROUND_{k.upper()}": json.dumps(v) for k, v in blocks.items() if k in ("timing", "pull")}}
 
 

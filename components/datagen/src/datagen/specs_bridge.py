@@ -32,8 +32,12 @@ def model_dir(dirs, uri):
 
 
 @lru_cache(maxsize=None)
+def resolved_task(name, robot) -> specs.Resolved:
+    return specs.load(SPECS / "tasks" / name / "task.yaml", robot)
+
+
 def task_spec(name) -> specs.Resolved:
-    return specs.load(SPECS / "tasks" / name / "task.yaml")
+    return resolved_task(name, os.environ.get(specs.ROBOT_ENV))
 
 
 @lru_cache(maxsize=None)
@@ -41,28 +45,20 @@ def generator():
     return yaml.safe_load((HERE / "generator.yaml").read_text())
 
 
-def round_blocks(task, robot=None, variant=None):
-    """The generator's per-task round blocks (starts, timing, pull) -> {KEY: block} for ROUND_<KEY> env, with
-    the task's `robots.<robot>` blocks over them (null drops a block), then those of `variants.<variant>.robots.
-    <robot>`; robot: default $REVOLVE_ROBOT, variant: default $REVOLVE_DATAGEN_VARIANT (unset: none). A variant
-    the task does not define for the robot is an error."""
+def starts(task, robot=None, variant=None):
+    """THE start design of a task for a robot (specs/tasks/<task>/task.yaml `starts:`): a specs.BoxStarts /
+    ReachStarts / DriveStarts (.method, .block() = the planner's ROUND_STARTS, .centre and .base_limits() for box), or
+    None: no start design (the robot is not in the block). robot: default $REVOLVE_ROBOT, variant: default
+    $REVOLVE_DATAGEN_VARIANT (unset: the block itself); a variant the robot's block does not define is an error."""
     robot = robot or os.environ.get(specs.ROBOT_ENV)
     variant = variant or os.environ.get(specs.VARIANT_ENV) or None
-    t = dict(generator().get("tasks", {}).get(task, {}))
-    variants = t.pop("variants", {})
-    over = [t.pop("robots", {}).get(robot, {})]
-    if variant is not None:
-        if robot not in variants.get(variant, {}).get("robots", {}):
-            raise ValueError(f"datagen variant {variant!r}: generator.yaml tasks.{task}.variants has no "
-                             f"{variant}.robots.{robot}")
-        over.append(variants[variant]["robots"][robot])
-    for o in over:
-        for k, v in o.items():
-            if v is None:
-                t.pop(k, None)
-            else:
-                t[k] = v
-    return t
+    return resolved_task(task, robot).task.starts_for(robot, variant)
+
+
+def round_blocks(task):
+    """The generator's per-task round blocks (timing, pull) -> {KEY: block} for ROUND_<KEY> env. The start blocks
+    are the task's (starts)."""
+    return dict(generator().get("tasks", {}).get(task, {}))
 
 
 def load(kind, name):

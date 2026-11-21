@@ -353,12 +353,12 @@ def record_attempt(task, seed, attempt, out, jobs=DOCKER, say=None):
 
 
 def set_variant(variant, task):
-    """$REVOLVE_DATAGEN_VARIANT = variant (the launchers pass it on to every job), checked against generator.yaml."""
+    """$REVOLVE_DATAGEN_VARIANT = variant (the launchers pass it on to every job), checked against the task's starts."""
     import os
     from revolve_common import specs
     if variant:
         os.environ[specs.VARIANT_ENV] = variant
-        specs_bridge.round_blocks(task)          # raises for a variant the task does not define for the robot
+        specs_bridge.starts(task)                # raises for a variant the task does not define for the robot
 
 
 def generate(task, seeds, out, episodes_per_seed=1, workers=2, attempts=None, jobs=DOCKER, say=None, layouts=None,
@@ -377,7 +377,7 @@ def main(argv=None):
     ap.add_argument("--episodes-per-seed", type=int, default=1)
     ap.add_argument("--workers", type=int, default=2, help="seeds at a time (= planners on the GPU at once)")
     ap.add_argument("--attempts", type=int, default=None, help="trajopt problems per plan run (generator.yaml)")
-    ap.add_argument("--variant", default=None, help="generator.yaml tasks.<task>.variants.<name> (an experiment's "
+    ap.add_argument("--variant", default=None, help="task.yaml starts.<robot>.variants.<name> (an experiment's "
                                                      "datagen.variant): sets $REVOLVE_DATAGEN_VARIANT for the jobs")
     ap.add_argument("--checks", type=int, default=1, help="camera-off replays an attempt must pass, all of them (>= 1)")
     a = ap.parse_args(argv)

@@ -459,7 +459,7 @@ def main(out, sel):
     rd, sc, task, gen = (plugins.load(k, names[k]) for k in ("robot", "scene", "task", "generator"))
     standoff = r.task.replay.standoff_m           # the replay's staging distance (a drive-in's goal)
     rb = gen_assets.gz_robot(rd)
-    arm = tuple(float(x) for x in rb.ready)      # the starts' nominal arm (generator starts nominal_arm: ready)
+    arm = tuple(float(x) for x in rb.ready)      # the starts' nominal arm (task.yaml starts nominal_arm: ready)
     attempts = int(os.environ.get("ATTEMPTS", gen["attempts"]))
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
@@ -480,10 +480,11 @@ def main(out, sel):
         along, = (k for k in "xyz" if k in task["grasp"])
         task["grasp"] = {**task["grasp"], along: [sample.grasp]}
     elif spec is not None:
-        if task["name"] not in rb.planner.BOX_CENTRE_OBJ:
-            raise SystemExit(f"starts: no box centre for task {task['name']} in robots/{rb.implementation}/planner.py "
-                             "BOX_CENTRE_OBJ (or drop the starts block for this robot in generator.yaml)")
-        box = rb.planner.BOX_CENTRE_OBJ[task["name"]]
+        design = plugins.starts(task["name"])          # the task.yaml block ROUND_STARTS was made from
+        if design is None or design.method != "box":
+            raise SystemExit(f"starts: ROUND_STARTS is a clustered block but task {task['name']} has no `method: box` "
+                             f"start design for robot {r.robot.name} (task.yaml starts)")
+        box = tuple(design.centre)
         centre_seed = round_first_seed(out, seed)
         request = start_design.read_plan_request(out / start_design.REQUEST_FILE, seed, attempts, spec)
         if layout is not None:

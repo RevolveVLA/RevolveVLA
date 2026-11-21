@@ -298,7 +298,7 @@ def main():
         out['result'] = n.result
         sts = list(n.states)
     opn = [st['values'] for st in sts if st['phase'] == 'open']
-    out['open_trace'] = {'door_max': max((v.get('open.done[0]') or 0.0 for v in opn), default=None),
+    out['open_trace'] = {'joint_max': max((v.get('open.done[0]') or 0.0 for v in opn), default=None),
                          'contacts_min': min((v.get('open.while[0]') for v in opn if v.get('open.while[0]')
                                               is not None), default=None),
                          'slip_max': max((v.get('open.while[1]') or 0.0 for v in opn), default=None)}

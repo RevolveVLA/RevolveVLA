@@ -30,6 +30,7 @@ omni_wheel_drive_controller:
     robot_radius: 0.22
     wheel_radius: 0.0776   # effective rolling radius (0.08 rim minus the sphere-roller dip), calibrated
     odom_frame_id: odom
+    tf_frame_prefix: "~"   # the controller's namespace (none here): frames stay odom / base_footprint
     base_frame_id: base_footprint
     open_loop: false
     position_feedback: true

@@ -102,6 +102,8 @@ def test_train_path_is_relative_to_root_or_absolute(root):
      r"sets.h.sampler.bins.fake_datagen.nope"),
     ({"sets": {"h": {"count": 1, "pool": {"initial": [100, 101]}, "randomisers": {"fake_datagen": {"z": [0, 1]}}}}},
      r"sets.h.randomisers.fake_datagen.z: not a dim of the training spec"),
+    ({"sets": {"h": {"count": 1, "pool": {"initial": [100, 101]}, "randomisers": {"fake_datagen": {"x": [-0.1, 0.7]}}}}},
+     r"sets.h.randomisers.fake_datagen.x: Range\(lo=-0.1, hi=0.7\) is outside the training range Range\(lo=-0.5, hi=0.5\)"),
     ({"sets": {"t": {"from": "train", "count": 9}}}, r"sets.t.count: 9 > the 3 configs"),
     ({"sets": {"t": {"from": "nope", "count": 1}}}, r"sets.t.from: 'nope' is not a split"),
     ({"sets": {"t": {"from": "train", "count": 1, "pool": {"initial": [1, 2]}}}}, r"sets.t.pool: unknown key"),

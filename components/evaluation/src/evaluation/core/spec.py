@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import yaml
-from datagen.core.spec import (DatagenSpec, Dim, MinDistance, PluginRef, PoolSpec, SamplerSpec, SpecError, _dim, _fail,
-                               _int, _mapping, _num, _plugin, _sampler, _seed_range, _str)
+from datagen.core.spec import (DatagenSpec, Dim, MinDistance, PluginRef, PoolSpec, Range, SamplerSpec, SpecError, _dim,
+                               _fail, _int, _mapping, _num, _plugin, _sampler, _seed_range, _str, contains)
 from datagen.core.spec import load as load_train
 
 
@@ -127,13 +127,22 @@ def _min_distance(v, train, at) -> MinDistance:
     return MinDistance(source, value, realised)
 
 
+def _inside(dim: Dim, train: Dim) -> bool:
+    if isinstance(dim, Range):
+        return isinstance(train, Range) and train.lo <= dim.lo and dim.hi <= train.hi
+    return all(contains(train, v) for v in dim.values)
+
+
 def _randomisers(v, train, at):
     dims, rand = train.dims(), {}
     for r, sub in _mapping(v, at, free=True).items():
         for k, x in _mapping(sub, f"{at}.{r}", free=True).items():
             if f"{r}.{k}" not in dims:
                 _fail(f"{at}.{r}.{k}", f"not a dim of the training spec (known: {sorted(dims)})")
-            rand.setdefault(r, {})[k] = _dim(x, f"{at}.{r}.{k}")
+            dim = _dim(x, f"{at}.{r}.{k}")
+            if not _inside(dim, dims[f"{r}.{k}"]):
+                _fail(f"{at}.{r}.{k}", f"{dim} is outside the training range {dims[f'{r}.{k}']}")
+            rand.setdefault(r, {})[k] = dim
     return rand
 
 

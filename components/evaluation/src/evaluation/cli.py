@@ -1,13 +1,14 @@
 """`./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui|--headless]`.
 
 Resolves only the plugins the requested stages need; `--dry-run` resolves none (it prints the plan from the spec).
-Extra plugin modules are found through $EVAL_PLUGIN_PATH (os.pathsep separated). `--workers` / `--gui` override the
-spec's `run:` block. Exit code: 0 ok, 1 failed check or error, 2 invalid spec, 128 + n when stopped by signal n
+Extra plugin modules are found through $EVAL_PLUGIN_PATH (datagen's, which the sets use, through $DATAGEN_PLUGIN_PATH;
+os.pathsep separated). `--workers` / `--gui` override the spec's `run:` block. Exit code: 0 ok, 1 failed check or error, 2 invalid spec, 128 + n when stopped by signal n
 (results saved: rerun the same command to resume). Never imports rollout.py / docker: the plugins do, lazily."""
 from __future__ import annotations
 
 import argparse
 import dataclasses
+import os
 import sys
 from pathlib import Path
 
@@ -52,6 +53,7 @@ def main(argv=None, root: Path | None = None) -> int:
     gui.add_argument("--headless", action="store_true", help="no GUI (run.headless true)")
     a = ap.parse_args(argv)
     REGISTRY.extend_path()
+    sys.path[:0] = [p for p in os.environ.get("DATAGEN_PLUGIN_PATH", "").split(os.pathsep) if p]
     if a.workers is not None and a.workers < 1:
         ap.error("--workers must be >= 1")
     stages = STAGES if a.stage == "all" else (a.stage,)

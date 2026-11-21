@@ -3,7 +3,8 @@
 #   1. Gazebo Kura (+ the MuJoCo plugin) from ThirdParty/gz_kura (fetch.sh: kura.repos pins + ThirdParty/patches)
 #      into ThirdParty/gz_kura/install, ThirdParty/gz_kura mounted at /opt/gz_ws;
 #   2. ros_gz, gz_ros2_control (+ demos) and the gz_*_vendor packages (all satisfied by the Kura install, nothing
-#      vendored) from the ThirdParty submodules into ThirdParty/ros_gz_ws/install, mounted at /opt/ros_gz_ws.
+#      vendored) from the ThirdParty submodules, and revolve_sim (components/simulator/ros), into
+#      ThirdParty/ros_gz_ws/install, mounted at /opt/ros_gz_ws.
 # Both install dirs are git-ignored and mounted at the same paths at runtime (absolute install paths). build/ and
 # the ccache dirs persist, so a rebuild only compiles what changed.
 #   build.sh [--clean] [colcon args...]     --clean: remove both build/ install/ log/ first (sources kept);
@@ -50,10 +51,11 @@ echo "kura OK: $kura/install ($(du -sh "$kura/install" | cut -f1)), $(( $(date +
 # never matches, so it would build DART from source; the Kura majors match either way.
 run -e CCACHE_DIR=/opt/ros_gz_ws/.ccache -e GZ_RELAX_VERSION_MATCH=1 \
   -v "$kura/install":/opt/gz_ws/install:ro -v "$ws":/opt/ros_gz_ws -v "$repo/ThirdParty":/opt/third_party:ro \
-  -w /opt/ros_gz_ws "$IMAGE" bash -c '
+  -v "$repo/components/simulator/ros":/opt/revolve_ros:ro -w /opt/ros_gz_ws "$IMAGE" bash -c '
 set -euo pipefail
 colcon build --base-paths /opt/third_party/ros_gz /opt/third_party/gz_ros2_control /opt/third_party/gz_vendors \
-  --packages-up-to ros_gz_bridge ros_gz_sim ros_gz_image ros_gz_interfaces gz_ros2_control gz_ros2_control_demos "$@"
+  /opt/revolve_ros --packages-up-to ros_gz_bridge ros_gz_sim ros_gz_image ros_gz_interfaces gz_ros2_control \
+  gz_ros2_control_demos revolve_sim "$@"
 ccache -s | grep -E "Hits|Misses" || true
 ' build "${colcon_args[@]}"
 test -f "$ws/install/setup.bash"

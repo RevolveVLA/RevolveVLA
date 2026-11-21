@@ -1,0 +1,34 @@
+# ros_gz_bridge parameter_bridge entries (ROS topic = gz topic). sim.launch.py fills {world} (the scene name) and
+# {robot}, and repeats an entry with {camera} for each camera sensor of the robot, {contact_link} for each link
+# with a contact sensor and {model} for each articulated scene model. Camera images go through ros_gz_image.
+- gz_topic_name: /clock
+  ros_topic_name: /clock
+  gz_type_name: gz.msgs.Clock
+  ros_type_name: rosgraph_msgs/msg/Clock
+  direction: GZ_TO_ROS
+# ground truth: the robot's model pose in the world (PosePublisher), every model/link pose (SceneBroadcaster)
+- gz_topic_name: /model/{robot}/pose
+  ros_topic_name: /model/{robot}/pose
+  gz_type_name: gz.msgs.Pose_V
+  ros_type_name: tf2_msgs/msg/TFMessage
+  direction: GZ_TO_ROS
+- gz_topic_name: /world/{world}/dynamic_pose/info
+  ros_topic_name: /world/{world}/dynamic_pose/info
+  gz_type_name: gz.msgs.Pose_V
+  ros_type_name: tf2_msgs/msg/TFMessage
+  direction: GZ_TO_ROS
+- gz_topic_name: /world/{world}/model/{model}/joint_state
+  ros_topic_name: /world/{world}/model/{model}/joint_state
+  gz_type_name: gz.msgs.Model
+  ros_type_name: sensor_msgs/msg/JointState
+  direction: GZ_TO_ROS
+- gz_topic_name: /world/{world}/model/{robot}/link/{contact_link}/sensor/contact/contact
+  ros_topic_name: /world/{world}/model/{robot}/link/{contact_link}/sensor/contact/contact
+  gz_type_name: gz.msgs.Contacts
+  ros_type_name: ros_gz_interfaces/msg/Contacts
+  direction: GZ_TO_ROS
+- gz_topic_name: /{camera}/camera_info
+  ros_topic_name: /{camera}/camera_info
+  gz_type_name: gz.msgs.CameraInfo
+  ros_type_name: sensor_msgs/msg/CameraInfo
+  direction: GZ_TO_ROS

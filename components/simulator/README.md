@@ -97,8 +97,8 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
 ./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control,
                                       # revolve_sim
 ./revolve test simulator              # T1 bring-up, T2 control (every robot), MoveIt smoke (SO-101 robots), T3
-                                      # evaluator, T4 open_fridge_door (MoveIt; mobile_panda) on a launched sim + the
-                                      # evaluator unit tests
+                                      # evaluator and T4 (MoveIt) for open_fridge_door (mobile_panda) and open_drawer
+                                      # (mobile_so101_xl) on a launched sim + the evaluator unit tests
                                       # (ros/revolve_sim/test); -- -m "not slow" skips T4
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
@@ -118,9 +118,10 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
   check script in it (`check_bringup.py`, `check_control.py`, `check_moveit.py`, `check_evaluator.py`,
-  `check_open_door.py`, rclpy;
+  `check_open_door.py`, `check_open_drawer.py`, rclpy;
   each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. A module runs once per robot of its
   `ROBOTS` (T1 / T2: `robot_cases.ROBOTS`, with the per-robot T2 targets in `robot_cases.CONTROL`; the MoveIt
-  smoke: the robots and TCP pose targets of `robot_cases.MOVEIT`);
+  smoke: the robots and TCP pose targets of `robot_cases.MOVEIT`; T3 / T4: each robot's task, push and T4 script in
+  `robot_cases.TASKS`);
   `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or
   `$REVOLVE_TEST_LOGS`.

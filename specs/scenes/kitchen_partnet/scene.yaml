@@ -10,6 +10,8 @@ models:                                                # <entity>: {model, pose 
   fridge: {model: fridge, pose: [-1.5, 2.68, 0.0, -1.5707963267948966]}
   table_01: {model: table_01, pose: [1.5, -0.5, 0.002, 0.0]}
   cup: {model: cup, pose: [-1.5, 2.56, 1.1765, 0.0]}  # on the fridge's upper wire rack (its top at z 1.1745)
-# PLACEHOLDER for open_fridge_door, to be tuned with the first robot: the base about 0.85 m in front of the
-# fridge's handle (world (-1.79, 2.35, 1.02); the fridge front faces world -y), facing it; the arm `ready`.
-robot_start: {base: [-1.75, 1.5, 1.5707963267948966], arm: ready}
+# Drive-in start for open_fridge_door: the base 1.0 m in front of the fridge (its front at world y 2.35 faces -y,
+# the handle at (-1.79, 2.35, 1.02)), centred on the handle and facing it, so the approach drives ~1 m straight in;
+# the arm `folded` (tucked above the chassis) while driving. The counter's front is at x -2.23, 0.23 m from the
+# base's side. Open floor behind and to the right (+x) of the start.
+robot_start: {base: [-1.75, 1.1, 1.5707963267948966], arm: folded}

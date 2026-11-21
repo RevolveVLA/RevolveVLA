@@ -1,8 +1,8 @@
-# Matrix variant: heldout pool of 1 seed with an impossible realised min_distance 10 -> pool exhausted (baseline: ../fridge_smoke.yaml). Outputs under runs/datagen_matrix/.
+# Matrix variant: attempts 1 + a 1-seed pool whose seed's only attempt fails its replay check -> pool exhausted (baseline: ../fridge_smoke.yaml). Outputs under runs/datagen_matrix/.
 task: open_fridge_door
 robot: mobile_panda
 out: runs/datagen_matrix/v17_exhaustion
-generator: {plugin: automoma, attempts: 10, checks: 1}
+generator: {plugin: automoma, attempts: 1, checks: 1}
 recorder: {plugin: rosetta}
 converter: {plugin: rosetta, format: lerobot}
 randomisers:
@@ -16,12 +16,12 @@ splits:
     target: 1
     sampler: {strategy: random}
     pool:
-      initial: [0, 1]
+      initial: [1, 1]
     record: true
   heldout:
     target: 1
     sampler: {strategy: sobol}
     pool:
       initial: [500, 500]
-    min_distance: {from: train, value: 10, realised: true}
+    min_distance: {from: train, value: 0.1, realised: true}
     record: false

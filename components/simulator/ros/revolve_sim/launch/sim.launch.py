@@ -1,10 +1,11 @@
 # The simulator: the world generated from a scene spec, the robot from a robot spec, the upstream ros_gz /
 # gz_ros2_control layout (as in gz_ros2_control_demos): ros_gz_sim gz_sim.launch.py + robot_state_publisher +
-# ros_gz_sim create + controller spawners + ros_gz_bridge / ros_gz_image.
+# controller spawners + ros_gz_bridge / ros_gz_image, and the reset service (revolve_sim/reset.py).
 #   ros2 launch revolve_sim sim.launch.py scene:=<s> robot:=<r> [task:=<t> [autostart:=false] [run_dir:=DIR]
 #       [bag:=false]] [gui:=true] [repo:=/repo]
-# The robot starts at the scene's robot_start: the base pose through create, the arm through the ros2_control
-# initial values (xacro arg initial_positions). With a task: the evaluator (revolve_sim/evaluator.py) and a rosbag2
+# The robot starts at the scene's robot_start: its URDF is part of the world (at the base pose), so a gz world reset
+# restores it; the arm through the ros2_control initial values (xacro arg initial_positions).
+# Sim time starts at 1 s (ROS time 0 means no clock), also after a reset. With a task: the evaluator (revolve_sim/evaluator.py) and a rosbag2
 # recorder of the bridged topics (started paused; the evaluator records each episode), both into run_dir (default
 # <repo>/runs/sim/<time>_<task>). Needs revolve_common on PYTHONPATH (the repo's common/).
 import os
@@ -15,15 +16,14 @@ from pathlib import Path
 import yaml
 from launch import LaunchDescription
 from launch.actions import (DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription, OpaqueFunction,
-                            RegisterEventHandler, SetEnvironmentVariable)
-from launch.event_handlers import OnProcessExit
+                            SetEnvironmentVariable)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from revolve_common import specs
 from revolve_sim.robot import command_topics, describe, robot_dir
-from revolve_sim.world import make_world
+from revolve_sim.world import make_world, scene_path
 
 SIM_TIME = {'use_sim_time': True}
 
@@ -47,24 +47,26 @@ def bridge_config(template, world, robot, cams, contacts, models, scene_models):
 def setup(context):
     arg = lambda n: LaunchConfiguration(n).perform(context)  # noqa: E731
     repo = Path(arg('repo')).resolve()
-    world_sdf, scene, resource_paths, models = make_world(arg('scene'), repo)
+    tmp = Path(tempfile.mkdtemp(prefix='revolve_sim_'))
+    scene = specs.load(scene_path(arg('scene'), repo))
     robot, urdf, cams, contacts = describe(repo, arg('robot'), arm=scene.robot_start.arm)
+    (tmp / 'robot.urdf').write_text(urdf)
+    world_sdf, scene, resource_paths, models = make_world(arg('scene'), repo, robot=(robot.name, tmp / 'robot.urdf'))
     task = arg('task')
     if task:
         specs.resolve(repo / 'specs', task, robot=robot.name)   # the task fits this scene and robot
     controllers = robot_dir(repo, robot.name) / robot.controllers
 
-    tmp = Path(tempfile.mkdtemp(prefix='revolve_sim_'))
     (tmp / f'{scene.name}.sdf').write_text(world_sdf)
     bridge_yaml = tmp / 'bridge.yaml'
     share = Path(FindPackageShare('revolve_sim').perform(context))
     bridge_yaml.write_text(yaml.safe_dump(bridge_config(share / 'config' / 'bridge.yaml', scene.name, robot.name,
                                                         cams, contacts, models, list(scene.models))))
-    bridged = [e['ros_topic_name'] for e in yaml.safe_load(bridge_yaml.read_text())]
+    bridged = [e['ros_topic_name'] for e in yaml.safe_load(bridge_yaml.read_text()) if 'ros_topic_name' in e]
     ctrl_names = [k for k, v in yaml.safe_load(controllers.read_text())['controller_manager']['ros__parameters']
                   .items() if isinstance(v, dict) and 'type' in v]
 
-    gz_args = f'-s -r -v 3 --headless-rendering {tmp / scene.name}.sdf'
+    gz_args = f'-s -r -v 3 --headless-rendering --initial-sim-time 1 {tmp / scene.name}.sdf'
     gz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource([PathJoinSubstitution([FindPackageShare('ros_gz_sim'), 'launch',
                                                              'gz_sim.launch.py'])]),
@@ -72,10 +74,6 @@ def setup(context):
     # tf of the moving links at 100 Hz (default 20 Hz), the evaluator's rate
     rsp = Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
                parameters=[{'robot_description': urdf, 'publish_frequency': 100.0}, SIM_TIME])
-    x, y, yaw = scene.robot_start.base
-    spawn = Node(package='ros_gz_sim', executable='create', output='screen',
-                 arguments=['-world', scene.name, '-topic', 'robot_description', '-name', robot.name,
-                            '-x', str(x), '-y', str(y), '-z', '0.0', '-Y', str(yaw)])
     # one spawner for every controller in controllers.yaml; the omni controller's odom tf goes to /tf
     spawner = Node(package='controller_manager', executable='spawner', output='screen',
                    arguments=[*ctrl_names, '--param-file', str(controllers),
@@ -84,12 +82,13 @@ def setup(context):
                   parameters=[{'config_file': str(bridge_yaml)}, SIM_TIME])
     images = Node(package='ros_gz_image', executable='image_bridge', output='screen',
                   arguments=[f'/{c}/image' for c in cams], parameters=[SIM_TIME])
+    reset = Node(package='revolve_sim', executable='reset', output='screen',
+                 parameters=[{'world': scene.name}, SIM_TIME])
     actions = [
         SetEnvironmentVariable('GZ_SIM_RESOURCE_PATH', ':'.join(
             [*resource_paths, *filter(None, [os.environ.get('GZ_SIM_RESOURCE_PATH')])])),
         SetEnvironmentVariable('GZ_MUJOCO_NOSLIP_ITERATIONS', '10'),   # grasps + omni-wheel holding
-        gz, rsp, spawn, bridge, images,
-        RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[spawner])),
+        gz, rsp, spawner, bridge, images, reset,
     ]
     if task:
         run_dir = Path(arg('run_dir') or repo / 'runs' / 'sim' / f'{time.strftime("%Y%m%d_%H%M%S")}_{task}')

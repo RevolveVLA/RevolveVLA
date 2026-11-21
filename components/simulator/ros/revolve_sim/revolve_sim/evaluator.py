@@ -17,6 +17,9 @@ At the end the result (JSON) is published on ~/result (std_msgs/String, transien
 <run_dir>/episode_<n>.json; a rosbag2 recorder started paused by the launch (rosbag2_recorder) is resumed for the
 episode, then paused and split, so episode n is the bag's file n (bag/<n>_bag_<time>.mcap). ~/state (std_msgs/String JSON, 10 Hz): the sim
 time, the active phase and every condition's current value (also between episodes).
+A world reset (/simulator/reset, revolve_sim/reset.py: sim time jumps back) re-arms it: a running episode ends with
+reason `reset`, every input is dropped for SETTLE_S, then it is ready again once its inputs are live (~/start).
+~/state `resets` counts the resets it has seen.
 
   ros2 run revolve_sim evaluator --ros-args -p task:=<t> -p scene:=<s> -p robot:=<r> [-p run_dir:=DIR]
 """
@@ -56,6 +59,7 @@ from revolve_sim.world import make_world
 HISTORY = 200               # gz pose messages kept per model (100 Hz: 2 s)
 SYNC_MAX_AGE_S = 0.5        # an input older than this (a stalled publisher) does not hold the common stamp back
 CONTACT_WINDOW_S = 0.05     # a sensor's contacts count until this long after its message (it publishes at 100 Hz)
+SETTLE_S = 0.5             # sim time after a reset during which inputs (also late ones from before it) are dropped
 GZ_PROBLEM = re.compile(r'\[(error|critical)\]')
 MSG_TYPES = {'geometry_msgs/msg/TwistStamped': TwistStamped, 'trajectory_msgs/msg/JointTrajectory': JointTrajectory}
 
@@ -99,7 +103,8 @@ class Evaluator(Node):
         self.robot, self.world = robot.name, scene.name
         self.root, links = urdf_links(urdf)
         collisions = {m: collision_geometry(info.sdf) for m, info in self.res.models.items() if info.sdf}
-        self.metrics = Metrics(self.res, links, collisions)
+        self.metrics_args = (self.res, links, collisions)
+        self.metrics = Metrics(*self.metrics_args)
         self.run_dir = Path(p['run_dir'] or repo / 'runs' / 'sim' / f'{time.strftime("%Y%m%d_%H%M%S")}_{p["task"]}')
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.autostart, self.bag, self.gz_log_path = p['autostart'], p['bag'], p['gz_log']
@@ -118,6 +123,7 @@ class Evaluator(Node):
         self.tf_links = []                  # the robot links tf has (not the passive rollers: no joint states)
         self.sync_link = robot.frames.get('tcp', links[-1])   # its tf stamp: the newest of the arm's joint states
         self.tick_wall = []                 # wall time of the ticks of the running episode [s]
+        self.last_t, self.settle_until, self.resets = 0.0, None, 0   # the reset detection (sim time jumping back)
 
         subs = MutuallyExclusiveCallbackGroup()
         self.tf = Buffer()
@@ -251,9 +257,33 @@ class Evaluator(Node):
             return Snapshot(t, poses, dict(self.joints), contacts, self.bad_commands - c0, self.gz_lines[g0:],
                             stamps)
 
+    def check_reset(self, t):
+        """A world reset (sim time jumped back): end a running episode (reason `reset`), then drop every input until
+        SETTLE_S after the reset. -> True while settling."""
+        if t < self.last_t:
+            if self.episode is not None:
+                self.finish(self.last_t, self.episode._end(self.last_t, False, self.episode.phase, 'reset'))
+            self.settle_until, self.resets = t + SETTLE_S, self.resets + 1
+            self.tfl.unregister()   # tf2 rejects data older than its newest by the cache time: a new buffer after
+            self.get_logger().info(f'world reset: sim time {self.last_t:.3f} -> {t:.3f}')
+        self.last_t = t
+        if self.settle_until is None:
+            return False
+        self.base.clear()
+        self.scene_poses.clear()
+        self.joints.clear()
+        self.contacts.clear()
+        self.values, self.ready = {}, False
+        if t >= self.settle_until:
+            self.settle_until = None
+            self.metrics = Metrics(*self.metrics_args)
+            self.tf = Buffer()      # (Buffer.clear() also drops the static transforms, sent once)
+            self.tfl = TransformListener(self.tf, self, spin_thread=False)
+        return True
+
     def tick(self):
         t = self.get_clock().now().nanoseconds * 1e-9
-        if t <= 0.0:
+        if t <= 0.0 or self.check_reset(t):
             return
         w0 = time.perf_counter()
         snap = self.snapshot(t)
@@ -337,8 +367,11 @@ class Evaluator(Node):
                 self.get_logger().warning(f'rosbag2 recorder: no {name} service')
 
     def publish_state(self):
+        t = self.get_clock().now().nanoseconds * 1e-9
+        if t > 0.0:
+            self.check_reset(t)
         ep = self.episode
-        state = {'t': round(self.get_clock().now().nanoseconds * 1e-9, 4), 'ready': self.ready,
+        state = {'t': round(t, 4), 'ready': self.ready, 'resets': self.resets,
                  'episode': self.n_episodes if ep is not None else None, 'phase': ep.phase if ep else None,
                  'values': {k: (round(v, 6) if math.isfinite(v) else None) for k, v in self.values.items()}}
         self.state_pub.publish(String(data=json.dumps(state)))

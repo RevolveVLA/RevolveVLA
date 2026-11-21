@@ -14,5 +14,6 @@ setup(
     ],
     install_requires=["setuptools"],
     zip_safe=True,
-    entry_points={"console_scripts": ["world = revolve_sim.world:main", "evaluator = revolve_sim.evaluator:main"]},
+    entry_points={"console_scripts": ["world = revolve_sim.world:main", "evaluator = revolve_sim.evaluator:main",
+                                      "reset = revolve_sim.reset:main"]},
 )

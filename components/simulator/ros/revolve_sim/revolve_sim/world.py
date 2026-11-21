@@ -2,7 +2,9 @@
 (ground plane, sun, ambient light, 1 ms MuJoCo physics, the Sensors (ogre2), Contact, SceneBroadcaster and
 UserCommands systems). Every model gets a PosePublisher (gz topic /model/<m>/pose: the model in the world, its links
 in the model), articulated ones a JointStatePublisher (gz topic /world/<w>/model/<m>/joint_state).
-No robot: the launch spawns it. The world is named after the scene.
+The launch adds the robot (its URDF file) at the scene's robot_start base pose: part of the world's initial state,
+so a gz world reset puts it back there (gz-sim removes entities spawned later on a reset). The world is named
+after the scene.
 
   python3 -m revolve_sim.world <scene name | scene.yaml> [--repo DIR] [--out world.sdf]
 """
@@ -71,8 +73,9 @@ def scene_path(scene, repo):
     return p if p.suffix == ".yaml" else Path(repo) / "specs" / "scenes" / scene / "scene.yaml"
 
 
-def make_world(scene, repo):
-    """(world SDF text, scene, [absolute asset dirs] for GZ_SIM_RESOURCE_PATH, [articulated model entities])."""
+def make_world(scene, repo, robot=None):
+    """(world SDF text, scene, [absolute asset dirs] for GZ_SIM_RESOURCE_PATH, [articulated model entities]).
+    robot: (model name, URDF file) to include at robot_start."""
     repo = Path(repo).resolve()
     path = scene_path(scene, repo)
     sc = specs.load(path)
@@ -95,6 +98,10 @@ def make_world(scene, repo):
         out.append(f"    <include>\n      <name>{ent}</name>\n      <uri>model://{m.model}</uri>\n"
                    f"      <pose>{x} {y} {z} 0 0 {yaw}</pose>\n" + POSES + (JOINT_STATES if movable else "")
                    + "    </include>\n")
+    if robot:
+        x, y, yaw = sc.robot_start.base
+        out.append(f"    <include>\n      <name>{robot[0]}</name>\n      <uri>{escape(str(robot[1]))}</uri>\n"
+                   f"      <pose>{x} {y} 0 0 0 {yaw}</pose>\n    </include>\n")
     out.append("  </world>\n</sdf>\n")
     return "".join(out), sc, [str(repo / d) for d in sc.assets], articulated
 

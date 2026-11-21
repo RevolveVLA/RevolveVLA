@@ -1,0 +1,111 @@
+<?xml version="1.0"?>
+<!-- Shared omni base: 4 omni wheels in an X layout, each a driven hub with passive rollers (continuous joints),
+     for omni_wheel_drive_controller (ros2_controllers). base_footprint is on the floor, base_link at axle height.
+     Wheel i sits at theta_i = wheel_offset + i*pi/2 (anticlockwise, i = 0 front-left), axle radially outward:
+     the convention of the controller's kinematics. Rollers: `rows` staggered rows of `rollers_per_row` spheres
+     (radius roller_radius, centres at wheel_radius - roller_radius); rollers of one wheel may overlap (gz-physics
+     MuJoCo excludes intra-model pairs without self_collide). hub_ixx stands in for the motor's reflected inertia:
+     MuJoCo's velocity servo gain is M_ii / (0.05 dt), so it also sets how stiffly a zero command holds (heavier
+     hubs hold better but track worse). Run with GZ_MUJOCO_NOSLIP_ITERATIONS=10. The effective rolling radius of
+     the defaults is 0.0776 (the sphere-roller dip): use it as the controller's wheel_radius (recalibrate after
+     changing the rollers). The wheel <limit velocity> must be set: ros2_control reads it (velocity -1 clamps the
+     wheels to 1 rad/s); MuJoCo ignores it with one warning per wheel. wheel_effort bounds the push force
+     (4 x wheel_effort / wheel_radius x cos 45 deg along x). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="omni_base" params="
+      chassis_size:='0.50 0.50 0.56' chassis_z:=0.24 chassis_mass:=40.0
+      robot_radius:=0.22 wheel_radius:=0.08 wheel_offset:=${pi/4}
+      hub_mass:=1.0 hub_radius:=0.045 hub_width:=0.05 hub_ixx:=0.001
+      rows:=2 rollers_per_row:=6 roller_radius:=0.0267 row_gap:=0.045
+      roller_mass:=0.03 roller_inertia:=1e-5 roller_damping:=0.005
+      wheel_effort:=10.0 wheel_damping:=0.05 wheel_cmd_max:=20.0">
+
+    <xacro:property name="cs" value="${[float(v) for v in chassis_size.split()]}"/>
+    <link name="base_footprint"/>
+    <joint name="base_footprint_joint" type="fixed">
+      <parent link="base_footprint"/>
+      <child link="base_link"/>
+      <origin xyz="0 0 ${wheel_radius}"/>
+    </joint>
+    <link name="base_link">
+      <inertial>
+        <origin xyz="0 0 ${chassis_z}"/>
+        <mass value="${chassis_mass}"/>
+        <inertia ixx="${chassis_mass*(cs[1]**2+cs[2]**2)/12}" iyy="${chassis_mass*(cs[0]**2+cs[2]**2)/12}"
+                 izz="${chassis_mass*(cs[0]**2+cs[1]**2)/12}" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+      <visual><origin xyz="0 0 ${chassis_z}"/><geometry><box size="${chassis_size}"/></geometry></visual>
+      <collision><origin xyz="0 0 ${chassis_z}"/><geometry><box size="${chassis_size}"/></geometry></collision>
+    </link>
+
+    <xacro:macro name="omni_roller" params="wheel k">
+      <xacro:property name="row" value="${k // rollers_per_row}"/>
+      <xacro:property name="a" value="${2*pi*(k % rollers_per_row)/rollers_per_row + row*2*pi/(rows*rollers_per_row)}"/>
+      <xacro:property name="c" value="${wheel_radius - roller_radius}"/>
+      <link name="${wheel}_roller_${k}">
+        <inertial>
+          <mass value="${roller_mass}"/>
+          <inertia ixx="${roller_inertia}" iyy="${roller_inertia}" izz="${roller_inertia}" ixy="0" ixz="0" iyz="0"/>
+        </inertial>
+        <visual><geometry><sphere radius="${roller_radius}"/></geometry></visual>
+        <collision><geometry><sphere radius="${roller_radius}"/></geometry></collision>
+      </link>
+      <!-- tangent axis: the wheel frame rotated by a about the axle (x) maps y onto the rim tangent -->
+      <joint name="${wheel}_roller_${k}_joint" type="continuous">
+        <parent link="${wheel}_wheel"/>
+        <child link="${wheel}_roller_${k}"/>
+        <origin xyz="${(row - (rows-1)/2.0)*row_gap} ${c*sin(a)} ${-c*cos(a)}" rpy="${a} 0 0"/>
+        <axis xyz="0 1 0"/>
+        <dynamics damping="${roller_damping}"/>
+      </joint>
+      <xacro:if value="${k + 1 &lt; rows*rollers_per_row}">
+        <xacro:omni_roller wheel="${wheel}" k="${k + 1}"/>
+      </xacro:if>
+    </xacro:macro>
+
+    <xacro:macro name="omni_wheel" params="name i">
+      <xacro:property name="th" value="${wheel_offset + i*pi/2}"/>
+      <link name="${name}_wheel">
+        <inertial>
+          <mass value="${hub_mass}"/>
+          <xacro:property name="hub_iyy" value="${max(hub_mass*(3*hub_radius**2+hub_width**2)/12, 0.6*hub_ixx)}"/>
+          <inertia ixx="${hub_ixx}" iyy="${hub_iyy}" izz="${hub_iyy}" ixy="0" ixz="0" iyz="0"/>
+        </inertial>
+        <visual><origin rpy="0 ${pi/2} 0"/><geometry><cylinder radius="${hub_radius}" length="${hub_width}"/></geometry></visual>
+      </link>
+      <joint name="${name}_wheel_joint" type="continuous">
+        <parent link="base_link"/>
+        <child link="${name}_wheel"/>
+        <origin xyz="${robot_radius*cos(th)} ${robot_radius*sin(th)} 0" rpy="0 0 ${th}"/>
+        <axis xyz="1 0 0"/>
+        <limit effort="${wheel_effort}" velocity="${wheel_cmd_max}"/>
+        <dynamics damping="${wheel_damping}"/>
+      </joint>
+      <xacro:omni_roller wheel="${name}" k="0"/>
+    </xacro:macro>
+
+    <xacro:omni_wheel name="front_left" i="0"/>
+    <xacro:omni_wheel name="rear_left" i="1"/>
+    <xacro:omni_wheel name="rear_right" i="2"/>
+    <xacro:omni_wheel name="front_right" i="3"/>
+  </xacro:macro>
+
+  <!-- ros2_control joints for the 4 wheels (velocity command, as omni_wheel_drive_controller requires) -->
+  <xacro:macro name="omni_base_ros2_control_joints" params="wheel_cmd_max:=20.0">
+    <xacro:macro name="omni_wheel_rc" params="name">
+      <joint name="${name}_wheel_joint">
+        <command_interface name="velocity">
+          <param name="min">${-wheel_cmd_max}</param>
+          <param name="max">${wheel_cmd_max}</param>
+        </command_interface>
+        <state_interface name="position"/>
+        <state_interface name="velocity"/>
+      </joint>
+    </xacro:macro>
+    <xacro:omni_wheel_rc name="front_left"/>
+    <xacro:omni_wheel_rc name="rear_left"/>
+    <xacro:omni_wheel_rc name="rear_right"/>
+    <xacro:omni_wheel_rc name="front_right"/>
+  </xacro:macro>
+</robot>

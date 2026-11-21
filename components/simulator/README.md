@@ -152,10 +152,13 @@ Contact) and a few TF_OLD_DATA lines from the evaluator before it notices the ju
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
   check script in it (`check_bringup.py`, `check_control.py`, `check_moveit.py`, `check_evaluator.py`,
-  `check_open_door.py`, `check_open_drawer.py`, rclpy;
+  `check_open_door.py`, `check_open_drawer.py`, `check_reset.py`, rclpy;
   each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. A module runs once per robot of its
   `ROBOTS` (T1 / T2: `robot_cases.ROBOTS`, with the per-robot T2 targets in `robot_cases.CONTROL`; the MoveIt
-  smoke: the robots and TCP pose targets of `robot_cases.MOVEIT`; T3 / T4: each robot's task, push and T4 script in
-  `robot_cases.TASKS`);
+  smoke: the robots and TCP pose targets of `robot_cases.MOVEIT`; T3 / T4 / reset: each robot's task, push and T4
+  script in `robot_cases.TASKS`). Reset (`test_reset.py`): 5 resets between 6 episodes in one sim (moving episodes
+  reset mid-episode, idle ones after their result), each checked against the start (base 1 cm / 1 deg, arm 1 deg,
+  scene joints, controllers active, evaluator ready, a T2 arm move after it, one result + bag per episode, memory /
+  processes stable); T4 ends with one reset from the opened door / drawer.
   `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or
   `$REVOLVE_TEST_LOGS`.

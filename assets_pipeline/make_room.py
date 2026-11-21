@@ -11,7 +11,7 @@ mismatch the model uses plain colours and one warning line is printed. Idempoten
 existing textures are reused; files are only rewritten when their content changes.
 Stdlib only (runs on the host). Downloads are untrusted data: only the
 three named JPG maps are read out of each zip, nothing is executed.
-  python3 -I components/simulator/assets_pipeline/make_room.py [--offline]
+  python3 -I assets_pipeline/make_room.py [--offline]
 """
 import hashlib
 import io
@@ -20,7 +20,7 @@ import sys
 import urllib.request
 import zipfile
 
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))   # the repo root
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))   # the repo root
 TEX_DIR = os.path.join(ROOT, "assets", "textures")
 GEN_DIR = os.path.join(ROOT, "assets", "generated")
 TIMEOUT = 30  # s per download

@@ -9,9 +9,10 @@
      [kg m^2] (shoulder, upper_arm, lower_arm, wrist, gripper, moving jaw link; x s^5) is added to each moving link's
      principal moments as a stand-in for the servos' rotor inertia (MuJoCo armature, which gz-physics does not map):
      the bare links (2e-6 .. 1.6e-4 kg m^2) make contacts soft (the jaw sank 4.3 mm into a box at a 6 N squeeze).
-     so101_tcp: between the jaw tips (gripper_link (0, 0, -0.092) x s, 8 mm above the fixed jaw's tip pad face),
-     +z out of the jaws (the approach axis), +y along the closing direction from the moving jaw to the fixed jaw
-     (gripper_link -x), x = y cross z: the panda_tcp convention.
+     so101_tcp: between the jaw tips, at z -0.092 s (the tip pads' middle) and 8 mm off the fixed jaw's tip pad face
+     (gripper_link x -0.008 s) at every scale: where a 14 mm bar's centre sits when the bar is 1 mm off the fixed
+     jaw (at scale 1, x 0); +z out of the jaws (the approach axis), +y along the closing direction from the moving
+     jaw to the fixed jaw (gripper_link -x), x = y cross z: the panda_tcp convention.
      Joints: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll (arm), gripper (the moving jaw [rad];
      lower limit = closed, upper = fully open). -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
@@ -171,7 +172,7 @@
 
     <link name="so101_tcp"/>
     <joint name="so101_tcp_joint" type="fixed">
-      <origin xyz="0 0 ${-0.092 * s}" rpy="${pi} 0 ${-pi / 2}"/>
+      <origin xyz="${0.008 - 0.008 * s} 0 ${-0.092 * s}" rpy="${pi} 0 ${-pi / 2}"/>
       <parent link="gripper_link"/>
       <child link="so101_tcp"/>
     </joint>
@@ -194,6 +195,28 @@
     <xacro:so101_joint name="gripper" parent="gripper_link" child="moving_jaw_so101_v1_link"
                        xyz="0.0202 0.0188 -0.0234" rpy="1.5708 -5.24284e-08 -1.41553e-15"
                        lower="-0.174533" upper="1.74533" damping="${jaw_damping}"/>
+  </xacro:macro>
+
+  <!-- The arm's gz sensors (needs ../common/sensors.urdf.xacro): wrist_cam (MuJoCo Menagerie robotstudio_so101's wrist
+       camera, fovy 61 deg; position x scale) and a contact sensor on every arm link with a collision (gz collision
+       names after sdformat's renaming: <name>_collision[_k], k = the index in the link; so101_base_link has
+       none). -->
+  <xacro:macro name="so101_sensors" params="scale:=1.0">
+    <xacro:property name="s" value="${float(scale)}"/>
+    <xacro:camera name="wrist_cam" link="gripper_link"
+                  pose="${' '.join([str(v * s) for v in [-0.00296, 0.05436, -0.05310]])} -3.140893 0.991122 -1.560607"
+                  hfov="1.064651" near="0.02" far="10.0"/>
+    <xacro:contact link="shoulder_link" collisions="shoulder_link_box0_collision shoulder_link_box1_collision_1"/>
+    <xacro:contact link="upper_arm_link" collisions="upper_arm_link_box0_collision upper_arm_link_box1_collision_1"/>
+    <xacro:contact link="lower_arm_link" collisions="lower_arm_link_box0_collision lower_arm_link_box1_collision_1"/>
+    <xacro:contact link="wrist_link" collisions="wrist_link_box0_collision wrist_link_box1_collision_1"/>
+    <xacro:contact link="gripper_link" collisions="gripper_link_box0_collision gripper_link_box1_collision_1
+                                                   gripper_link_box2_collision_2 gripper_link_pad3_collision_3
+                                                   gripper_link_pad4_collision_4 gripper_link_pad5_collision_5
+                                                   gripper_link_pad6_collision_6"/>
+    <xacro:contact link="moving_jaw_so101_v1_link" collisions="moving_jaw_so101_v1_link_box0_collision
+                                                               moving_jaw_so101_v1_link_pad1_collision_1
+                                                               moving_jaw_so101_v1_link_pad2_collision_2"/>
   </xacro:macro>
 
   <!-- ros2_control joints of the arm and the jaw for gz_ros2_control: effort commands; the effort state interfaces

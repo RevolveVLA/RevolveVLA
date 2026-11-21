@@ -27,30 +27,16 @@
     <xacro:so101_ros2_control_joints initial_positions="$(arg initial_positions)" jaw_initial="$(arg jaw_initial)"/>
   </ros2_control>
 
-  <!-- Cameras (D22: the old mobile_so101 poses; the old base_link was on the floor, as base_footprint is). wrist_cam:
-       MuJoCo Menagerie robotstudio_so101's wrist camera (fovy 61 deg). -->
-  <xacro:camera name="wrist_cam" link="gripper_link" pose="-0.00296 0.05436 -0.05310 -3.140893 0.991122 -1.560607"
-                hfov="1.064651" near="0.02" far="10.0"/>
+  <!-- Cameras (D22: the old mobile_so101 poses; the old base_link was on the floor, as base_footprint is) and contact
+       sensors on every robot link with a collision except the omni rollers: wrist_cam and the arm links' from
+       so101_sensors, base_footprint's here (gz links after sdformat's fixed-joint lumping: base_link and
+       so101_base_link merge into base_footprint). -->
+  <xacro:so101_sensors/>
   <xacro:camera name="overhead_left_cam" link="base_footprint" pose="0.10 0.50 1.80 0 1.117011 -1.570796" hfov="1.68"
                 near="0.05" far="15.0"/>
   <xacro:camera name="overhead_right_cam" link="base_footprint" pose="0.10 -0.50 1.80 0 1.117011 1.570796" hfov="1.68"
                 near="0.05" far="15.0"/>
-
-  <!-- Contact sensors on every robot link with a collision except the omni rollers (gz links after sdformat's
-       fixed-joint lumping: base_link and so101_base_link merge into base_footprint; so101_base_link has no
-       collision) -->
   <xacro:contact link="base_footprint" collisions="base_footprint_fixed_joint_lump__base_link_collision"/>
-  <xacro:contact link="shoulder_link" collisions="shoulder_link_box0_collision shoulder_link_box1_collision_1"/>
-  <xacro:contact link="upper_arm_link" collisions="upper_arm_link_box0_collision upper_arm_link_box1_collision_1"/>
-  <xacro:contact link="lower_arm_link" collisions="lower_arm_link_box0_collision lower_arm_link_box1_collision_1"/>
-  <xacro:contact link="wrist_link" collisions="wrist_link_box0_collision wrist_link_box1_collision_1"/>
-  <xacro:contact link="gripper_link" collisions="gripper_link_box0_collision gripper_link_box1_collision_1
-                                                 gripper_link_box2_collision_2 gripper_link_pad3_collision_3
-                                                 gripper_link_pad4_collision_4 gripper_link_pad5_collision_5
-                                                 gripper_link_pad6_collision_6"/>
-  <xacro:contact link="moving_jaw_so101_v1_link" collisions="moving_jaw_so101_v1_link_box0_collision
-                                                             moving_jaw_so101_v1_link_pad1_collision_1
-                                                             moving_jaw_so101_v1_link_pad2_collision_2"/>
 
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">

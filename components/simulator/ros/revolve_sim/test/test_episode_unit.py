@@ -239,6 +239,13 @@ def test_metrics_slip_and_speed():
                         stamps={("bot", "tcp_link"): ts})
         m.record(snap)
     assert m.value(s, snap) == pytest.approx(2.0)
+    m = metrics()                                               # the tf stalls for 40 ms (longer than the window)
+    for i in range(9):
+        ts = 0.01 * min(i, 4)
+        snap = Snapshot(i * 0.01, poses={("bot", "tcp_link"): rpy_matrix(2.0 * ts, 0, 0, 0, 0, 0)},
+                        stamps={("bot", "tcp_link"): ts})
+        m.record(snap)
+    assert m.value(s, snap) == pytest.approx(2.0)
 
 
 def test_metrics_counters():

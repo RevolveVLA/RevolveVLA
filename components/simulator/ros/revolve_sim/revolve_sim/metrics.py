@@ -153,6 +153,7 @@ class Metrics:
     collisions: {model entity: collision_geometry(...)}."""
 
     SPEED_WINDOW_S = 0.02            # peak_body_speed: finite difference over at least this much sim time
+    HISTORY_S = 0.5                  # peak_body_speed: how far back (ticks) to look for a pose stamp that much older
 
     def __init__(self, resolved, robot_links, collisions):
         self.r, self.robot = resolved, resolved.robot
@@ -267,16 +268,25 @@ class Metrics:
         """Keep the link positions for peak_body_speed (call once per tick, before value())."""
         self.history.append((snap.t, {k: (snap.stamps.get(k, snap.t), T[:3, 3].copy())
                                       for k, T in snap.poses.items()}))
-        while len(self.history) > 2 and self.history[1][0] <= snap.t - self.SPEED_WINDOW_S:
+        while len(self.history) > 2 and self.history[1][0] <= snap.t - self.HISTORY_S:
             self.history.pop(0)
 
     def m_peak_body_speed(self, p, snap, key):
-        if len(self.history) < 2:
-            return NAN
-        old, new = self.history[0][1], self.history[-1][1]
-        speeds = [np.linalg.norm(new[b][1] - old[b][1]) / (new[b][0] - old[b][0])
-                  for b in self.bodies(self.ref(p['of']))
-                  if b in new and b in old and new[b][0] - old[b][0] >= 0.5 * self.SPEED_WINDOW_S]
+        """Per body: its newest pose against the newest one at least SPEED_WINDOW_S older by stamp (a body's stamps
+        can stall for longer than that under load)."""
+        new = self.history[-1][1] if self.history else {}
+        speeds = []
+        for b in self.bodies(self.ref(p['of'])):
+            if b not in new:
+                continue
+            old = None
+            for _, h in reversed(self.history[:-1]):
+                if b in h:
+                    old = h[b]
+                    if new[b][0] - old[0] >= self.SPEED_WINDOW_S:
+                        break
+            if old is not None and new[b][0] - old[0] >= 0.5 * self.SPEED_WINDOW_S:
+                speeds.append(np.linalg.norm(new[b][1] - old[1]) / (new[b][0] - old[0]))
         return float(max(speeds)) if speeds else NAN
 
     def m_penetration(self, p, snap, key):

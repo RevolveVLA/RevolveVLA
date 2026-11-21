@@ -1,6 +1,8 @@
-"""A robot spec -> its URDF (xacro), camera sensors and contact-sensor links."""
+"""A robot spec -> its URDF (xacro), camera sensors, contact-sensor links and command topics."""
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import yaml
 
 from revolve_common import specs
 
@@ -28,3 +30,16 @@ def describe(repo, name, arm=None):
             elif s.get('type') == 'contact':
                 contacts.append(g.get('reference'))
     return robot, urdf, cams, contacts
+
+
+# the command topic (and its message type) of each controller type that takes commands on a topic
+CMD_TOPICS = {'omni_wheel_drive_controller/OmniWheelDriveController': ('cmd_vel', 'geometry_msgs/msg/TwistStamped'),
+              'joint_trajectory_controller/JointTrajectoryController':
+                  ('joint_trajectory', 'trajectory_msgs/msg/JointTrajectory')}
+
+
+def command_topics(controllers_yaml):
+    """[(topic, message type)] of the controllers in a ros2_control controllers.yaml."""
+    params = yaml.safe_load(Path(controllers_yaml).read_text())['controller_manager']['ros__parameters']
+    return [(f'/{name}/{CMD_TOPICS[v["type"]][0]}', CMD_TOPICS[v['type']][1]) for name, v in params.items()
+            if isinstance(v, dict) and v.get('type') in CMD_TOPICS]

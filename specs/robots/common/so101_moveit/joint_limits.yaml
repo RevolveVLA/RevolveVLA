@@ -1,0 +1,34 @@
+# MoveIt joint limits of the SO-101 arms (the MoveIt Setup Assistant's joint_limits.yaml layout). The URDF's 10 rad/s
+# (upstream) is far above what the effort JTCs track: every joint 1.5 rad/s, 3 rad/s^2 (Pilz needs acceleration
+# limits); moveit_py.yaml scales them further per request.
+joint_limits:
+  shoulder_pan:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0
+  shoulder_lift:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0
+  elbow_flex:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0
+  wrist_flex:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0
+  wrist_roll:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0
+  gripper:
+    has_velocity_limits: true
+    max_velocity: 1.5
+    has_acceleration_limits: true
+    max_acceleration: 3.0

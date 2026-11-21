@@ -1,0 +1,32 @@
+# MoveIt trajectory execution (moveit_simple_controller_manager) of the SO-101 arms: the arm and the jaw are
+# joint_trajectory_controllers (FollowJointTrajectory; ../../mobile_so101/controllers.yaml); the start tolerance and the
+# execution time allow for the effort JTC (as mobile_panda's).
+trajectory_execution:
+  allowed_execution_duration_scaling: 2.0
+  allowed_goal_duration_margin: 1.0
+  allowed_start_tolerance: 0.05
+
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_simple_controller_manager:
+  controller_names:
+    - arm_controller
+    - gripper_controller
+
+  arm_controller:
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - shoulder_pan
+      - shoulder_lift
+      - elbow_flex
+      - wrist_flex
+      - wrist_roll
+
+  gripper_controller:
+    action_ns: follow_joint_trajectory
+    type: FollowJointTrajectory
+    default: true
+    joints:
+      - gripper

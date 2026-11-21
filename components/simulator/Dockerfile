@@ -80,6 +80,10 @@ RUN mkdir -p /usr/share/glvnd/egl_vendor.d \
 RUN apt-get update && apt-get install -y --no-install-recommends python3-pydantic \
     && rm -rf /var/lib/apt/lists/* && python3 -c 'import pydantic, yaml'
 
+# --- pick_ik: the MoveIt kinematics plugin of the 5-DoF SO-101 arms (specs/robots/common/so101_moveit/) ---
+RUN apt-get update && apt-get install -y --no-install-recommends ros-lyrical-pick-ik \
+    && rm -rf /var/lib/apt/lists/*
+
 # Kura first on every path; /opt/ros/lyrical and the ros_gz workspace come after it via /etc/bash.bashrc.
 ENV GZ_WS=/opt/gz_ws/install ROS_GZ_WS=/opt/ros_gz_ws/install ROS_DISTRO=lyrical
 ENV NVIDIA_VISIBLE_DEVICES=all \

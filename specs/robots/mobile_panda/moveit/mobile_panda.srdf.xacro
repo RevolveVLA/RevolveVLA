@@ -6,6 +6,7 @@
      MoveIt). panda_tcp (panda_hand + 0.1034 m along z) is a plain link of the URDF: use it as the pose link. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="mobile_panda">
   <xacro:include filename="$(find moveit_resources_panda_moveit_config)/config/hand.xacro"/>
+  <xacro:include filename="../../common/omni_base.srdf.xacro"/>
   <xacro:hand/>
 
   <!-- from upstream config/panda_arm.xacro (moveit_resources_panda_moveit_config 2.15) -->
@@ -86,18 +87,9 @@
   <disable_collisions link1="panda_link6" link2="panda_rightfinger" reason="Never"/>
   <disable_collisions link1="panda_link7" link2="panda_rightfinger" reason="Never"/>
 
-  <!-- the omni base (../../common/omni_base.urdf.xacro): panda_link0 sits on the chassis; the rollers sit under it,
-       out of the arm's reach (the chassis comes first), and touch only the floor (not in the planning scene) -->
+  <!-- the omni base (../../common/omni_base.urdf.xacro): panda_link0 sits on the chassis; the rollers:
+       ../../common/omni_base.srdf.xacro -->
   <disable_collisions link1="base_link" link2="panda_link0" reason="Adjacent"/>
   <disable_collisions link1="base_link" link2="panda_link1" reason="Never"/>
-  <xacro:macro name="rollers" params="wheels k:=0 n:=12">
-    <disable_default_collisions link="${wheels[0]}_roller_${k}"/>
-    <xacro:if value="${k + 1 &lt; n}">
-      <xacro:rollers wheels="${wheels}" k="${k + 1}" n="${n}"/>
-    </xacro:if>
-    <xacro:if value="${k + 1 == n and len(wheels) &gt; 1}">
-      <xacro:rollers wheels="${wheels[1:]}" k="0" n="${n}"/>
-    </xacro:if>
-  </xacro:macro>
-  <xacro:rollers wheels="${['front_left', 'rear_left', 'rear_right', 'front_right']}"/>
+  <xacro:omni_base_srdf/>
 </robot>

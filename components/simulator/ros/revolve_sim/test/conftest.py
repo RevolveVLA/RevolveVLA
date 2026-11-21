@@ -8,6 +8,8 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
   T3 evaluator negatives (test_evaluator_idle.py, test_evaluator_push.py; the sim with the task, episodes started
      on /evaluator/start): an idle episode fails `approach` on its timeout; driving the base into the fridge fails
      on a sanity check; the evaluator's metric values at the start match the scene geometry.
+  T4 positive (test_open_door.py, marker `slow`): MoveIt 2 (moveit_py) plans the arm, the base gets open-loop
+     ramped TwistStamped segments (test code only): open_fridge_door passes approach, grasp and open.
   Unit tests of the evaluator logic without a sim: test_episode_unit.py.
 A test module sets SIM_ARGS (extra `revolve sim` args, e.g. --task) for its sim.
 
@@ -31,6 +33,10 @@ ROBOT = os.environ.get("REVOLVE_TEST_ROBOT", "mobile_panda")
 TEST_IN = "/repo/components/simulator/ros/revolve_sim/test"
 # gz / ROS problem lines; the known benign ones: MuJoCo's NaN-in-CTRL line at load (a WARNING, not matched)
 PROBLEM = re.compile(r"\[(error|Err|ERROR|FATAL|critical)\]|Traceback|not added")
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: the long positive episodes (T4); deselect with -m 'not slow'")
+
 
 def sh(name, cmd, timeout):
     """Run cmd in the container (bash: the image's ROS env)."""

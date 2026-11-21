@@ -46,6 +46,9 @@ cluster of each attempt and centre seed of each cluster. The attempts then start
 and centres, and the "starts" record adds "centre_seeds".
 With a layout too (env ROUND_LAYOUT, start_design.layout_starts) every attempt starts at the layout's
 start_pose with the layout's grasp; the "starts" record holds the layout and that spot as its one centre.
+A reach / drive block with a layout takes the layout's `reach` {grasp_m, d_m, yaw_deg} and `drive` {back_m, side_m,
+heading_deg} as the seed's sample in place of the matching draw (start_design.reach_sample / drive_sample); the "starts"
+record's sample and attempts then hold those values.
 """
 import copy
 import json
@@ -464,6 +467,8 @@ def main(out, sel):
     seed = int(os.environ.get("SEED", gen["seed"]))
     spec = start_design.starts_from_env(os.environ)
     layout = start_design.layout_from_env(os.environ)
+    if layout is not None and spec is not None:
+        start_design.check_layout_mode(layout, spec)
     reach = isinstance(spec, start_design.ReachSpec)     # a drive block is a reach block plus a far start
     drive = isinstance(spec, start_design.DriveSpec)
     if drive and rd["arm"].get("folded") is None:
@@ -471,12 +476,10 @@ def main(out, sel):
     if reach:
         if (out / start_design.REQUEST_FILE).exists():
             raise SystemExit(f"{start_design.REQUEST_FILE} needs a clustered starts block, not mode reach")
-        if layout is not None:
-            raise SystemExit("ROUND_LAYOUT needs a clustered starts block, not mode reach / drive")
         if attempts < 1:
             raise SystemExit("no attempts: ATTEMPTS is 0")
         # One grasp: the seed's sampled point along the task's grasp axis (the attempts only jitter the base).
-        sample = start_design.reach_sample(seed, spec)
+        sample = start_design.reach_sample(seed, spec, layout)
         along, = (k for k in "xyz" if k in task["grasp"])
         task["grasp"] = {**task["grasp"], along: [sample.grasp]}
     elif spec is not None:
@@ -531,7 +534,7 @@ def main(out, sel):
         bearing = None if spec.bearing_deg is None else np.radians(spec.bearing_deg)
         starts = start_design.reach_starts(
             seed, attempts, spec, lambda d: rb.base_for_reach(grasp_obj, start_design.FACING_YAW_OBJ, bearing, d=d),
-            pivot)
+            pivot, layout)
 
     from automoma.core.types import TrajResult
     from automoma.planning.pipeline import PlanningPipeline
@@ -642,7 +645,7 @@ def main(out, sel):
     drive_in, sequenced = {}, {}
     if drive:
         t = now()
-        args = (planner, robot_cfg, rows, starts, start_design.drive_attempts(seed, attempts, spec),
+        args = (planner, robot_cfg, rows, starts, start_design.drive_attempts(seed, attempts, spec, layout),
                 traj, nq, [float(x) for x in rd["arm"]["folded"]], standoff, obj, jn)
         if spec.sequence == "drive_then_arm":
             sequenced = plan_sequenced(*args, rb)
@@ -712,7 +715,7 @@ def main(out, sel):
             "attempts": [{"attempt_id": st.attempt_id, "d_m": st.dx, "dyaw_deg": float(np.degrees(st.dyaw)),
                           "base_obj": [st.x, st.y, st.yaw]} for st in starts]}
         if drive:
-            dr = start_design.drive_attempts(seed, attempts, spec)
+            dr = start_design.drive_attempts(seed, attempts, spec, layout)
             handoff["starts"].update(
                 folded_arm=[float(x) for x in rd["arm"]["folded"]], slowdown=spec.slowdown, standoff_m=standoff,
                 sequence=spec.sequence,

@@ -24,8 +24,11 @@ the reach base (away from the object, along the facing), side_m sideways and tur
 Optional keys: `bearing_deg` (reach and drive: the grasp direction left of the arm's forward axis at the unturned
 base, default robot.yaml reach.bearing_rad) and `sequence` (drive: SEQUENCES).
 
-A plan run with a layout (env ROUND_LAYOUT, layout_starts) has no clusters: every attempt starts at the layout's
-`start_pose` plus its offset and plans the layout's `grasp_id` (the generator plugin's realised randomisers).
+A plan run with a layout (env ROUND_LAYOUT; the generator plugin's realised randomisers) overrides what the planner
+would draw per seed. A clustered block has no clusters then (layout_starts): every attempt starts at the layout's
+`start_pose` plus its offset and plans the layout's `grasp_id`. A reach / drive block takes the layout's `reach`
+{grasp_m, d_m, yaw_deg} and (drive) `drive` {back_m, side_m, heading_deg} in place of the matching seeded draw; a value
+the layout does not name keeps its own draw (check_layout_mode says which keys a block takes).
 """
 import json
 import math
@@ -362,9 +365,13 @@ def request_starts(clusters, centre_seeds, plan_seed: int, spec: StartsSpec, box
     return out
 
 
-# A layout: the base start pose (x, y, yaw) in the object frame and the planner grasp id, both optional (the realised
-# `start_pose` / `grasp_id` of the robot_base and grasp randomisers); a missing pose is the box centre facing the object.
-LAYOUT_KEYS = ("start_pose", "grasp_id")
+# A layout: the base start pose (x, y, yaw) in the object frame and the planner grasp id (clustered block), the reach
+# and drive values of a reach / drive block; every key optional (the realised outputs of the robot_base, grasp,
+# reach_start and drive_start randomisers); a missing pose is the box centre facing the object.
+LAYOUT_KEYS = ("start_pose", "grasp_id", "reach", "drive")
+REACH_DIMS = ("grasp_m", "d_m", "yaw_deg")                 # layout["reach"]: the grasp point, reach distance, base turn
+DRIVE_DIMS = ("back_m", "side_m", "heading_deg")           # layout["drive"]: the far start behind / aside / heading
+_MODE_KEYS = {StartsSpec: ("start_pose", "grasp_id"), ReachSpec: ("reach",), DriveSpec: ("reach", "drive")}
 
 
 def parse_layout(layout: Mapping) -> dict:
@@ -381,7 +388,25 @@ def parse_layout(layout: Mapping) -> dict:
     grasp = layout.get("grasp_id")
     if grasp is not None and (isinstance(grasp, bool) or not isinstance(grasp, int) or not 0 <= grasp < GRASPS):
         raise ValueError(f"layout.grasp_id: {grasp!r} is not an int in 0..{GRASPS - 1}")
+    for key, dims in (("reach", REACH_DIMS), ("drive", DRIVE_DIMS)):
+        part = layout.get(key)
+        if part is None:
+            continue
+        if not isinstance(part, Mapping) or set(part) - set(dims):
+            raise ValueError(f"layout.{key}: {part!r} is not a mapping of {list(dims)}")
+        for dim, v in part.items():
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise ValueError(f"layout.{key}.{dim}: {v!r} is not a finite number")
     return dict(layout)
+
+
+def check_layout_mode(layout: Mapping, spec: StartsSpec | ReachSpec) -> None:
+    """ValueError when the layout has a key the block's method does not take: a clustered block takes start_pose /
+    grasp_id, a reach block reach, a drive block reach and drive."""
+    take = _MODE_KEYS[DriveSpec if isinstance(spec, DriveSpec) else ReachSpec if isinstance(spec, ReachSpec)
+                      else StartsSpec]
+    if extra := sorted(set(layout) - set(take)):
+        raise ValueError(f"layout keys {extra}: a {type(spec).__name__} block takes {list(take)}")
 
 
 def layout_from_env(environ: Mapping[str, str]) -> dict | None:
@@ -423,18 +448,31 @@ def layout_starts(layout: Mapping, plan_seed: int, attempts: int, spec: StartsSp
             for a, (dx, dy, dyaw) in enumerate(start_offsets(plan_seed, attempts, spec))]
 
 
-def reach_sample(seed: int, spec: ReachSpec) -> ReachSample:
-    """The seed's (grasp, d, turn): uniform in the block's ranges, one seeded generator each."""
+def _in_range(name, v, low, high):
+    if not low - _EPS <= v <= high + _EPS:
+        raise ValueError(f"layout {name}: {v!r} is outside the block's [{low}, {high}]")
+    return float(v)
+
+
+def reach_sample(seed: int, spec: ReachSpec, layout: Mapping | None = None) -> ReachSample:
+    """The seed's (grasp, d, turn): uniform in the block's ranges, one seeded generator each. A layout's `reach` values
+    replace the draws they name (checked against the block's ranges), the others keep theirs."""
     _nonneg_int(seed, "seed")
+    given = (layout or {}).get("reach", {})
     h = math.radians(spec.yaw_half_deg)
-    return ReachSample(float(_rng(seed, 0).uniform(*spec.grasp_m)), float(_rng(seed, 1).uniform(*spec.d_m)),
-                       float(_rng(seed, 2).uniform(-h, h)))
+    grasp = _in_range("reach.grasp_m", given["grasp_m"], *spec.grasp_m) if "grasp_m" in given else \
+        float(_rng(seed, 0).uniform(*spec.grasp_m))
+    d = _in_range("reach.d_m", given["d_m"], *spec.d_m) if "d_m" in given else float(_rng(seed, 1).uniform(*spec.d_m))
+    dyaw = (math.radians(_in_range("reach.yaw_deg", given["yaw_deg"], -spec.yaw_half_deg, spec.yaw_half_deg))
+            if "yaw_deg" in given else float(_rng(seed, 2).uniform(-h, h)))
+    return ReachSample(grasp, d, dyaw)
 
 
-def reach_attempts(seed: int, attempts: int, spec: ReachSpec) -> list[tuple[float, float]]:
+def reach_attempts(seed: int, attempts: int, spec: ReachSpec,
+                   layout: Mapping | None = None) -> list[tuple[float, float]]:
     """(d, turn [rad]) per attempt: attempt 0 the seed's sample, the others jittered by up to jitter_m / jitter_deg."""
     _nonneg_int(attempts, "attempts")
-    s = reach_sample(seed, spec)
+    s = reach_sample(seed, spec, layout)
     u = _rng(seed, 3).uniform(-1.0, 1.0, size=(max(attempts - 1, 0), 2))
     jit = [(0.0, 0.0)] + [(spec.jitter_m * a, math.radians(spec.jitter_deg) * b) for a, b in u]
     return [(s.d + dd, s.dyaw + dy) for dd, dy in jit[:attempts]]
@@ -451,30 +489,39 @@ def turn_about(base, pivot_xy, dyaw: float) -> tuple[float, float, float]:
     return x + ax - bx, y + ay - by, yaw + dyaw
 
 
-def reach_starts(seed: int, attempts: int, spec: ReachSpec, base_for_reach, pivot_xy) -> list[Start]:
+def reach_starts(seed: int, attempts: int, spec: ReachSpec, base_for_reach, pivot_xy,
+                 layout: Mapping | None = None) -> list[Start]:
     """The starts of one plan run of a reach block: base_for_reach(d) is the base (x, y, facing) that puts the
     grasp at reach d (Robot.base_for_reach), turned about pivot_xy (the arm's first joint axis, base frame).
     All on grasp 0 (the plan narrows the task's grasps to the sample's), cluster 0; dx = d, dyaw = the turn."""
     out = []
-    for a, (d, dyaw) in enumerate(reach_attempts(seed, attempts, spec)):
+    for a, (d, dyaw) in enumerate(reach_attempts(seed, attempts, spec, layout)):
         x, y, yaw = turn_about(base_for_reach(d), pivot_xy, dyaw)
         out.append(Start(a, 0, 0, x, y, yaw, d, 0.0, dyaw))
     return out
 
 
-def drive_sample(seed: int, spec: DriveSpec) -> DriveSample:
-    """The seed's far start relative to its reach base: uniform in the block's box, one seeded generator each."""
+def drive_sample(seed: int, spec: DriveSpec, layout: Mapping | None = None) -> DriveSample:
+    """The seed's far start relative to its reach base: uniform in the block's box, one seeded generator each. A
+    layout's `drive` values replace the draws they name (checked against the block), the others keep theirs."""
     _nonneg_int(seed, "seed")
+    given = (layout or {}).get("drive", {})
     h = math.radians(spec.heading_half_deg)
-    return DriveSample(float(_rng(seed, 4).uniform(*spec.back_m)), float(_rng(seed, 5).uniform(*spec.side_m)),
-                       float(_rng(seed, 6).uniform(-h, h)))
+    back = _in_range("drive.back_m", given["back_m"], *spec.back_m) if "back_m" in given else \
+        float(_rng(seed, 4).uniform(*spec.back_m))
+    side = _in_range("drive.side_m", given["side_m"], *spec.side_m) if "side_m" in given else \
+        float(_rng(seed, 5).uniform(*spec.side_m))
+    heading = (math.radians(_in_range("drive.heading_deg", given["heading_deg"], -spec.heading_half_deg,
+                                      spec.heading_half_deg))
+               if "heading_deg" in given else float(_rng(seed, 6).uniform(-h, h)))
+    return DriveSample(back, side, heading)
 
 
-def drive_attempts(seed: int, attempts: int, spec: DriveSpec) -> list[DriveSample]:
+def drive_attempts(seed: int, attempts: int, spec: DriveSpec, layout: Mapping | None = None) -> list[DriveSample]:
     """The far start per attempt: attempt 0 the seed's sample, the others jittered by up to jitter_m (back, side)
     and jitter_deg (heading)."""
     _nonneg_int(attempts, "attempts")
-    s = drive_sample(seed, spec)
+    s = drive_sample(seed, spec, layout)
     u = _rng(seed, 7).uniform(-1.0, 1.0, size=(max(attempts - 1, 0), 3))
     jit = [(0.0, 0.0, 0.0)] + [(spec.jitter_m * a, spec.jitter_m * b, math.radians(spec.jitter_deg) * c) for a, b, c in u]
     return [DriveSample(s.back + a, s.side + b, s.heading + c) for a, b, c in jit[:attempts]]

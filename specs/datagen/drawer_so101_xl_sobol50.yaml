@@ -4,7 +4,7 @@
 task: open_drawer
 robot: mobile_so101_xl
 out: runs/datagen/drawer_so101_xl_sobol50
-generator: {plugin: automoma, attempts: 50, checks: 1}
+generator: {plugin: automoma, attempts: 5, checks: 1}
 recorder: {plugin: rosetta}
 converter: {plugin: rosetta, format: lerobot}
 randomisers:
@@ -16,6 +16,7 @@ randomisers:
     side_m: [-0.3, 0.3]
     heading_deg: [-20, 20]
 seed: 0
+run: {workers: 3, headless: true}      # 3 configs at a time; headless: false (or --gui) shows the gz GUI, one worker
 splits:
   train:
     target: 50

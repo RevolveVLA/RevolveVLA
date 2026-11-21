@@ -4,7 +4,7 @@
 task: open_drawer
 robot: mobile_so101_xl
 out: runs/datagen/drawer_so101_xl_smoke
-generator: {plugin: automoma, attempts: 50, checks: 1}
+generator: {plugin: automoma, attempts: 5, checks: 1}
 recorder: {plugin: rosetta}
 converter: {plugin: rosetta, format: lerobot}
 randomisers:

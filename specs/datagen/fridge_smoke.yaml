@@ -3,7 +3,7 @@
 task: open_fridge_door
 robot: mobile_panda
 out: runs/datagen/fridge_smoke
-generator: {plugin: automoma, attempts: 10, checks: 1}
+generator: {plugin: automoma, attempts: 5, checks: 1}
 recorder: {plugin: rosetta}
 converter: {plugin: rosetta, format: lerobot}
 randomisers:

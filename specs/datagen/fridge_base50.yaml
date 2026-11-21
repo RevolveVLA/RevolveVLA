@@ -3,12 +3,13 @@
 task: open_fridge_door
 robot: mobile_panda
 out: runs/datagen/fridge_base50
-generator: {plugin: automoma, attempts: 50, checks: 3}      # checks = N-of-N repeat replays of an accepted attempt
+generator: {plugin: automoma, attempts: 5, checks: 3}      # checks = N-of-N repeat replays of an accepted attempt
 recorder: {plugin: rosetta}
 converter: {plugin: rosetta, format: lerobot}
 randomisers:
   robot_base: {x_m: [-0.15, 0.15], y_m: [-0.15, 0.15], yaw_deg: [-27, 27]}
 seed: 0
+run: {workers: 3, headless: true}      # 3 configs at a time; headless: false (or --gui) shows the gz GUI, one worker
 splits:
   train:
     target: 50

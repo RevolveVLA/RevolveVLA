@@ -4,19 +4,20 @@ gz_ros2_control, ros2_controllers, MoveIt 2). The world, the robot and the task 
 `specs/scenes/<s>/scene.yaml`, `specs/robots/<r>/`, `specs/tasks/<t>/task.yaml` + `specs/tasks/sanity.yaml`
 (format and checks: `common/revolve_common/specs.py`, `./revolve validate`).
 
-Status: the world, the robot and its controllers run (`ros/revolve_sim`); the live phase / metric evaluator is
-next (`./revolve sim --task` only checks that the task fits the scene and robot so far).
+Status: the world, the robot and its controllers run (`ros/revolve_sim`); with `--task`, the evaluator scores
+episodes live (phases, metrics, sanity checks) and records them.
 
 ## Run
 ```
-./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door] [--gui]
+./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]] [--gui]
 ```
 One container (`--name`, default `revolve-sim`) on the GPU and the host network (ROS 2 from the host works;
-`ROS_DOMAIN_ID` is passed through), the repo mounted read-only at `/repo`. It runs `ros2 launch revolve_sim
+`ROS_DOMAIN_ID` is passed through), the repo mounted read-only at `/repo` (`runs/` writable). It runs `ros2 launch revolve_sim
 sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
 - `revolve_sim/world.py`: scene.yaml -> world SDF (`python3 -m revolve_sim.world <scene>` prints it): the models as
   `model://` includes at their poses (search path = the scene's `assets`), a JointStatePublisher on every
-  articulated model, ground plane, sun, ambient light, 1 ms MuJoCo physics, the Sensors (ogre2), Contact,
+  articulated model, a PosePublisher on every model (`/model/<m>/pose`: the model in the world, its links in the
+  model), ground plane, sun, ambient light, 1 ms MuJoCo physics, the Sensors (ogre2), Contact,
   SceneBroadcaster and UserCommands systems. The world is named after the scene. Initial joint positions other
   than 0 are rejected for now (gz-sim has no upstream way to start a joint away from its SDF zero).
 - the robot: `specs/robots/<r>/robot.urdf.xacro` (xacro args `initial_positions` = the scene's `robot_start.arm`
@@ -24,14 +25,46 @@ sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
   `robot_start.base`, one controller spawner for every controller in controllers.yaml (gz_ros2_control loads them
   into its controller manager, which runs every physics step).
 - `config/bridge.yaml` (ros_gz_bridge, filled in for the world, robot, cameras, contact links, articulated models):
-  `/clock`, `/model/<robot>/pose` and `/world/<w>/dynamic_pose/info` (ground truth, tf2_msgs/TFMessage),
+  `/clock`, `/model/<robot>/pose` and `/model/<m>/pose` (ground truth, tf2_msgs/TFMessage; child_frame_id
+  `<m>/<link>` for a link),
   `/world/<w>/model/<m>/joint_state`, `/world/<w>/model/<robot>/link/<l>/sensor/contact/contact`
   (ros_gz_interfaces/Contacts), `/<camera>/camera_info`; camera images through ros_gz_image: `/<camera>/image`.
 - Commands: `/omni_wheel_drive_controller/cmd_vel` (geometry_msgs/TwistStamped, robot frame; ramp changes over
   ~0.5 s, the controller has no limiter), FollowJointTrajectory on `/<arm controller>/follow_joint_trajectory`
   and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller).
+- Contact sensors on every robot link with a collision except the omni rollers (the robot xacro; gz link and
+  collision names after sdformat's fixed-joint lumping). robot_state_publisher publishes the moving links' tf at
+  100 Hz.
 - Env: `GZ_MUJOCO_NOSLIP_ITERATIONS=10` (grasps and the omni base hold better), `GZ_SIM_RESOURCE_PATH` = the assets.
 - `--gui`: a `gz sim -g` client on the host's X display (DISPLAY + XAUTHORITY); it costs RTF.
+
+## Evaluator (`--task`)
+`revolve_sim/evaluator.py` (node `/evaluator`, sim time, 100 Hz) evaluates the task (`specs.resolve`: the task's
+phases + the merged `tasks/sanity.yaml` checks) with `revolve_sim/episode.py` (phase rules) and
+`revolve_sim/metrics.py` (the metrics of `specs.METRICS`, numpy). Inputs, all upstream: robot links = ground-truth
+base pose x robot_state_publisher tf; scene links = the PosePublishers; scene joints = the JointStatePublishers;
+contacts = the robot's contact sensors (depth = MuJoCo penetration; the ground is never a contact partner, but
+counts for penetration); commands = non-finite messages on the controllers' command topics (`<omni>/cmd_vel`,
+`<jtc>/joint_trajectory`; FollowJointTrajectory goals are not seen); gz log = `[error]` / `[critical]` lines of
+the gz server's `~/.gz/sim/log/<time>/server_console.log`. Distance to a collision is to its box / sphere /
+cylinder / capsule (a mesh: to its origin). An episode counts only the non-finite commands and gz log lines since its
+start.
+- Episodes: the first starts once every input is live (autostart), or on `/evaluator/start` (std_srvs/Trigger)
+  with `--no-autostart` (`ros2 service call /evaluator/start std_srvs/srv/Trigger`; one at a time, again after
+  the previous one ended). Phases: all `done` true (each for its `for_s`) -> next phase; a `while` false, the
+  phase's `timeout_s` or the episode's `budget_s` -> the phase fails; a timed sanity check fails the active
+  phase, an untimed one the episode as phase `global`.
+- `/evaluator/state` (std_msgs/String JSON, 10 Hz): `t`, `ready`, `episode`, `phase`, `values` (every condition's
+  current value, keyed `<phase>.done[i]`, `<phase>.while[i]`, `sanity.<check>`; also between episodes).
+- `/evaluator/result` (std_msgs/String JSON, transient local) and `runs/sim/<time>_<task>/episode_<n>.json`:
+  `passed`, `failed_phase`, `reason` (`timeout_s`, `budget_s`, `while`, `sanity`), `check`, `condition`, `value`,
+  `t_fail` (s since the episode start), `duration_s`, `phases` [{`name`, `status` (passed / failed / aborted /
+  not_reached), `t_start`, `t_end`, `reason`, `last` (the last values)}], `sanity_last`, `contacts` (at the end),
+  `rate_hz`, `tick_ms`, `sim_time_start`, `gz_log`, `bag`.
+- Bag: `ros2 bag record` (mcap, sim time) of the bridged topics (not the camera images), tf, joint states, the
+  command topics and the evaluator's, started paused by the launch; the evaluator resumes it for each episode,
+  then pauses and splits it: episode n = `runs/sim/<time>_<task>/bag/<n>_bag_<time>.mcap`.
+- Launch args: `autostart`, `run_dir`, `bag` (`ros2 launch revolve_sim sim.launch.py ... task:=<t>`).
 
 Known log lines: one MuJoCo "Nan, Inf or huge value in CTRL ... Time = 0.0000" warning at load; one "does not
 support velocity limits" warning per joint with a URDF velocity limit (MuJoCo has none; ros2_control needs them).
@@ -40,7 +73,8 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
 ```
 ./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control,
                                       # revolve_sim
-./revolve test simulator              # T1 bring-up + T2 control on a launched sim (ros/revolve_sim/test)
+./revolve test simulator              # T1 bring-up, T2 control, T3 evaluator on a launched sim + the evaluator
+                                      # unit tests (ros/revolve_sim/test)
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
   moveit_py + the moveit_resources Panda, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
@@ -58,5 +92,6 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
   through the repo mount; never copied into git or the image. They are made once by `./revolve assets`
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
-  check script in it (`check_bringup.py`, `check_control.py`, rclpy; each prints one RESULT JSON line). Logs:
+  check script in it (`check_bringup.py`, `check_control.py`, `check_evaluator.py`, rclpy; each prints one RESULT
+  JSON line); `test_episode_unit.py` needs no sim. Logs:
   `runs/test_simulator/<time>/` or `$REVOLVE_TEST_LOGS`.

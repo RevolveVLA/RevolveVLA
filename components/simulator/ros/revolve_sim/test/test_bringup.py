@@ -1,14 +1,18 @@
-"""T1 bring-up: see conftest.py."""
+"""T1 bring-up, for every robot of robot_cases.ROBOTS: see conftest.py."""
+import json
+
+import robot_cases
 from conftest import problem_lines, result
 
+ROBOTS = robot_cases.ROBOTS
 EXPECTED_RATE_HZ = 30.0
 
 
 def test_bringup(sim):
-    r = result(sim["name"], "check_bringup.py", "", 180, sim["logs"] / "check_bringup.log")
-    (sim["logs"] / "bringup.json").write_text(__import__("json").dumps(r, indent=1))
+    r = result(sim, "check_bringup.py", "", 180, sim["logs"] / "check_bringup.log")
+    (sim["logs"] / "bringup.json").write_text(json.dumps(r, indent=1))
     assert r["controllers"] and all(s == "active" for s in r["controllers"].values()), r["controllers"]
-    assert {"walls", "kitchen_counter", "fridge", "table_01", "cup", "mobile_panda"} <= set(r["gz_models"]), r
+    assert {"walls", "kitchen_counter", "fridge", "table_01", "cup", sim["robot"]} <= set(r["gz_models"]), r
     assert all(abs(q) < 0.01 for js in r["scene_joints"].values() for q in js.values()), r["scene_joints"]
     assert set(r["scene_joints"]) == {"fridge", "kitchen_counter"}, r["scene_joints"]
     assert r["pose_err"]["xy_m"] <= 0.01 and abs(r["pose_err"]["yaw_deg"]) <= 1.0, r["pose_err"]

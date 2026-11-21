@@ -4,13 +4,14 @@ import json
 
 from conftest import host_path, problem_lines, result
 
+ROBOTS = ["mobile_panda"]
 TASK = "open_fridge_door"
 SIM_ARGS = ["--task", TASK, "--no-autostart"]
 TIMEOUT_S = 20.0                   # the task's approach timeout_s
 
 
 def test_idle_episode(sim):
-    r = result(sim["name"], "check_evaluator.py", f"--task {TASK} --mode idle", 240, sim["logs"] / "check_idle.log")
+    r = result(sim, "check_evaluator.py", f"--task {TASK} --mode idle", 240, sim["logs"] / "check_idle.log")
     (sim["logs"] / "evaluator_idle.json").write_text(json.dumps(r, indent=1))
     assert r["ready"] and r["start"][0], r["start"]
     # the plumbing: the evaluator's distance (gz PosePublisher, tf) vs the static scene geometry, within 1 cm

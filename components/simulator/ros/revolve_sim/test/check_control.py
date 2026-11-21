@@ -8,6 +8,7 @@ the arm and hand controllers. Ground truth: the gz model pose (/model/<robot>/po
   arm: the steady-state error at the start pose, then 3 joint targets and `ready`: max error while holding [deg].
   hand: open / close fully; then a static box is spawned between the open fingers and the hand closes on it:
         both finger contact topics must report contacts.
+The robot's controllers, joints, targets and probe box: robot_cases.CONTROL.
 
   python3 check_control.py --scene S --robot R [--repo /repo]
 """
@@ -34,16 +35,11 @@ from trajectory_msgs.msg import JointTrajectoryPoint
 
 from revolve_sim.robot import describe
 from revolve_sim.world import make_world
+from robot_cases import CONTROL
 
 RAMP_S, SEG_S, RATE_HZ = 0.5, 3.0, 50.0
 SEGMENTS = [('back', (-0.3, 0.0, 0.0)), ('forward', (0.3, 0.0, 0.0)), ('strafe_right', (0.0, -0.3, 0.0)),
             ('strafe_left', (0.0, 0.3, 0.0)), ('rotate_left', (0.0, 0.0, 0.6)), ('rotate_right', (0.0, 0.0, -0.6))]
-ARM_TARGETS = {'A': [0.5, -0.3, 0.3, -2.0, 0.3, 1.9, 0.5],
-               'B': [-0.6, 0.2, -0.4, -1.6, -0.3, 2.2, 1.2],
-               'C': [0.0, 0.0, 0.0, -1.2, 0.0, 1.2, 0.785],     # q2 = 0: joints 1 and 3 coaxial
-               'ready': [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]}
-ARM_JOINTS = [f'panda_joint{i}' for i in range(1, 8)]
-FINGER, OPEN, CLOSED = 'panda_finger_joint1', 0.04, 0.0
 
 
 def yaw_of(q):
@@ -55,7 +51,8 @@ def wrap(a):
 
 
 class Probe(Node):
-    def __init__(self, robot, world, contact_links):
+    def __init__(self, robot, world, contact_links, case=None):
+        case = case or CONTROL[robot]
         super().__init__('check_control', parameter_overrides=[rclpy.parameter.Parameter('use_sim_time', value=True)])
         self.lock = threading.Lock()
         self.poses, self.joints, self.contacts = [], {}, {lk: 0 for lk in contact_links}
@@ -66,8 +63,8 @@ class Probe(Node):
             self.create_subscription(Contacts, f'/world/{world}/model/{robot}/link/{lk}/sensor/contact/contact',
                                      lambda m, lk=lk: self.on_contact(lk, m), 50)
         self.cmd = self.create_publisher(TwistStamped, '/omni_wheel_drive_controller/cmd_vel', 10)
-        self.arm = ActionClient(self, FollowJointTrajectory, '/panda_arm_controller/follow_joint_trajectory')
-        self.hand = ActionClient(self, FollowJointTrajectory, '/panda_hand_controller/follow_joint_trajectory')
+        self.arm = ActionClient(self, FollowJointTrajectory, f'/{case["arm_controller"]}/follow_joint_trajectory')
+        self.hand = ActionClient(self, FollowJointTrajectory, f'/{case["hand_controller"]}/follow_joint_trajectory')
         self.tf = Buffer()
         self.tfl = TransformListener(self.tf, self)
 
@@ -153,6 +150,26 @@ def base_segment(poses, t0, t1, v):
     return out
 
 
+def quat_mul(a, b):
+    """Hamilton product of (x, y, z, w) quaternions."""
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return (aw * bx + ax * bw + ay * bz - az * by, aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw, aw * bw - ax * bx - ay * by - az * bz)
+
+
+def rotate(q, v):
+    x, y, z, _ = quat_mul(quat_mul(q, (*v, 0.0)), (-q[0], -q[1], -q[2], q[3]))
+    return np.array([x, y, z])
+
+
+def rpy_of(q):
+    x, y, z, w = q
+    return (math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)),
+            math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x)))),
+            math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--scene', required=True)
@@ -161,11 +178,13 @@ def main():
     a = ap.parse_args()
     _, scene, _, _ = make_world(a.scene, a.repo)
     robot, _, _, contact_links = describe(a.repo, a.robot)
+    case = CONTROL[robot.name]
+    arm_joints, finger = case['arm_joints'], case['hand_joint']
     contact_links = [lk for lk in contact_links if lk in robot.groups.get('fingers', contact_links)]
     start_q = robot.poses[scene.robot_start.arm] if isinstance(scene.robot_start.arm, str) else scene.robot_start.arm
 
     rclpy.init()
-    n = Probe(robot.name, scene.name, contact_links)
+    n = Probe(robot.name, scene.name, contact_links, case)
     ex = MultiThreadedExecutor(num_threads=4)
     ex.add_node(n)
     threading.Thread(target=ex.spin, daemon=True).start()
@@ -173,7 +192,7 @@ def main():
     n.wait(3.0)
     with n.lock:
         q = dict(n.joints)
-    out['arm_start_err_deg'] = [round(math.degrees(q[j] - t), 3) for j, t in zip(ARM_JOINTS, start_q)]
+    out['arm_start_err_deg'] = [round(math.degrees(q[j] - t), 3) for j, t in zip(arm_joints, start_q)]
 
     # base
     out['base'] = {}
@@ -190,45 +209,52 @@ def main():
 
     # arm: targets reached in 3 s, then held 2 s
     out['arm'] = {}
-    for name, target in ARM_TARGETS.items():
-        code = n.goal(n.arm, ARM_JOINTS, target, 3.0)
+    for name, target in case['arm_targets'].items():
+        code = n.goal(n.arm, arm_joints, target, 3.0)
         n.wait(1.0)
         with n.lock:
             n.joint_log = []
         n.wait(2.0)
         with n.lock:
             log, n.joint_log = n.joint_log, None
-        err = np.array([[s[j] - t for j, t in zip(ARM_JOINTS, target)] for s in log])
+        err = np.array([[s[j] - t for j, t in zip(arm_joints, target)] for s in log])
         out['arm'][name] = {'result': code, 'max_err_deg': round(float(np.degrees(np.abs(err).max())), 3),
                             'steady_err_deg': [round(float(x), 3) for x in np.degrees(err[-1])]}
 
     # hand: close, open (free), then close on a box spawned between the open fingers
     out['hand'] = {}
-    for name, target in (('close', CLOSED), ('open', OPEN)):
-        code = n.goal(n.hand, [FINGER], [target], 1.0)
+    for name in ('close', 'open'):
+        code = n.goal(n.hand, [finger], [case['closed' if name == 'close' else 'open']], 1.0)
         n.wait(1.0)
         with n.lock:
-            out['hand'][name] = {'result': code, 'finger_m': round(n.joints[FINGER], 4)}
-    tcp = n.tf.lookup_transform('base_footprint', 'panda_tcp', rclpy.time.Time(), timeout=rclpy.duration.Duration(
-        seconds=5))
+            out['hand'][name] = {'result': code, 'joint': round(n.joints[finger], 4)}
+    tcp = n.tf.lookup_transform('base_footprint', robot.frames['tcp'], rclpy.time.Time(),
+                                timeout=rclpy.duration.Duration(seconds=5))
     with n.lock:
         _, bx, by, bz, byaw = n.poses[-1]
-    tx, ty, tz = tcp.transform.translation.x, tcp.transform.translation.y, tcp.transform.translation.z
-    wx, wy = bx + math.cos(byaw) * tx - math.sin(byaw) * ty, by + math.sin(byaw) * tx + math.cos(byaw) * ty
+    r = tcp.transform.rotation
+    q_tcp = quat_mul((0.0, 0.0, math.sin(byaw / 2), math.cos(byaw / 2)), (r.x, r.y, r.z, r.w))   # in the world
+    tr = tcp.transform.translation
+    c = (np.array([bx, by, bz]) + rotate((0.0, 0.0, math.sin(byaw / 2), math.cos(byaw / 2)), (tr.x, tr.y, tr.z))
+         + rotate(q_tcp, case['box_offset']))
+    rpy = rpy_of(q_tcp) if case['box_aligned'] else (0.0, 0.0, 0.0)
+    s = case['box']
     box = ('<sdf version="1.11"><model name="contact_probe"><static>true</static><link name="l"><collision name="c">'
-           '<geometry><box><size>0.03 0.03 0.03</size></box></geometry></collision></link></model></sdf>')
+           f'<geometry><box><size>{s} {s} {s}</size></box></geometry></collision></link></model></sdf>')
     r = subprocess.run(['ros2', 'run', 'ros_gz_sim', 'create', '-world', scene.name, '-string', box,
-                        '-x', str(wx), '-y', str(wy), '-z', str(bz + tz)], capture_output=True, text=True, timeout=60)
+                        '-x', str(c[0]), '-y', str(c[1]), '-z', str(c[2]),
+                        '-R', str(rpy[0]), '-P', str(rpy[1]), '-Y', str(rpy[2])], capture_output=True, text=True,
+                       timeout=60)
     out['probe_spawned'] = r.returncode == 0
     n.wait(0.5)
     with n.lock:
         n.contacts = {lk: 0 for lk in n.contacts}
-    code = n.goal(n.hand, [FINGER], [CLOSED], 1.0)
+    code = n.goal(n.hand, [finger], [case['closed']], 1.0)
     n.wait(1.5)
     with n.lock:
-        out['hand']['grasp_box'] = {'result': code, 'finger_m': round(n.joints[FINGER], 4),
+        out['hand']['grasp_box'] = {'result': code, 'joint': round(n.joints[finger], 4),
                                     'contact_msgs': dict(n.contacts)}
-    n.goal(n.hand, [FINGER], [OPEN], 1.0)
+    n.goal(n.hand, [finger], [case['open']], 1.0)
     print('RESULT ' + json.dumps(out))
     ex.shutdown()
     rclpy.shutdown()

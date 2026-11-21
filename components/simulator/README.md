@@ -10,7 +10,12 @@ episodes live (phases, metrics, sanity checks) and records them.
 ## Run
 ```
 ./revolve sim --scene kitchen_partnet --robot mobile_panda [--task open_fridge_door [--no-autostart]] [--gui]
+./revolve sim --scene kitchen_partnet --robot mobile_so101
 ```
+Robots (`specs/robots/`): mobile_panda (the moveit_resources Panda) and mobile_so101 (the SO-101 arm), both on the
+shared omni base (`common/omni_base.urdf.xacro`); `common/so101.urdf.xacro` is the SO-101 macro (ported from
+ThirdParty/so_arm100 so101_new_calib.urdf, `scale` arg, box collisions), `common/sensors.urdf.xacro` the camera and
+contact sensor macros.
 One container (`--name`, default `revolve-sim`) on the GPU and the host network, isolated from other ROS 2 / gz
 instances on the host: its own `ROS_DOMAIN_ID` (`--domain-id`, default derived from the container name, 1..101,
 skipping the domains of the other running containers; printed at start: export it to use ROS 2 from the host) and
@@ -33,7 +38,8 @@ sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
   (ros_gz_interfaces/Contacts), `/<camera>/camera_info`; camera images through ros_gz_image: `/<camera>/image`.
 - Commands: `/omni_wheel_drive_controller/cmd_vel` (geometry_msgs/TwistStamped, robot frame; ramp changes over
   ~0.5 s, the controller has no limiter), FollowJointTrajectory on `/<arm controller>/follow_joint_trajectory`
-  and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller).
+  and the hand controller (mobile_panda: panda_arm_controller, panda_hand_controller; mobile_so101:
+  arm_controller, gripper_controller).
 - MoveIt 2: a robot's MoveIt config lives with its description in `specs/robots/<r>/moveit/` (mobile_panda: the
   moveit_resources Panda SRDF groups + the omni base's disabled collisions, no virtual joint so MoveIt plans in
   the base frame; moveit_controllers.yaml: arm and hand as FollowJointTrajectory; moveit_py.yaml: the planning
@@ -85,9 +91,9 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
 ```
 ./revolve build simulator [--clean]   # image revolve-simulator (deps only), then Kura, ros_gz, gz_ros2_control,
                                       # revolve_sim
-./revolve test simulator              # T1 bring-up, T2 control, T3 evaluator, T4 open_fridge_door (MoveIt) on
-                                      # a launched sim + the evaluator unit tests (ros/revolve_sim/test);
-                                      # -- -m "not slow" skips T4
+./revolve test simulator              # T1 bring-up, T2 control (every robot), T3 evaluator, T4 open_fridge_door
+                                      # (MoveIt; mobile_panda) on a launched sim + the evaluator unit tests
+                                      # (ros/revolve_sim/test); -- -m "not slow" skips T4
 ```
 - `Dockerfile`: dependencies only, Ubuntu 26.04 + ROS 2 Lyrical binaries (ros2_control, ros2_controllers, MoveIt 2 +
   moveit_py + the moveit_resources Panda, xacro, robot_state_publisher, rosbag2, launch_testing) + Kura's apt build
@@ -106,5 +112,7 @@ support velocity limits" warning per joint with a URDF velocity limit (MuJoCo ha
   (`assets_pipeline/`, its own image; see its README).
 - Tests (`ros/revolve_sim/test`, host pytest): each module starts a fresh `revolve sim` container and runs a
   check script in it (`check_bringup.py`, `check_control.py`, `check_evaluator.py`, `check_open_door.py`, rclpy;
-  each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. Logs:
-  `runs/test_simulator/<time>/` or `$REVOLVE_TEST_LOGS`.
+  each prints one RESULT JSON line); `test_episode_unit.py` needs no sim. A module runs once per robot of its
+  `ROBOTS` (T1 / T2: `robot_cases.ROBOTS`, with the per-robot T2 targets in `robot_cases.CONTROL`);
+  `REVOLVE_TEST_ROBOT=<r>[,<r>]` keeps only those. Logs: `runs/test_simulator/<time>/<module>/<robot>/` or
+  `$REVOLVE_TEST_LOGS`.

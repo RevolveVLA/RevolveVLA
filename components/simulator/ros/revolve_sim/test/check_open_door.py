@@ -35,8 +35,9 @@ from sensor_msgs.msg import JointState
 from revolve_common import specs
 from shape_msgs.msg import SolidPrimitive
 
-from check_control import FINGER, OPEN, RAMP_S, RATE_HZ
+from check_control import RAMP_S, RATE_HZ
 from check_evaluator import EvalProbe
+from robot_cases import CONTROL
 from revolve_sim.metrics import rpy_matrix
 from revolve_sim.moveit import moveit_params
 from revolve_sim.robot import describe
@@ -53,6 +54,7 @@ ARC_ARM, ARC_TOTAL = math.radians(20.0), math.radians(70.0)
 V_DRIVE, W_DRIVE, W_ORBIT = 0.3, 0.5, 0.12
 CIRC_SCALE = 0.1                # Pilz velocity / acceleration scaling of the arm's arc (moveit_py.yaml: pilz_circ)
 CENTRE_MM, CENTRE_TRIES = 1.0, 4   # TCP on the bar centre within [mm] (handle x, y) before closing
+FINGER, OPEN = CONTROL['mobile_panda']['hand_joint'], CONTROL['mobile_panda']['open']
 FINGER_GRIP = -0.04              # finger target past closed: the effort JTC squeezes the 14 mm bar at its 12 N clamp
 
 

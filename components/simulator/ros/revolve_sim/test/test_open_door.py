@@ -7,13 +7,14 @@ import json
 import pytest
 from conftest import host_path, problem_lines, result
 
+ROBOTS = ["mobile_panda"]
 TASK = "open_fridge_door"
 SIM_ARGS = ["--task", TASK, "--no-autostart"]
 
 
 @pytest.mark.slow
 def test_open_door(sim):
-    r = result(sim["name"], "check_open_door.py", f"--task {TASK}", 300, sim["logs"] / "check_open_door.log")
+    r = result(sim, "check_open_door.py", f"--task {TASK}", 300, sim["logs"] / "check_open_door.log")
     (sim["logs"] / "open_door.json").write_text(json.dumps(r, indent=1))
     assert r["ready"] and r["start"][0], r["start"]
     assert "error" not in r, r["error"]

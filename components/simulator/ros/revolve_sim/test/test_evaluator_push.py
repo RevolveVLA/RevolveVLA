@@ -5,12 +5,13 @@ import json
 
 from conftest import problem_lines, result
 
+ROBOTS = ["mobile_panda"]
 TASK = "open_fridge_door"
 SIM_ARGS = ["--task", TASK, "--no-autostart"]
 
 
 def test_push_into_fridge(sim):
-    r = result(sim["name"], "check_evaluator.py", f"--task {TASK} --mode push --speed 0.3 --after 3",
+    r = result(sim, "check_evaluator.py", f"--task {TASK} --mode push --speed 0.3 --after 3",
                240, sim["logs"] / "check_push.log")
     (sim["logs"] / "evaluator_push.json").write_text(json.dumps(r, indent=1))
     assert r["ready"] and r["start"][0], r["start"]

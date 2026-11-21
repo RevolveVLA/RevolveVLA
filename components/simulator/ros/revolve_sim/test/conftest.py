@@ -11,10 +11,12 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
   T4 positive (test_open_door.py, marker `slow`): MoveIt 2 (moveit_py) plans the arm, the base gets open-loop
      ramped TwistStamped segments (test code only): open_fridge_door passes approach, grasp and open.
   Unit tests of the evaluator logic without a sim: test_episode_unit.py.
-A test module sets SIM_ARGS (extra `revolve sim` args, e.g. --task) for its sim.
+A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot
+of robot_cases.ROBOTS) and SIM_ARGS (extra `revolve sim` args, e.g. --task) for its sim.
 
-Env: REVOLVE_TEST_SCENE / REVOLVE_TEST_ROBOT (default kitchen_partnet / mobile_panda), REVOLVE_TEST_LOGS (default
-runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's assets.
+Env: REVOLVE_TEST_SCENE (default kitchen_partnet), REVOLVE_TEST_ROBOT (comma-separated: only these of each module's
+ROBOTS), REVOLVE_TEST_LOGS (default runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's
+assets.
 """
 import json
 import os
@@ -29,7 +31,7 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[5]
 SCENE = os.environ.get("REVOLVE_TEST_SCENE", "kitchen_partnet")
-ROBOT = os.environ.get("REVOLVE_TEST_ROBOT", "mobile_panda")
+ONLY_ROBOTS = [r for r in os.environ.get("REVOLVE_TEST_ROBOT", "").split(",") if r]
 TEST_IN = "/repo/components/simulator/ros/revolve_sim/test"
 # gz / ROS problem lines; the known benign ones: MuJoCo's NaN-in-CTRL line at load (a WARNING, not matched)
 PROBLEM = re.compile(r"\[(error|Err|ERROR|FATAL|critical)\]|Traceback|not added")
@@ -38,15 +40,22 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "slow: the long positive episodes (T4); deselect with -m 'not slow'")
 
 
+def pytest_generate_tests(metafunc):
+    if "robot" in metafunc.fixturenames:
+        robots = getattr(metafunc.module, "ROBOTS", ["mobile_panda"])
+        robots = [r for r in robots if not ONLY_ROBOTS or r in ONLY_ROBOTS]
+        metafunc.parametrize("robot", robots, scope="module")
+
+
 def sh(name, cmd, timeout):
     """Run cmd in the container (bash: the image's ROS env)."""
     return subprocess.run(["docker", "exec", name, "bash", "-c", cmd], capture_output=True, text=True,
                           timeout=timeout)
 
 
-def result(name, script, args, timeout, log):
-    """Run a check script in the container -> its RESULT JSON."""
-    r = sh(name, f"python3 {TEST_IN}/{script} --scene {SCENE} --robot {ROBOT} {args}", timeout)
+def result(sim, script, args, timeout, log):
+    """Run a check script in the sim's container -> its RESULT JSON."""
+    r = sh(sim["name"], f"python3 {TEST_IN}/{script} --scene {SCENE} --robot {sim['robot']} {args}", timeout)
     log.write_text(r.stdout + r.stderr)
     lines = [ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")]
     assert lines, f"{script} printed no RESULT (rc {r.returncode}): see {log}"
@@ -54,20 +63,20 @@ def result(name, script, args, timeout, log):
 
 
 @pytest.fixture(scope="module")
-def sim(request):
+def sim(request, robot):
     if shutil.which("docker") is None:
         pytest.skip("needs docker")
     logs = Path(os.environ.get("REVOLVE_TEST_LOGS", REPO / "runs" / "test_simulator" / time.strftime("%Y%m%d_%H%M%S")))
-    logs = logs / request.module.__name__.split(".")[-1]
+    logs = logs / request.module.__name__.split(".")[-1] / robot
     logs.mkdir(parents=True, exist_ok=True)
     name = f"revolve-sim-test-{os.getpid()}"
-    rdir = REPO / "specs" / "robots" / ROBOT
+    rdir = REPO / "specs" / "robots" / robot
     cfile = rdir / yaml.safe_load((rdir / "robot.yaml").read_text())["controllers"]
     controllers = [k for k, v in yaml.safe_load(cfile.read_text())["controller_manager"]["ros__parameters"].items()
                    if isinstance(v, dict) and "type" in v]
     launch_log = logs / "launch.log"
     with open(launch_log, "w") as f:
-        p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", ROBOT, "--name", name,
+        p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", robot, "--name", name,
                               *getattr(request.module, "SIM_ARGS", [])],
                              stdout=f, stderr=subprocess.STDOUT, cwd=REPO, start_new_session=True)
     try:
@@ -84,7 +93,7 @@ def sim(request):
                     break
             assert time.time() < deadline, f"controllers not active after 240 s: see {launch_log}"
             time.sleep(2)
-        yield {"name": name, "logs": logs, "launch_log": launch_log}
+        yield {"name": name, "robot": robot, "logs": logs, "launch_log": launch_log}
     finally:
         subprocess.run(["docker", "rm", "-f", name], capture_output=True)   # kills the whole launch
         try:

@@ -1,0 +1,20 @@
+"""T1 bring-up: see conftest.py."""
+from conftest import problem_lines, result
+
+EXPECTED_RATE_HZ = 30.0
+
+
+def test_bringup(sim):
+    r = result(sim["name"], "check_bringup.py", "", 180, sim["logs"] / "check_bringup.log")
+    (sim["logs"] / "bringup.json").write_text(__import__("json").dumps(r, indent=1))
+    assert r["controllers"] and all(s == "active" for s in r["controllers"].values()), r["controllers"]
+    assert {"walls", "kitchen_counter", "fridge", "table_01", "cup", "mobile_panda"} <= set(r["gz_models"]), r
+    assert all(abs(q) < 0.01 for js in r["scene_joints"].values() for q in js.values()), r["scene_joints"]
+    assert set(r["scene_joints"]) == {"fridge", "kitchen_counter"}, r["scene_joints"]
+    assert r["pose_err"]["xy_m"] <= 0.01 and abs(r["pose_err"]["yaw_deg"]) <= 1.0, r["pose_err"]
+    for cam, c in r["cameras"].items():
+        assert abs(c["rate_hz"] - EXPECTED_RATE_HZ) <= 0.05 * EXPECTED_RATE_HZ, (cam, c)
+        assert c["size"] == [480, 480] and c["min_std"] > 1.0, (cam, c)
+    assert len(r["cameras"]) == 3
+    assert r["contact_topics"] and all(r["contact_topics"].values()), r["contact_topics"]
+    assert not problem_lines(sim["launch_log"]), problem_lines(sim["launch_log"])[:5]

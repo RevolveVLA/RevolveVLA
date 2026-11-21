@@ -1,0 +1,24 @@
+"""T2 control: see conftest.py and check_control.py."""
+import json
+
+from conftest import problem_lines, result
+
+SPEED_PCT, HEADING_DEG, ARM_DEG = 5.0, 3.0, 1.0
+
+
+def test_control(sim):
+    r = result(sim["name"], "check_control.py", "", 400, sim["logs"] / "check_control.log")
+    (sim["logs"] / "control.json").write_text(json.dumps(r, indent=1))
+    for seg, m in r["base"].items():
+        if "speed_err_pct" in m:
+            assert abs(m["speed_err_pct"]) <= SPEED_PCT and abs(m["heading_err_deg"]) <= HEADING_DEG, (seg, m)
+        if "wz_err_pct" in m:
+            assert abs(m["wz_err_pct"]) <= SPEED_PCT, (seg, m)
+    for name, m in r["arm"].items():
+        assert m["result"] == 0 and m["max_err_deg"] <= ARM_DEG, (name, m)
+    assert max(map(abs, r["arm_start_err_deg"])) <= ARM_DEG, r["arm_start_err_deg"]
+    assert r["hand"]["close"]["finger_m"] <= 0.002 and r["hand"]["open"]["finger_m"] >= 0.038, r["hand"]
+    assert r["probe_spawned"], r
+    g = r["hand"]["grasp_box"]
+    assert 0.010 <= g["finger_m"] <= 0.020 and all(v > 0 for v in g["contact_msgs"].values()), g
+    assert not problem_lines(sim["launch_log"]), problem_lines(sim["launch_log"])[:5]

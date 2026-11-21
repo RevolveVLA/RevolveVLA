@@ -134,7 +134,7 @@ RevolveVLA builds on these projects:
   the fridge and the cabinet,
   [ReplicaCAD](https://huggingface.co/datasets/ai-habitat/ReplicaCAD_dataset)
   the table, [ambientCG](https://ambientcg.com) the room textures, and
-  [`franka_description`](https://github.com/frankarobotics/franka_description)
+  [MoveIt resources](https://github.com/moveit/moveit_resources)
   the Panda model.
 
 ## Licence

@@ -6,14 +6,10 @@
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
-  ./revolve run <experiment>         start an experiment loop (name under specs/experiments/ or a yaml path) in
-                                     the manager container, detached; log runs/<exp>/manager.log
-  ./revolve resume <experiment> [--accept-spec-change]   restart the manager on runs/<exp>/state.json (re-attaches
-                                     running steps); --accept-spec-change: continue after the yaml was edited (done
-                                     steps are kept as they are; the change is logged in state.json spec_changes)
-  ./revolve status <experiment>      seed x phase table per turn + the running step's live progress
-  ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
-  ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
+  ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
+                                     robot and task under specs/, and tasks/sanity.yaml), against the model SDFs in
+                                     the scene's asset search path; --robot: also check the tasks with robot R;
+                                     --no-assets: names and syntax only (no asset files read)
 
 Python: the repo's .venv (git-ignored; see common/README.md), with the host's PYTHONPATH (ROS) dropped.
 """
@@ -43,31 +39,29 @@ def not_implemented(what):
 
 def cmd_validate(a):
     from revolve_common import specs
+    root = REPO / "specs"
+    paths = [Path(p) for p in a.spec] or specs.all_specs(root)
     rc = 0
-    jobs = []
-    for p in a.spec:       # a robot-free task without $REVOLVE_ROBOT: validated for every robot
-        task = Path(p).resolve().parent.parent.name == "tasks" and not os.environ.get(specs.ROBOT_ENV)
-        robots = sorted(d.name for d in (specs.find_root(p) / "robots").iterdir() if d.is_dir()) if task else [None]
-        jobs += [(p, rb) for rb in robots]
-    for p, rb in jobs:
+    for p in paths:
+        p = p.resolve()
+        p = p.relative_to(REPO) if p.is_relative_to(REPO) else p
         try:
-            r = specs.load(p, robot=rb)
+            r = specs.load(p, assets=not a.no_assets)
+            if isinstance(r, specs.Task):
+                res = specs.resolve(specs.find_root(p), r.name, robot=a.robot, assets=not a.no_assets)
+                phases = ", ".join(f"{ph.name} ({len(ph.done)} done, {len(ph.while_)} while)" for ph in r.phases)
+                with_robot = f", robot {a.robot}" if a.robot else ""
+                print(f"OK {p}: task {r.name} on scene {r.scene}{with_robot}; phases {phases}; "
+                      f"sanity {', '.join(res.sanity)}")
+            elif isinstance(r, specs.Scene):
+                print(f"OK {p}: scene {r.name}, models {', '.join(r.models)}")
+            elif isinstance(r, specs.Robot):
+                print(f"OK {p}: robot {r.name}, poses {', '.join(r.poses)}")
+            else:
+                print(f"OK {p}: sanity base, checks {', '.join(r)}")
         except specs.SpecError as e:
             print(e, file=sys.stderr)
             rc = 1
-            continue
-        if isinstance(r, specs.Resolved):
-            t = r.task
-            head = f"experiment {r.experiment.name} -> " if r.experiment else ""
-            phases = ", ".join(f"{ph.name} ({len(ph.pass_.all)})" for ph in t.phases)
-            print(f"OK {p}: {head}task {t.name} -> robot {r.robot.name}, scene {r.scene.name}; phases {phases}")
-            if r.experiment:
-                s = r.experiment.seeds
-                print(f"   seeds train {len(s.train.seeds())}, probe {len(s.probe.seeds())}, "
-                      f"heldout {len(s.heldout.seeds())} (disjoint); max_turns {r.experiment.max_turns}, "
-                      f"training {r.experiment.training.mode} on {r.experiment.training.backend}")
-        else:
-            print(f"OK {p}: {type(r).__name__.lower()} {r.name}")
     return rc
 
 
@@ -102,6 +96,9 @@ def cmd_test(a):
              "integration": REPO / "tests" / "integration"}
     if a.component not in tests:
         return not_implemented(f"test {a.component}")
+    if not all(Path(d).is_dir() for d in (tests[a.component] if isinstance(tests[a.component], list)
+                                          else [tests[a.component]])):
+        return not_implemented(f"test {a.component} (no tests)")
     extra = a.pytest_args[1:] if a.pytest_args[:1] == ["--"] else a.pytest_args
     dirs = tests[a.component] if isinstance(tests[a.component], list) else [tests[a.component]]
     return subprocess.call([sys.executable, "-m", "pytest", "-q", *map(str, dirs), *extra], cwd=REPO)
@@ -119,12 +116,10 @@ def main():
     t = sub.add_parser("test")
     t.add_argument("component", choices=COMPONENTS)
     t.add_argument("pytest_args", nargs=argparse.REMAINDER)
-    for name in ("run", "resume", "status", "stop"):
-        sub.add_parser(name).add_argument("experiment")
-    sub.choices["resume"].add_argument("--accept-spec-change", action="store_true",
-                                       help="the yaml changed since the run started: continue with the new one")
     v = sub.add_parser("validate")
-    v.add_argument("spec", nargs="+")
+    v.add_argument("spec", nargs="*")
+    v.add_argument("--robot", help="also check the tasks with this robot (specs/robots/<robot>)")
+    v.add_argument("--no-assets", action="store_true", help="names and syntax only: no asset files read")
     if sys.argv[1:2] == ["assets"]:
         return subprocess.call(["bash", str(REPO / "assets_pipeline" / "make_assets.sh"), *sys.argv[2:]], cwd=REPO)
     a = ap.parse_args()
@@ -132,14 +127,7 @@ def main():
         return cmd_validate(a)
     if a.cmd == "test":
         return cmd_test(a)
-    if a.cmd == "build":
-        return cmd_build(a)
-    sys.path[:0] = [str(REPO / "components" / "manager" / "src")]
-    from manager import cli
-    if a.cmd in ("run", "resume"):
-        return cli.start(a.experiment, resume=a.cmd == "resume",
-                         accept_spec_change=getattr(a, "accept_spec_change", False))
-    return getattr(cli, a.cmd)(a.experiment)
+    return cmd_build(a)
 
 
 if __name__ == "__main__":

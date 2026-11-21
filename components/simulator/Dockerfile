@@ -75,6 +75,11 @@ RUN mkdir -p /usr/share/glvnd/egl_vendor.d \
     && printf '{"file_format_version": "1.0.0", "ICD": {"library_path": "libEGL_nvidia.so.0"}}\n' \
          > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
+# --- revolve_common.specs (the scene / robot / task specs, read from the repo mount): pydantic from apt, which
+# matches Ubuntu's typing_extensions (pip cannot replace that one) ---
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pydantic \
+    && rm -rf /var/lib/apt/lists/* && python3 -c 'import pydantic, yaml'
+
 # Kura first on every path; /opt/ros/lyrical and the ros_gz workspace come after it via /etc/bash.bashrc.
 ENV GZ_WS=/opt/gz_ws/install ROS_GZ_WS=/opt/ros_gz_ws/install ROS_DISTRO=lyrical
 ENV NVIDIA_VISIBLE_DEVICES=all \

@@ -114,6 +114,7 @@ def sim_docker_args(name, gui=False, domain=0):
     args = ["docker", "run", "--rm", "--init", "--name", name, "--gpus", "all", "--network", "host", "--ipc", "host",
             "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "REVOLVE_REPO=/repo",
             "-e", "PYTHONPATH=/repo/common", "-e", f"GZ_PARTITION={name}", "-e", f"ROS_DOMAIN_ID={domain}",
+            "-e", "FASTDDS_BUILTIN_TRANSPORTS=UDPv4",
             "-v", f"{REPO}:/repo:ro", "-v", f"{REPO}/runs:/repo/runs",
             "-v", f"{REPO}/ThirdParty/gz_kura/install:/opt/gz_ws/install:ro",
             "-v", f"{REPO}/ThirdParty/ros_gz_ws/install:/opt/ros_gz_ws/install:ro"]

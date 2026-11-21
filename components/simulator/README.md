@@ -21,7 +21,10 @@ the camera and contact sensor macros.
 One container (`--name`, default `revolve-sim`) on the GPU and the host network, isolated from other ROS 2 / gz
 instances on the host: its own `ROS_DOMAIN_ID` (`--domain-id`, default derived from the container name, 1..101,
 skipping the domains of the other running containers; printed at start: export it to use ROS 2 from the host) and
-its own `GZ_PARTITION` (the container name), the repo mounted read-only at `/repo` (`runs/` writable). It runs `ros2 launch revolve_sim
+its own `GZ_PARTITION` (the container name), the repo mounted read-only at `/repo` (`runs/` writable). ROS 2 in
+the container uses Fast DDS over UDPv4 only (`FASTDDS_BUILTIN_TRANSPORTS=UDPv4`): no shared-memory segments, which
+a killed container (`docker rm -f`) would leave in the host's /dev/shm (`--ipc host`); clients on the host network
+reach it over UDP as before. It runs `ros2 launch revolve_sim
 sim.launch.py`, the upstream ros_gz / gz_ros2_control layout:
 - `revolve_sim/world.py`: scene.yaml -> world SDF (`python3 -m revolve_sim.world <scene>` prints it): the models as
   `model://` includes at their poses (search path = the scene's `assets`), a JointStatePublisher on every

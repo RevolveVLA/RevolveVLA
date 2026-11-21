@@ -92,7 +92,10 @@ class Probe(Node):
         return self.get_clock().now().nanoseconds * 1e-9
 
     def wait(self, sim_s, wall_timeout=120):
-        t0, w0 = self.now(), time.time()
+        w0 = time.time()
+        while self.now() == 0.0 and time.time() - w0 < wall_timeout:   # no /clock yet: sim time 0
+            time.sleep(0.005)
+        t0 = self.now()
         while self.now() - t0 < sim_s and time.time() - w0 < wall_timeout:
             time.sleep(0.005)
 
@@ -158,6 +161,7 @@ def main():
     a = ap.parse_args()
     _, scene, _, _ = make_world(a.scene, a.repo)
     robot, _, _, contact_links = describe(a.repo, a.robot)
+    contact_links = [lk for lk in contact_links if lk in robot.groups.get('fingers', contact_links)]
     start_q = robot.poses[scene.robot_start.arm] if isinstance(scene.robot_start.arm, str) else scene.robot_start.arm
 
     rclpy.init()

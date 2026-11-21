@@ -5,6 +5,11 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
      cameras at rate with non-empty images, the finger contact topics, no gz/ROS error lines.
   T2 control (test_control.py): base drive / strafe / rotate tracking against the gz ground truth, arm joint targets
      reached and held (effort JTC), gripper open / close, finger contacts.
+  T3 evaluator negatives (test_evaluator_idle.py, test_evaluator_push.py; the sim with the task, episodes started
+     on /evaluator/start): an idle episode fails `approach` on its timeout; driving the base into the fridge fails
+     on a sanity check; the evaluator's metric values at the start match the scene geometry.
+  Unit tests of the evaluator logic without a sim: test_episode_unit.py.
+A test module sets SIM_ARGS (extra `revolve sim` args, e.g. --task) for its sim.
 
 Env: REVOLVE_TEST_SCENE / REVOLVE_TEST_ROBOT (default kitchen_partnet / mobile_panda), REVOLVE_TEST_LOGS (default
 runs/test_simulator/<time>). Needs `./revolve build simulator` and the scene's assets.
@@ -35,6 +40,7 @@ def sh(name, cmd, timeout):
 
 
 def result(name, script, args, timeout, log):
+    """Run a check script in the container -> its RESULT JSON."""
     r = sh(name, f"python3 {TEST_IN}/{script} --scene {SCENE} --robot {ROBOT} {args}", timeout)
     log.write_text(r.stdout + r.stderr)
     lines = [ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")]
@@ -57,7 +63,8 @@ def sim(request):
     env = {**os.environ, "ROS_DOMAIN_ID": str(random.randint(10, 99))}
     launch_log = logs / "launch.log"
     with open(launch_log, "w") as f:
-        p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", ROBOT, "--name", name],
+        p = subprocess.Popen([str(REPO / "revolve"), "sim", "--scene", SCENE, "--robot", ROBOT, "--name", name,
+                              *getattr(request.module, "SIM_ARGS", [])],
                              stdout=f, stderr=subprocess.STDOUT, env=env, cwd=REPO, start_new_session=True)
     try:
         deadline = time.time() + 240
@@ -80,6 +87,11 @@ def sim(request):
             p.wait(timeout=30)
         except subprocess.TimeoutExpired:
             p.kill()
+
+
+def host_path(container_path):
+    """A /repo/... path in the sim container -> the host path."""
+    return REPO / Path(container_path).relative_to("/repo")
 
 
 def problem_lines(launch_log):

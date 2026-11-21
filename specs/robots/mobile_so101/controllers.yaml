@@ -1,0 +1,69 @@
+# ros2_control controllers (upstream ros2_controllers only), loaded by gz_ros2_control. The controller manager
+# runs every 1 ms physics step. Base: omni_wheel_drive_controller (~/cmd_vel: geometry_msgs/TwistStamped, robot
+# frame), as mobile_panda. Arm and jaw: joint_trajectory_controller on effort with PID gains (the gz_ros2_control
+# effort demo layout); no gravity compensation, the I terms absorb gravity; the joint damping is in the URDF
+# (../common/so101.urdf.xacro, implicit in MuJoCo), so no D terms.
+controller_manager:
+  ros__parameters:
+    update_rate: 1000  # Hz
+    use_sim_time: true
+    # MuJoCo enforces the joint ranges and effort limits itself; ros2_control's limiter would log an ERROR every
+    # time an effort-controlled joint rests on a limit (the closed or fully open jaw).
+    enforce_command_limits: false
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    omni_wheel_drive_controller:
+      type: omni_wheel_drive_controller/OmniWheelDriveController
+
+    arm_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+    gripper_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+omni_wheel_drive_controller:
+  ros__parameters:
+    # anticlockwise from the first wheel, which sits at wheel_offset from +x (X layout: front-left at 45 deg)
+    wheel_offset: 0.7853981633974483
+    wheel_names: [front_left_wheel_joint, rear_left_wheel_joint, rear_right_wheel_joint, front_right_wheel_joint]
+    robot_radius: 0.22
+    wheel_radius: 0.0776   # effective rolling radius (0.08 rim minus the sphere-roller dip), calibrated
+    odom_frame_id: odom
+    tf_frame_prefix: "~"   # the controller's namespace (none here): frames stay odom / base_footprint
+    base_frame_id: base_footprint
+    open_loop: false
+    position_feedback: true
+    enable_odom_tf: true
+    cmd_vel_timeout: 0.5
+
+arm_controller:
+  ros__parameters:
+    joints: [shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll]
+    command_interfaces: [effort]
+    state_interfaces: [position, velocity]
+    allow_nonzero_velocity_at_trajectory_end: true
+    # p: the old torque controller's kp; i = p / 0.25 s. u_clamp 5 N m: above the STS3215's stall torque
+    # (2.94 N m at 12 V) so that the joint damping's drag on fast moves does not saturate the loop.
+    gains:
+      shoulder_pan: {p: 60.0, i: 240.0, d: 0.0, i_clamp_max: 5.0, i_clamp_min: -5.0, u_clamp_max: 5.0, u_clamp_min: -5.0,
+                     antiwindup_strategy: conditional_integration}
+      shoulder_lift: {p: 60.0, i: 240.0, d: 0.0, i_clamp_max: 5.0, i_clamp_min: -5.0, u_clamp_max: 5.0, u_clamp_min: -5.0,
+                      antiwindup_strategy: conditional_integration}
+      elbow_flex: {p: 40.0, i: 160.0, d: 0.0, i_clamp_max: 5.0, i_clamp_min: -5.0, u_clamp_max: 5.0, u_clamp_min: -5.0,
+                   antiwindup_strategy: conditional_integration}
+      wrist_flex: {p: 20.0, i: 80.0, d: 0.0, i_clamp_max: 5.0, i_clamp_min: -5.0, u_clamp_max: 5.0, u_clamp_min: -5.0,
+                   antiwindup_strategy: conditional_integration}
+      wrist_roll: {p: 10.0, i: 40.0, d: 0.0, i_clamp_max: 5.0, i_clamp_min: -5.0, u_clamp_max: 5.0, u_clamp_min: -5.0,
+                   antiwindup_strategy: conditional_integration}
+
+gripper_controller:
+  ros__parameters:
+    joints: [gripper]
+    command_interfaces: [effort]
+    state_interfaces: [position, velocity]
+    allow_nonzero_velocity_at_trajectory_end: true
+    # u_clamp 0.5 N m: ~6 N squeeze at the jaw tip pads (0.079 m from the jaw axis)
+    gains:
+      gripper: {p: 3.0, i: 0.0, d: 0.0, u_clamp_max: 0.5, u_clamp_min: -0.5}

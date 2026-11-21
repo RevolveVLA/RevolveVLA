@@ -220,6 +220,23 @@ def test_serve_answers_one_inference(runs, numbers):
     numbers["serve"] = dict(ready_s=s["ready_s"], latency_s=s["client"]["latency_s"], first=s["client"]["first"])
 
 
+def test_serve_drops_a_repeated_first_observation():
+    """The observation #0 a client re-sends while the first chunk is being inferred is not queued again; a must_go
+    one still is, and later timesteps are unaffected."""
+    code, out = L.in_image(["python3", "-c", (
+        "import os, time\n"
+        "os.chdir('/tmp')\n"
+        "import policy_server as P\n"
+        "from lerobot.async_inference.configs import PolicyServerConfig\n"
+        "from lerobot.async_inference.helpers import TimedObservation\n"
+        "s = P.Server(PolicyServerConfig())\n"
+        "o = lambda t, go: TimedObservation(timestamp=time.time(), observation={}, timestep=t, must_go=go)\n"
+        "r = [s._enqueue_observation(o(*a)) for a in ((0, True), (0, False), (0, False), (0, True), (1, False))]\n"
+        "print('RESULT', r, s.observation_queue.qsize(), sorted(s._predicted_timesteps))\n")])
+    assert code == 0, out
+    assert "RESULT [True, False, False, True, True] 1 [0, 1]" in out, out
+
+
 def test_serve_refuses_a_non_internal_network(tmp_path):
     with pytest.raises(ValueError, match="not internal"):
         L.start_serve(tmp_path, tmp_path / "job", "bridge")

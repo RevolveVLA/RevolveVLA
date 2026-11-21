@@ -5,8 +5,8 @@
       train.plan() (retrain mode -> init weights + episodes), the backend runs lerobot-train (its output is on
       our stdout, parsed by progress:parse), train.finalize() moves the final checkpoint to O (+ train.json).
   entry.py serve --ckpt C [--host H] [--port 8080] [--device cuda] [--fps 30]
-      Rosetta's policy server (lerobot_rosetta.policy_server over LeRobot 0.6.1's async gRPC server),
-      unchanged protocol. It unpickles what clients send (by design): launch.py only ever puts it on an
+      Rosetta's policy server (lerobot_rosetta.policy_server over LeRobot 0.6.1's async gRPC server, via
+      policy_server.py: a repeated first observation is not queued twice), unchanged protocol. It unpickles what clients send (by design): launch.py only ever puts it on an
       internal docker network, no published port.
 Exit codes: lerobot-train's; 3 a Hugging Face token was found; 2 bad arguments / no checkpoint.
 """

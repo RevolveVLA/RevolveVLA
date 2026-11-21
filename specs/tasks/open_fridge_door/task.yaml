@@ -37,6 +37,50 @@ planner:
   base_yaw_window: [0.0, 6.283185307179586]
   base_retract: [1.0, 0.0, 3.141592653589793]   # x, y, yaw in the object frame (IK regulariser)
 
+# Where each robot's base starts and what may vary (datagen: start_design.py; a robot without a block has no start
+# design: its attempts take AutoMoMa's whole-body IK, base free, retract = planner.base_retract). Per robot spec name:
+#   method box    clustered starts: `clusters` x `per_cluster` attempts in a box_m square around `centre` (object frame,
+#                 in front of the handle) and a +-yaw_half_deg window about facing the object, each attempt jittered by
+#                 offset_m / offset_deg. Datagen's robot_base randomiser varies the start within box / 2 - offset.
+#   method reach  per seed one grasp point along the bar (grasp_m), the reach d_m of Robot.base_for_reach and a base
+#                 turn of +-yaw_half_deg about the arm's first joint; attempts after the first jitter d and the turn.
+#   method drive  a reach block plus a far start the robot drives in from with its arm folded (robot.yaml arm.folded):
+#                 back_m behind the reach base, side_m sideways, the heading +-heading_half_deg from facing the object;
+#                 the drive-in replays at slowdown x its planned time steps. sequence drive_then_arm: drive with the arm
+#                 folded, then unfold with the base still, then the whole-body pull.
+# `variants` are named alternatives (an experiment's datagen.variant) that replace the block.
+starts:
+  mobile_panda:
+    method: box
+    # A D1 plan smoke (seed 60, 50 attempts) found few fridge trajectories from y under -0.28 m (the handle side
+    # of the door)
+    centre: [0.95, -0.05]
+    clusters: 10
+    per_cluster: 10
+    box_m: 0.40
+    yaw_half_deg: 30
+    offset_m: 0.03
+    offset_deg: 3
+    nominal_arm: ready
+    variants:
+      # The folded drive-in demo with the grasp height continuous along the bar handle (grasp_m = TCP z, model frame).
+      # Panda reach: bearing 40 +- 10 deg, d 0.60-0.70 m (pinned-base IK of grasp + 0.12 m pre-grasp at z 0.965 /
+      # 1.025 / 1.085: all reachable with joint margin >= 0.41 rad there; bearing 0 has no IK, +-10 deg <= 0.09 rad
+      # margin).
+      drive_seq:
+        method: drive
+        grasp_m: [0.965, 1.085]
+        d_m: [0.60, 0.70]
+        yaw_half_deg: 10.0
+        bearing_deg: 40.0
+        jitter_m: 0.01
+        jitter_deg: 1.0
+        back_m: [1.0, 1.6]
+        side_m: [-0.3, 0.3]
+        heading_half_deg: 20.0
+        slowdown: 2.0
+        sequence: drive_then_arm
+
 # Replay of a plan in gz: spawn standoff_m back along the hand axis, settle, base in, grasp, pull, hold,
 # release, base back out retreat_m. Pull duration = max(pull_min_s, pull_slowdown x the plan's hint).
 replay:

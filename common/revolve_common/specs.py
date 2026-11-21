@@ -7,12 +7,14 @@ which are typed loosely.
 """
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal, Union
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator, model_validator
+from pydantic import (BaseModel, ConfigDict, Field, StrictFloat, StrictInt, computed_field, field_validator,
+                      model_validator)
 
 from . import metrics, policy_io
 
@@ -140,6 +142,108 @@ class Live(Strict):
     restore_rot_max_deg: float = Field(gt=0)
 
 
+# ---- start design: where a robot's base starts for a task and what may vary (task.yaml `starts:`, one block per robot)
+# Numbers keep their yaml type (30 stays 30, not 30.0): the planner takes the block as ROUND_STARTS JSON text.
+Num = StrictInt | StrictFloat
+Pair = Annotated[list[Num], Field(min_length=2, max_length=2)]       # [low, high]
+
+
+def _ordered(name, pair, positive=False):
+    if not all(math.isfinite(x) for x in pair) or pair[0] > pair[1] or (positive and pair[0] <= 0):
+        raise ValueError(f"{name}: {pair} is not low <= high" + (" with low > 0" if positive else ""))
+
+
+class BoxStarts(Strict):
+    """method box: clustered starts, `clusters` x `per_cluster` attempts in a box_m square around `centre` (object
+    frame [m]) and a +-yaw_half_deg window about facing the object, each attempt jittered by offset_m / offset_deg."""
+    method: Literal["box"]
+    centre: Pair
+    clusters: StrictInt = Field(ge=1)
+    per_cluster: StrictInt = Field(ge=1)
+    box_m: Num = Field(gt=0, le=0.40)
+    yaw_half_deg: Num = Field(gt=0, le=30)
+    offset_m: Num = Field(ge=0.01, le=0.03)
+    offset_deg: Num = Field(ge=1, le=3)
+    nominal_arm: Literal["ready"] = "ready"
+
+    @model_validator(mode="after")
+    def _fits(self):
+        if not all(math.isfinite(x) for x in self.centre):
+            raise ValueError(f"centre: {self.centre} is not finite")
+        if self.box_m < 2 * self.offset_m or self.yaw_half_deg < self.offset_deg:
+            raise ValueError(f"no start fits: box_m {self.box_m} < 2 offset_m {self.offset_m} or "
+                             f"yaw_half_deg {self.yaw_half_deg} < offset_deg {self.offset_deg}")
+        return self
+
+    def block(self) -> dict:
+        """The planner's ROUND_STARTS block (start_design.parse_starts)."""
+        return self.model_dump(exclude={"method", "centre", "variants"}, exclude_none=True)
+
+    def base_limits(self) -> dict:
+        """How far a start may be from the box centre / from facing the object so that every jittered attempt stays
+        inside the box and the window: +- {"x_m": h, "y_m": h, "yaw_deg": w}."""
+        h = round(self.box_m / 2 - self.offset_m, 9)
+        return {"x_m": h, "y_m": h, "yaw_deg": round(self.yaw_half_deg - self.offset_deg, 9)}
+
+
+class ReachStarts(Strict):
+    """method reach: per seed one grasp point along the bar (grasp_m, task frame), the reach distance d_m and a base
+    turn of +-yaw_half_deg about the arm's first joint; the attempts of a seed jitter d and the turn."""
+    method: Literal["reach"]
+    grasp_m: Pair
+    d_m: Pair
+    yaw_half_deg: Num = Field(ge=0, le=30)
+    bearing_deg: Num | None = Field(None, ge=-90, le=90)     # default: the robot's reach.bearing_rad
+    jitter_m: Num = Field(ge=0, le=0.03)
+    jitter_deg: Num = Field(ge=0, le=3)
+
+    @model_validator(mode="after")
+    def _ranges(self):
+        _ordered("grasp_m", self.grasp_m)
+        _ordered("d_m", self.d_m, positive=True)
+        return self
+
+    def block(self) -> dict:
+        return {"mode": self.method, **self.model_dump(exclude={"method", "variants"}, exclude_none=True)}
+
+
+class DriveStarts(ReachStarts):
+    """method drive: a reach start plus a far start the robot drives in from with its arm folded: back_m behind the
+    reach base, side_m sideways, the heading +-heading_half_deg from facing the object."""
+    method: Literal["drive"]
+    back_m: Pair
+    side_m: Pair
+    heading_half_deg: Num = Field(ge=0, le=45)
+    slowdown: Num = Field(ge=1, le=10)                       # the replay runs the drive-in at slowdown x its time
+    sequence: Literal["simultaneous", "drive_then_arm"] | None = None
+
+    @model_validator(mode="after")
+    def _drive_ranges(self):
+        _ordered("back_m", self.back_m, positive=True)
+        _ordered("side_m", self.side_m)
+        return self
+
+
+def _by_method(*types):
+    return Annotated[Union[types], Field(discriminator="method")]
+
+
+StartDesign = BoxStarts | ReachStarts | DriveStarts
+_Variants = dict[str, _by_method(BoxStarts, ReachStarts, DriveStarts)]
+
+
+class BoxEntry(BoxStarts):
+    variants: _Variants = {}       # named alternatives (an experiment's datagen.variant), each replacing the block
+
+
+class ReachEntry(ReachStarts):
+    variants: _Variants = {}
+
+
+class DriveEntry(DriveStarts):
+    variants: _Variants = {}
+
+
 class TaskRobot(Strict):
     """A task's settings for one robot (task.yaml `robots: {<robot>: ...}`): merged over the task's own
     planner block (key by key) and replay block when the task is resolved for that robot."""
@@ -162,6 +266,9 @@ class Task(Strict):
     rollout: Rollout
     live: Live
     robots: dict[str, TaskRobot] = {}       # per-robot settings (reach-dependent numbers), optional
+    # per robot: where its base starts and what may vary; a robot without a block (or null) has no start design:
+    # AutoMoMa's whole-body IK picks the base
+    starts: dict[str, _by_method(BoxEntry, ReachEntry, DriveEntry) | None] = {}
 
     @model_validator(mode="after")
     def _phases(self):
@@ -176,6 +283,15 @@ class Task(Strict):
 
     def phase(self, name):
         return next(p for p in self.phases if p.name == name)
+
+    def starts_for(self, robot, variant=None) -> StartDesign | None:
+        """The start design of `robot` (None: none), or of its named variant (an error when it has none)."""
+        entry = self.starts.get(robot)
+        if variant is None:
+            return entry
+        if entry is None or variant not in entry.variants:
+            raise SpecError(f"datagen variant {variant!r}: task {self.name} has no starts.{robot}.variants.{variant}")
+        return entry.variants[variant]
 
     def for_robot(self, robot):
         """This task with its `robots.<robot>` settings merged in (the task as that robot runs it)."""
@@ -375,7 +491,7 @@ class Seeds(Strict):
 class Datagen(Strict):
     episodes_per_seed: int = Field(ge=1)
     workers: int = Field(ge=1)
-    # optional: a named variant of the datagen generator's per-task blocks (generator.yaml tasks.<task>.variants),
+    # optional: a named variant of the task's start design (task.yaml starts.<robot>.variants),
     # passed to every job as $REVOLVE_DATAGEN_VARIANT; default: the task's own blocks
     variant: str | None = None
 
@@ -489,10 +605,16 @@ def spec_path(root, kind, name):
 def resolve_task(task, root, robot_name):
     """(the task as robot_name runs it, the robot, the scene); the robot's contract must carry the robot's
     policy state and action (policy_io: base twist + joints) in its observation.state / action sources."""
-    for r in task.robots:
-        if not (Path(root) / "robots" / r / FILES["robots"]).is_file():
-            raise SpecError(f"task {task.name}: robots.{r}: no robot {r!r}")
+    for key, names in (("robots", task.robots), ("starts", task.starts)):
+        for r in names:
+            if not (Path(root) / "robots" / r / FILES["robots"]).is_file():
+                raise SpecError(f"task {task.name}: {key}.{r}: no robot {r!r}")
     robot = parse(Robot, spec_path(root, "robots", robot_name))
+    entry = task.starts.get(robot_name)
+    for d in ([] if entry is None else [entry, *entry.variants.values()]):
+        if d.method == "drive" and robot.arm.folded is None:
+            raise SpecError(f"task {task.name}: starts.{robot_name} drives in, but robot {robot_name} "
+                            "has no arm.folded")
     scene = parse(Scene, spec_path(root, "scenes", task.scene))
     contract = Path(root) / "robots" / robot.name / robot.contract
     if not contract.is_file():

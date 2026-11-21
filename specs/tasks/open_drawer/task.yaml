@@ -32,6 +32,43 @@ planner:
   base_yaw_window: [0.0, 6.283185307179586]
   base_retract: [1.0, 0.0, 3.141592653589793]
 
+# Where each robot's base starts and what may vary (datagen: start_design.py; a robot without a block has no start
+# design: its attempts take AutoMoMa's whole-body IK, base free, retract = planner.base_retract). Per robot spec name:
+#   method box    clustered starts: `clusters` x `per_cluster` attempts in a box_m square around `centre` (object frame,
+#                 in front of the handle) and a +-yaw_half_deg window about facing the object, each attempt jittered by
+#                 offset_m / offset_deg. Datagen's robot_base randomiser varies the start within box / 2 - offset.
+#   method reach  per seed one grasp point along the bar (grasp_m), the reach d_m of Robot.base_for_reach and a base
+#                 turn of +-yaw_half_deg about the arm's first joint; attempts after the first jitter d and the turn.
+#   method drive  a reach block plus a far start the robot drives in from with its arm folded (robot.yaml arm.folded):
+#                 back_m behind the reach base, side_m sideways, the heading +-heading_half_deg from facing the object;
+#                 the drive-in replays at slowdown x its planned time steps. sequence drive_then_arm: drive with the arm
+#                 folded, then unfold with the base still, then the whole-body pull.
+# `variants` are named alternatives (an experiment's datagen.variant) that replace the block.
+starts:
+  mobile_panda:
+    method: box
+    # A D1 plan smoke (seed 60, 50 attempts) found no start IK for drawer bases under x 0.85 m (the counter)
+    centre: [0.98, 0.0]
+    clusters: 10
+    per_cluster: 10
+    box_m: 0.40
+    yaw_half_deg: 30
+    offset_m: 0.03
+    offset_deg: 3
+    nominal_arm: ready
+  # mobile_so101 (5-DoF arm): no block. A start IK with the base locked at a drawn start has no solution off its plane.
+  mobile_so101_xl:
+    method: drive
+    grasp_m: [-0.10, 0.10]
+    d_m: [0.68, 0.76]
+    yaw_half_deg: 8.0
+    jitter_m: 0.01
+    jitter_deg: 1.0
+    back_m: [1.0, 1.6]
+    side_m: [-0.3, 0.3]
+    heading_half_deg: 20.0
+    slowdown: 2.0
+
 # Replay of a plan in gz: spawn standoff_m back along the hand axis, settle, base in, grasp, pull, hold,
 # release, base back out retreat_m. Pull duration = max(pull_min_s, pull_slowdown x the plan's hint).
 replay:

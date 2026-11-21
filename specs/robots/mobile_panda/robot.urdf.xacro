@@ -86,18 +86,43 @@
   <xacro:camera name="overhead_right_cam" link="base_footprint" pose="0.10 -0.50 1.80 0 1.117011 1.570796" hfov="1.68"
                 near="0.05" far="15.0"/>
 
-  <!-- Finger contact sensors (gz Contact system: /world/<w>/model/<m>/link/<link>/sensor/contact/contact) -->
-  <xacro:macro name="contact" params="link">
+  <!-- Contact sensors on every robot link with a collision except the omni rollers (they stand on the floor), for the
+       finger contacts and the evaluator's robot contact / penetration checks (gz Contact system:
+       /world/<w>/model/<m>/link/<link>/sensor/contact/contact). The links are the gz links after sdformat's
+       fixed-joint lumping, with its collision names: base_link and panda_link0 merge into base_footprint,
+       panda_hand into panda_link7. -->
+  <xacro:macro name="contact" params="link collisions:=''">
     <gazebo reference="${link}">
       <sensor name="contact" type="contact">
         <always_on>true</always_on>
         <update_rate>100</update_rate>
-        <contact><collision>${link}_collision</collision></contact>
+        <contact>
+          <xacro:if value="${collisions == ''}"><collision>${link}_collision</collision></xacro:if>
+          <xacro:unless value="${collisions == ''}">
+            <xacro:macro name="collision_names" params="names">
+              <xacro:if value="${names}">
+                <collision>${names[0]}</collision>
+                <xacro:collision_names names="${names[1:]}"/>
+              </xacro:if>
+            </xacro:macro>
+            <xacro:collision_names names="${collisions.split()}"/>
+          </xacro:unless>
+        </contact>
       </sensor>
     </gazebo>
   </xacro:macro>
   <xacro:contact link="panda_leftfinger"/>
   <xacro:contact link="panda_rightfinger"/>
+  <xacro:contact link="base_footprint" collisions="base_footprint_fixed_joint_lump__base_link_collision
+                                                   base_footprint_fixed_joint_lump__panda_link0_collision_1"/>
+  <xacro:contact link="panda_link1"/>
+  <xacro:contact link="panda_link2"/>
+  <xacro:contact link="panda_link3"/>
+  <xacro:contact link="panda_link4"/>
+  <xacro:contact link="panda_link5"/>
+  <xacro:contact link="panda_link6"/>
+  <xacro:contact link="panda_link7" collisions="panda_link7_collision
+                                                panda_link7_fixed_joint_lump__panda_hand_collision_1"/>
 
   <gazebo>
     <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">

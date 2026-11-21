@@ -1,6 +1,7 @@
 """scene.yaml -> world SDF: the scene's models (model:// includes at their poses) on the simulator's fixed defaults
 (ground plane, sun, ambient light, 1 ms MuJoCo physics, the Sensors (ogre2), Contact, SceneBroadcaster and
-UserCommands systems). Articulated models get a JointStatePublisher (gz topic /world/<w>/model/<m>/joint_state).
+UserCommands systems). Every model gets a PosePublisher (gz topic /model/<m>/pose: the model in the world, its links
+in the model), articulated ones a JointStatePublisher (gz topic /world/<w>/model/<m>/joint_state).
 No robot: the launch spawns it. The world is named after the scene.
 
   python3 -m revolve_sim.world <scene name | scene.yaml> [--repo DIR] [--out world.sdf]
@@ -51,6 +52,14 @@ HEADER = """<?xml version="1.0"?>
       </link>
     </model>
 """
+POSES = """      <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+        <publish_model_pose>true</publish_model_pose>
+        <publish_link_pose>true</publish_link_pose>
+        <publish_nested_model_pose>false</publish_nested_model_pose>
+        <use_pose_vector_msg>true</use_pose_vector_msg>
+        <update_frequency>100</update_frequency>
+      </plugin>
+"""
 JOINT_STATES = """      <plugin filename="gz-sim-joint-state-publisher-system" name="gz::sim::systems::JointStatePublisher">
         <update_rate>100</update_rate>
       </plugin>
@@ -84,7 +93,7 @@ def make_world(scene, repo):
         if movable:
             articulated.append(ent)
         out.append(f"    <include>\n      <name>{ent}</name>\n      <uri>model://{m.model}</uri>\n"
-                   f"      <pose>{x} {y} {z} 0 0 {yaw}</pose>\n" + (JOINT_STATES if movable else "")
+                   f"      <pose>{x} {y} {z} 0 0 {yaw}</pose>\n" + POSES + (JOINT_STATES if movable else "")
                    + "    </include>\n")
     out.append("  </world>\n</sdf>\n")
     return "".join(out), sc, [str(repo / d) for d in sc.assets], articulated

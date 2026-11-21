@@ -1,11 +1,15 @@
 # The simulator: the world generated from a scene spec, the robot from a robot spec, the upstream ros_gz /
 # gz_ros2_control layout (as in gz_ros2_control_demos): ros_gz_sim gz_sim.launch.py + robot_state_publisher +
 # ros_gz_sim create + controller spawners + ros_gz_bridge / ros_gz_image.
-#   ros2 launch revolve_sim sim.launch.py scene:=<s> robot:=<r> [task:=<t>] [gui:=true] [repo:=/repo]
+#   ros2 launch revolve_sim sim.launch.py scene:=<s> robot:=<r> [task:=<t> [autostart:=false] [run_dir:=DIR]
+#       [bag:=false]] [gui:=true] [repo:=/repo]
 # The robot starts at the scene's robot_start: the base pose through create, the arm through the ros2_control
-# initial values (xacro arg initial_positions). Needs revolve_common on PYTHONPATH (the repo's common/).
+# initial values (xacro arg initial_positions). With a task: the evaluator (revolve_sim/evaluator.py) and a rosbag2
+# recorder of the bridged topics (started paused; the evaluator records each episode), both into run_dir (default
+# <repo>/runs/sim/<time>_<task>). Needs revolve_common on PYTHONPATH (the repo's common/).
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import yaml
@@ -18,17 +22,18 @@ from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from revolve_common import specs
-from revolve_sim.robot import describe, robot_dir
+from revolve_sim.robot import command_topics, describe, robot_dir
 from revolve_sim.world import make_world
 
 SIM_TIME = {'use_sim_time': True}
 
 
-def bridge_config(template, world, robot, cams, contacts, models):
+def bridge_config(template, world, robot, cams, contacts, models, scene_models):
     out = []
     for e in yaml.safe_load(Path(template).read_text()):
         text = yaml.safe_dump(e)
-        for key, values in (('{camera}', cams), ('{contact_link}', contacts), ('{model}', models)):
+        for key, values in (('{camera}', cams), ('{contact_link}', contacts), ('{model}', models),
+                            ('{scene_model}', scene_models)):
             if key in text:
                 break
         else:
@@ -44,8 +49,9 @@ def setup(context):
     repo = Path(arg('repo')).resolve()
     world_sdf, scene, resource_paths, models = make_world(arg('scene'), repo)
     robot, urdf, cams, contacts = describe(repo, arg('robot'), arm=scene.robot_start.arm)
-    if arg('task'):
-        specs.resolve(repo / 'specs', arg('task'), robot=robot.name)   # the task fits this scene and robot
+    task = arg('task')
+    if task:
+        specs.resolve(repo / 'specs', task, robot=robot.name)   # the task fits this scene and robot
     controllers = robot_dir(repo, robot.name) / robot.controllers
 
     tmp = Path(tempfile.mkdtemp(prefix='revolve_sim_'))
@@ -53,7 +59,8 @@ def setup(context):
     bridge_yaml = tmp / 'bridge.yaml'
     share = Path(FindPackageShare('revolve_sim').perform(context))
     bridge_yaml.write_text(yaml.safe_dump(bridge_config(share / 'config' / 'bridge.yaml', scene.name, robot.name,
-                                                        cams, contacts, models)))
+                                                        cams, contacts, models, list(scene.models))))
+    bridged = [e['ros_topic_name'] for e in yaml.safe_load(bridge_yaml.read_text())]
     ctrl_names = [k for k, v in yaml.safe_load(controllers.read_text())['controller_manager']['ros__parameters']
                   .items() if isinstance(v, dict) and 'type' in v]
 
@@ -62,8 +69,9 @@ def setup(context):
         PythonLaunchDescriptionSource([PathJoinSubstitution([FindPackageShare('ros_gz_sim'), 'launch',
                                                              'gz_sim.launch.py'])]),
         launch_arguments=[('gz_args', gz_args), ('on_exit_shutdown', 'true')])
+    # tf of the moving links at 100 Hz (default 20 Hz), the evaluator's rate
     rsp = Node(package='robot_state_publisher', executable='robot_state_publisher', output='screen',
-               parameters=[{'robot_description': urdf}, SIM_TIME])
+               parameters=[{'robot_description': urdf, 'publish_frequency': 100.0}, SIM_TIME])
     x, y, yaw = scene.robot_start.base
     spawn = Node(package='ros_gz_sim', executable='create', output='screen',
                  arguments=['-world', scene.name, '-topic', 'robot_description', '-name', robot.name,
@@ -83,6 +91,18 @@ def setup(context):
         gz, rsp, spawn, bridge, images,
         RegisterEventHandler(OnProcessExit(target_action=spawn, on_exit=[spawner])),
     ]
+    if task:
+        run_dir = Path(arg('run_dir') or repo / 'runs' / 'sim' / f'{time.strftime("%Y%m%d_%H%M%S")}_{task}')
+        run_dir.mkdir(parents=True, exist_ok=True)
+        bag = arg('bag') == 'true'
+        actions.append(Node(package='revolve_sim', executable='evaluator', output='screen', parameters=[{
+            'repo': str(repo), 'scene': arg('scene'), 'robot': robot.name, 'task': task, 'run_dir': str(run_dir),
+            'autostart': arg('autostart') == 'true', 'bag': bag}, SIM_TIME]))
+        if bag:   # the bridged topics (not the camera images), tf, joint states, the commands, the evaluator's
+            topics = [*bridged, '/tf', '/tf_static', '/joint_states', *(t for t, _ in command_topics(controllers)), '/evaluator/state', '/evaluator/result']
+            actions.append(ExecuteProcess(cmd=['ros2', 'bag', 'record', '--start-paused', '--use-sim-time',
+                                               '--disable-keyboard-controls', '-o', str(run_dir / 'bag'),
+                                               '--topics', *topics], output='screen'))
     if arg('gui') == 'true':
         actions.append(ExecuteProcess(cmd=['gz', 'sim', '-g', '-v', '2'], output='screen', additional_env={
             '__NV_PRIME_RENDER_OFFLOAD': '1', '__GLX_VENDOR_LIBRARY_NAME': 'nvidia'}))
@@ -95,6 +115,11 @@ def generate_launch_description():
         DeclareLaunchArgument('robot', description='specs/robots/<robot>'),
         DeclareLaunchArgument('task', default_value='', description='specs/tasks/<task> (checked against the '
                               'scene and robot)'),
+        DeclareLaunchArgument('autostart', default_value='true', description='with a task: start the first episode '
+                              'as soon as the evaluator has every input (false: on the ~/start service)'),
+        DeclareLaunchArgument('run_dir', default_value='', description='with a task: the episode results + the bag '
+                              '(default <repo>/runs/sim/<time>_<task>)'),
+        DeclareLaunchArgument('bag', default_value='true', description='with a task: record each episode (rosbag2)'),
         DeclareLaunchArgument('gui', default_value='false', description='also start the gz GUI client'),
         DeclareLaunchArgument('repo', default_value=os.environ.get('REVOLVE_REPO', '/repo')),
         OpaqueFunction(function=setup),

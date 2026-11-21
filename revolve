@@ -6,9 +6,10 @@
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
-  ./revolve sim --scene S --robot R [--task T] [--gui] [--name N]   run the simulator (the world from scene S, robot R
-                                     at the scene's robot_start; components/simulator/README.md) in the simulator
-                                     image, on the GPU; --gui: also the gz GUI on the host's X display
+  ./revolve sim --scene S --robot R [--task T [--no-autostart]] [--gui] [--name N]   run the simulator (the world
+                                     from scene S, robot R at the scene's robot_start; components/simulator/README.md)
+                                     in the simulator image, on the GPU; --task: the evaluator, episode results and
+                                     bags in runs/sim/; --gui: also the gz GUI on the host's X display
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
                                      robot and task under specs/, and tasks/sanity.yaml), against the model SDFs in
                                      the scene's asset search path; --robot: also check the tasks with robot R;
@@ -72,14 +73,18 @@ SIM_IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
 
 
 def sim_docker_args(name, gui=False):
-    """docker run args for a simulator container: the repo read-only at /repo, the Kura + ros_gz installs at their
-    build paths, the GPU (rendering), the host network (ROS 2 discovery from the host); --gui: the host's X."""
+    """docker run args for a simulator container: the repo read-only at /repo (runs/ writable: episode results, bags),
+    the Kura + ros_gz installs at their build paths, the GPU (rendering), the host network (ROS 2 discovery from the
+    host; gz-transport in its own partition, the container name, so other gz instances on the host network
+    neither see nor join this world); --gui: the host's X."""
     for d in ("gz_kura", "ros_gz_ws"):
         if not (REPO / "ThirdParty" / d / "install" / "setup.bash").is_file():
             sys.exit("revolve sim: not built: ./revolve build simulator")
+    (REPO / "runs").mkdir(exist_ok=True)
     args = ["docker", "run", "--rm", "--init", "--name", name, "--gpus", "all", "--network", "host", "--ipc", "host",
             "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "REVOLVE_REPO=/repo",
-            "-e", "PYTHONPATH=/repo/common", "-v", f"{REPO}:/repo:ro",
+            "-e", "PYTHONPATH=/repo/common", "-e", f"GZ_PARTITION={name}",
+            "-v", f"{REPO}:/repo:ro", "-v", f"{REPO}/runs:/repo/runs",
             "-v", f"{REPO}/ThirdParty/gz_kura/install:/opt/gz_ws/install:ro",
             "-v", f"{REPO}/ThirdParty/ros_gz_ws/install:/opt/ros_gz_ws/install:ro"]
     for k in ("ROS_DOMAIN_ID",):
@@ -98,7 +103,8 @@ def cmd_sim(a):
     from revolve_common import gpu
     gpu.launch_check()
     launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={a.scene}", f"robot:={a.robot}",
-              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}"] if a.task else [])
+              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}"] if a.task else []) + \
+        (["autostart:=false"] if a.no_autostart else [])
     # bash: the image's BASH_ENV sets up ROS, the ros_gz workspace and Kura
     return subprocess.call([*sim_docker_args(a.name, a.gui), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
                            cwd=REPO)
@@ -160,6 +166,8 @@ def main():
     s.add_argument("--scene", required=True, help="specs/scenes/<scene>")
     s.add_argument("--robot", required=True, help="specs/robots/<robot>")
     s.add_argument("--task", help="specs/tasks/<task> (checked against the scene and robot)")
+    s.add_argument("--no-autostart", action="store_true", help="with --task: start episodes only on the "
+                   "/evaluator/start service (default: the first one starts when the evaluator has every input)")
     s.add_argument("--gui", action="store_true", help="also start the gz GUI client")
     s.add_argument("--name", default="revolve-sim", help="the container name (default revolve-sim)")
     v = sub.add_parser("validate")

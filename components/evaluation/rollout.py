@@ -129,6 +129,10 @@ def _client_kw(out, tag, net, domain):
                          str(data_launch.INSTALL): {"bind": "/opt/rosetta/install", "mode": "ro"}})
 
 
+def runner_params_yaml(overrides=None):
+    return yaml.safe_dump(dict(policy_runner=dict(ros__parameters={**RUNNER_PARAMS, **(overrides or {})})))
+
+
 def client_script(policy, out, start, prompt, contract, ckpt=None, server=None, max_duration_s=3600):
     """The client container's bash script (cwd /tmp: LeRobot's RobotClient writes logs/ in its cwd)."""
     cl = cpath(out / "client")
@@ -146,12 +150,12 @@ def client_script(policy, out, start, prompt, contract, ckpt=None, server=None, 
 
 
 def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s=None, wait_s=None,
-        after_success_s=None, rtf=0.1, task=None, say=print, gui=False, video=False) -> dict:
+        after_success_s=None, rtf=0.1, task=None, say=print, gui=False, video=False, runner_params=None) -> dict:
     """One rollout from `start` (a replay-accepted attempt dir, starts.py) into `out` (emptied first). restore:
     (a finished rollout dir, phase) = a retry from its phase_states/<phase>_start.npz. gui: the sim container also
     shows the gz GUI on the host's X display (simulator launch.py gui_kw; not part of the verdict). video: the
     sim also renders the scene camera into <out>/video.mp4 (cli.py rollout --video; not part of the verdict).
-    -> rollout.json's record."""
+    runner_params: overrides of RUNNER_PARAMS (client/runner_params.yaml). -> rollout.json's record."""
     if policy not in POLICIES:
         raise ValueError(f"policy {policy!r}: one of {POLICIES}")
     if policy == "smolvla" and not (Path(ckpt) / "config.json").is_file():
@@ -187,8 +191,7 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
                     raise RuntimeError(f"policy server not ready within {SERVE_READY_S} s")
                 time.sleep(0.5)
             rec["timing"]["serve_ready_s"] = round(time.time() - t0, 1)
-            (out / "client" / "runner_params.yaml").write_text(
-                yaml.safe_dump(dict(policy_runner=dict(ros__parameters=RUNNER_PARAMS))))
+            (out / "client" / "runner_params.yaml").write_text(runner_params_yaml(runner_params))
         script = client_script(policy, out, start, r.task.prompt, contract, Path(ckpt).resolve() if ckpt else None,
                                f"{tag}-serve", wall + SETUP_S)
         client = dk.containers.run(data_launch.IMAGE, ["bash", "-c", script], **_client_kw(out, tag, net.name, domain))

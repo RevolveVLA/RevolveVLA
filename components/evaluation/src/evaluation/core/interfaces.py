@@ -71,6 +71,10 @@ class Rollout(ABC):
         """One policy run from `item.start_dir` into `out` (from the saved state `restore` = (rollout dir, phase) when
         given); the rollout record (a JSON dict: passed, phases, failed_phase, ... as rollout.run returns it)."""
 
+    def default_workers(self, policy: Policy) -> int:
+        """Rollouts to run at a time when the spec sets no `run.workers`."""
+        return 1
+
 
 class Judge(ABC):
     @abstractmethod

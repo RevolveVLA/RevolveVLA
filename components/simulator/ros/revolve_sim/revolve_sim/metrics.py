@@ -3,6 +3,8 @@
 A Snapshot holds what the evaluator node gathered from the upstream topics at one instant:
   poses     {(model, link): 4x4 world pose}: scene model links (gz PosePublisher) and robot links (ground-truth base
             pose x robot_state_publisher tf), keyed (robot name, URDF link) for the robot
+  stamps    {(model, link): the time its pose is from} where known (the robot links: their tf stamp, which can lag
+            the snapshot time by tens of ms under load); peak_body_speed differences poses over these
   joints    {(model, joint): position}: scene joints (gz JointStatePublisher)
   contacts  [(collision a, collision b, depth)]: scoped gz collision names "model::link::collision" (gz Contact sensors)
   commands  count of non-finite command messages so far; gz_lines: the gz error lines so far (text)
@@ -141,8 +143,8 @@ def robot_link_of(gz_link, collision):
 
 # ------------------------------------------------------------------ snapshot + metrics
 class Snapshot:
-    def __init__(self, t, poses=None, joints=None, contacts=None, commands=0, gz_lines=()):
-        self.t, self.poses, self.joints = t, poses or {}, joints or {}
+    def __init__(self, t, poses=None, joints=None, contacts=None, commands=0, gz_lines=(), stamps=None):
+        self.t, self.poses, self.joints, self.stamps = t, poses or {}, joints or {}, stamps or {}
         self.contacts, self.commands, self.gz_lines = contacts or [], commands, gz_lines
 
 
@@ -159,7 +161,7 @@ class Metrics:
         self.collisions = collisions
         self.targets = [self.ref(t) for t in resolved.task.targets.values()]
         self.slip_ref = {}
-        self.history = []            # [(t, {(model, link): xyz})] for peak_body_speed
+        self.history = []            # [(t, {(model, link): (stamp, xyz)})] for peak_body_speed
 
     def reset_phase(self):
         self.slip_ref.clear()
@@ -263,18 +265,18 @@ class Metrics:
 
     def record(self, snap):
         """Keep the link positions for peak_body_speed (call once per tick, before value())."""
-        self.history.append((snap.t, {k: T[:3, 3].copy() for k, T in snap.poses.items()}))
+        self.history.append((snap.t, {k: (snap.stamps.get(k, snap.t), T[:3, 3].copy())
+                                      for k, T in snap.poses.items()}))
         while len(self.history) > 2 and self.history[1][0] <= snap.t - self.SPEED_WINDOW_S:
             self.history.pop(0)
 
     def m_peak_body_speed(self, p, snap, key):
         if len(self.history) < 2:
             return NAN
-        (t0, old), (t1, new) = self.history[0], self.history[-1]
-        if t1 - t0 < 0.5 * self.SPEED_WINDOW_S:
-            return NAN
-        speeds = [np.linalg.norm(new[b] - old[b]) / (t1 - t0) for b in self.bodies(self.ref(p['of']))
-                  if b in new and b in old]
+        old, new = self.history[0][1], self.history[-1][1]
+        speeds = [np.linalg.norm(new[b][1] - old[b][1]) / (new[b][0] - old[b][0])
+                  for b in self.bodies(self.ref(p['of']))
+                  if b in new and b in old and new[b][0] - old[b][0] >= 0.5 * self.SPEED_WINDOW_S]
         return float(max(speeds)) if speeds else NAN
 
     def m_penetration(self, p, snap, key):

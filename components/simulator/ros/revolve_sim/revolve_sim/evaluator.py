@@ -7,6 +7,10 @@
   commands         the controllers' command topics (<omni>/cmd_vel, <jtc>/joint_trajectory): non-finite messages
   gz log           the gz server's console log (~/.gz/sim/log/<time>/server_console.log): [error] / [critical] lines
 An episode counts the non-finite commands and gz log lines since its start (bring-up errors are not its own).
+Poses and contacts are taken at one common stamp per tick, the oldest of the newest gz pose and tf data (tf
+interpolated, gz poses from a short history, contacts within CONTACT_WINDOW_S before it): the inputs reach this node
+with different delays (under load its callback queues fall behind by tens of ms), and a moving door or arm would
+otherwise show slip / speed / lost contacts that are only these time offsets.
 
 Episodes: ~/start (std_srvs/Trigger) starts one (autostart: the first one starts as soon as every input is live).
 At the end the result (JSON) is published on ~/result (std_msgs/String, transient local) and written to
@@ -23,6 +27,7 @@ import os
 import re
 import threading
 import time
+from collections import deque
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -48,7 +53,9 @@ from revolve_sim.metrics import GROUND, Metrics, Snapshot, collision_geometry, p
 from revolve_sim.robot import command_topics, describe, robot_dir
 from revolve_sim.world import make_world
 
-CONTACT_WINDOW_S = 0.05     # a sensor's contacts count until this long after its last message (it publishes at 100 Hz)
+HISTORY = 200               # gz pose messages kept per model (100 Hz: 2 s)
+SYNC_MAX_AGE_S = 0.5        # an input older than this (a stalled publisher) does not hold the common stamp back
+CONTACT_WINDOW_S = 0.05     # a sensor's contacts count until this long after its message (it publishes at 100 Hz)
 GZ_PROBLEM = re.compile(r'\[(error|critical)\]')
 MSG_TYPES = {'geometry_msgs/msg/TwistStamped': TwistStamped, 'trajectory_msgs/msg/JointTrajectory': JointTrajectory}
 
@@ -100,14 +107,16 @@ class Evaluator(Node):
             [(f'sanity.{k}', c) for k, c in self.res.sanity.items()]
 
         self.lock = threading.Lock()
-        self.base = None                    # world <- robot root link
-        self.model_poses, self.link_poses, self.joints = {}, {}, {}
+        self.base = deque(maxlen=HISTORY)   # [(stamp, world <- robot root link)]
+        self.scene_poses = {}               # model -> deque [(stamp, {None: world <- model, link: model <- link})]
+        self.joints = {}
         self.contacts = {}                  # topic -> (stamp, [(c1, c2, depth)])
         self.bad_commands, self.gz_lines, self.gz_offset = 0, [], 0
         self.counted_from = (0, 0)          # (commands, gz lines) before the episode: it counts only its own
         self.episode, self.n_episodes, self.ticks = None, 0, 0
         self.values, self.ready = {}, False
         self.tf_links = []                  # the robot links tf has (not the passive rollers: no joint states)
+        self.sync_link = robot.frames.get('tcp', links[-1])   # its tf stamp: the newest of the arm's joint states
         self.tick_wall = []                 # wall time of the ticks of the running episode [s]
 
         subs = MutuallyExclusiveCallbackGroup()
@@ -148,15 +157,19 @@ class Evaluator(Node):
     def on_robot_pose(self, msg):
         for t in msg.transforms:
             if t.child_frame_id == self.robot:
-                self.base = tf_matrix(t.transform)
+                self.base.append((stamp_s(t.header.stamp), tf_matrix(t.transform)))
 
     def on_model_pose(self, msg):
+        poses, model = {}, None
         for t in msg.transforms:
             if t.header.frame_id == self.world:
-                self.model_poses[t.child_frame_id] = tf_matrix(t.transform)
+                model = t.child_frame_id
+                poses[None] = tf_matrix(t.transform)
             else:      # ros_gz turns the scoped name model::link into model/link
-                link = t.child_frame_id.removeprefix(t.header.frame_id + '/')
-                self.link_poses[(t.header.frame_id, link)] = tf_matrix(t.transform)
+                poses[t.child_frame_id.removeprefix(t.header.frame_id + '/')] = tf_matrix(t.transform)
+        if model is not None and msg.transforms:
+            self.scene_poses.setdefault(model, deque(maxlen=HISTORY)).append(
+                (stamp_s(msg.transforms[0].header.stamp), poses))
 
     def on_joints(self, model, msg):
         for n, q in zip(msg.name, msg.position):
@@ -199,22 +212,44 @@ class Evaluator(Node):
         self.tf_links = [lk for lk in self.metrics.robot_links if lk in frames]
 
     # ------------------------------------------------------------ evaluation
+    @staticmethod
+    def at(history, stamp):
+        """The newest value of a [(stamp, value)] history not after stamp (else the oldest)."""
+        h = list(history)
+        return next((v for st, v in reversed(h) if st <= stamp), h[0][1])
+
     def snapshot(self, t):
-        poses = {}
-        if self.base is not None:
+        poses, stamps = {}, {}
+        newest = [h[-1][0] for h in (self.base, *list(self.scene_poses.values())) if h]
+        s = min((st for st in newest if st >= t - SYNC_MAX_AGE_S), default=t)
+        if self.base and self.tf_links:
+            try:
+                s = min(s, stamp_s(self.tf.lookup_transform(self.root, self.sync_link, rclpy.time.Time()).header.stamp)
+                        or s)
+            except Exception:          # tf2 raises several types
+                pass
+            base = self.at(self.base, s)
             for lk in self.tf_links:
                 try:
-                    tr = self.tf.lookup_transform(self.root, lk, rclpy.time.Time())
-                except Exception:          # tf2 raises several types
-                    continue
-                poses[(self.robot, lk)] = self.base @ tf_matrix(tr.transform)
-        for (m, lk), T in list(self.link_poses.items()):
-            if m in self.model_poses:
-                poses[(m, lk)] = self.model_poses[m] @ T
-        contacts = [c for st, cs in list(self.contacts.values()) if st >= t - CONTACT_WINDOW_S for c in cs]
+                    tr = self.tf.lookup_transform(self.root, lk, rclpy.time.Time(nanoseconds=int(s * 1e9)))
+                except Exception:
+                    try:
+                        tr = self.tf.lookup_transform(self.root, lk, rclpy.time.Time())
+                    except Exception:
+                        continue
+                poses[(self.robot, lk)] = base @ tf_matrix(tr.transform)
+                stamps[(self.robot, lk)] = stamp_s(tr.header.stamp) or s     # a static chain: stamp 0
+        for m, h in list(self.scene_poses.items()):
+            ps = self.at(h, s)
+            for lk, T in ps.items():
+                if lk is not None:
+                    poses[(m, lk)] = ps[None] @ T
+                    stamps[(m, lk)] = s
+        contacts = [c for st, cs in list(self.contacts.values()) if st >= s - CONTACT_WINDOW_S for c in cs]
         with self.lock:
             c0, g0 = self.counted_from
-            return Snapshot(t, poses, dict(self.joints), contacts, self.bad_commands - c0, self.gz_lines[g0:])
+            return Snapshot(t, poses, dict(self.joints), contacts, self.bad_commands - c0, self.gz_lines[g0:],
+                            stamps)
 
     def tick(self):
         t = self.get_clock().now().nanoseconds * 1e-9

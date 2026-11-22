@@ -37,7 +37,7 @@ def run(spec, out, ok_rc=(0,)):
 
 def numbers(name, task, manifest, wall, out):
     eps = manifest["episodes"]
-    tries = [t for p in sorted(out.glob("*/scene_*/datagen.json")) for t in json.loads(p.read_text())["tries"]]
+    tries = [t for p in sorted(out.glob("**/scene_*/datagen.json")) for t in json.loads(p.read_text())["tries"]]
     res = [json.loads((out / e["result"]).read_text()) for e in eps]
     row = {"task": task, "attempted": len(eps), "passed": sum(e["passed"] for e in eps), "wall_s": wall,
            "try_wall_s": [t["wall_s"] for t in tries],

@@ -118,6 +118,10 @@ class Generator(ABC):
     not randomise anything (the scene instance is the variation), does not record (the sim does) and does not judge
     (the evaluator does)."""
 
+    def prepare(self, client: EpisodeClient, instance: Path, task: str, robot: str) -> None:
+        """Called once per sim launch, after the sim is ready and before the first episode starts: start what is slow
+        (a planner), so that it does not run on the episode's clock. Default: nothing."""
+
     @abstractmethod
     def drive(self, client: EpisodeClient, instance: Path, task: str, robot: str) -> Mapping[str, Any]:
         """Called after /evaluator/start of an episode on the sim of `instance` (the scene.yaml): command the robot until

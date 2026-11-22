@@ -60,6 +60,24 @@ def test_a_finished_scene_needs_no_ready_and_a_resumed_one_continues_numbering(t
     assert [t["episode"] for t in loop(s3, instance, ep)["tries"]] == [0, 1]      # one more wanted: numbering continues
 
 
+def test_the_generator_is_prepared_once_per_launch_after_ready_and_before_the_first_episode(tmp_path):
+    calls = []
+
+    class Gen(F.FakeGenerator):
+        def prepare(self, client, instance, task, robot):
+            calls.append(("prepare", client.s.client_state["next"], task, robot))      # next episode number: none started
+
+        def drive(self, client, instance, task, robot):
+            calls.append(("drive",))
+            return super().drive(client, instance, task, robot)
+
+    s, instance = session(tmp_path, passes=lambda n: n == 1)
+    s.start()
+    episodes.run_episodes(s.connect(), Gen(None, {}), "t", "r", instance, 0, EpisodeSpec(3, 1))
+    assert calls == [("prepare", 0, "t", "r"), ("drive",), ("drive",)]
+    assert GEN.prepare(s.connect(), instance, "t", "r") is None                        # the default does nothing
+
+
 def test_partial_bags_without_a_result_file_are_removed_before_the_loop(tmp_path):
     s, instance = session(tmp_path)
     d = instance.parent

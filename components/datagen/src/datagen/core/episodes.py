@@ -84,6 +84,7 @@ def run_episodes(client: EpisodeClient, generator: Generator, task: str, robot: 
     if finished(log, episodes):
         return log
     client.wait_ready()
+    generator.prepare(client, instance, task, robot)
     first = True
     while not finished(log, episodes):
         if not first:

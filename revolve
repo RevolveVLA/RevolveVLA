@@ -58,13 +58,13 @@ def cmd_validate(a):
     root = REPO / "specs"
     paths = [Path(p) for p in a.spec] or specs.all_specs(root)
     rc = 0
-    for p in paths:
-        p = p.resolve()
-        p = p.relative_to(REPO) if p.is_relative_to(REPO) else p
+    for path in paths:
+        path = path.resolve()        # load the absolute path (the caller's cwd may be anywhere); print it repo-relative
+        p = path.relative_to(REPO) if path.is_relative_to(REPO) else path
         try:
-            r = specs.load(p, assets=not a.no_assets)
+            r = specs.load(path, assets=not a.no_assets)
             if isinstance(r, specs.Task):
-                res = specs.resolve(specs.find_root(p), r.name, robot=a.robot, assets=not a.no_assets)
+                res = specs.resolve(specs.find_root(path), r.name, robot=a.robot, assets=not a.no_assets)
                 phases = ", ".join(f"{ph.name} ({len(ph.done)} done, {len(ph.while_)} while)" for ph in r.phases)
                 with_robot = f", robot {a.robot}" if a.robot else ""
                 print(f"OK {p}: task {r.name} on scene {r.scene}{with_robot}; phases {phases}; "

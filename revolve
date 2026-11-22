@@ -5,7 +5,7 @@
                                      convert them to SDF models in assets/generated*/ (assets_pipeline/README.md)
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
-                                     training, evaluation, manager = unit + integration, integration)
+                                     training, evaluation, manager = unit + integration, integration, assets)
   ./revolve sim --scene S --robot R [--task T [--no-autostart] [--record images|no-images] [--out DIR]] [--gui]
                 [--name N] [--domain-id D]   run the simulator (the world from scene S, a name or a scene.yaml file,
                                      robot R at the scene's robot_start; components/simulator/README.md) in the
@@ -36,7 +36,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 VENV_PY = REPO / ".venv" / "bin" / "python"
-COMPONENTS = ("common", "simulator", "datagen", "recovery", "dataset", "training", "evaluation", "manager", "integration")
+COMPONENTS = ("common", "simulator", "datagen", "recovery", "dataset", "training", "evaluation", "manager", "integration",
+              "assets")
 
 
 def reexec_in_venv():
@@ -198,7 +199,8 @@ def cmd_test(a):
              "training": REPO / "components" / "training" / "tests",
              "evaluation": REPO / "components" / "evaluation" / "tests",
              "manager": [REPO / "components" / "manager" / "tests", REPO / "tests" / "integration"],
-             "integration": REPO / "tests" / "integration"}
+             "integration": REPO / "tests" / "integration",
+             "assets": REPO / "assets_pipeline" / "tests"}
     if a.component not in tests:
         return not_implemented(f"test {a.component}")
     if not all(Path(d).is_dir() for d in (tests[a.component] if isinstance(tests[a.component], list)

@@ -4,7 +4,8 @@
 #   OUT/generated_partnet/  fridge (PartNet-Mobility 11211), kitchen_counter (46452)
 #   OUT/generated/          table_01, replicacad_cup_01, cup (ReplicaCAD or a primitive), kitchen_room_partnet
 # OUT defaults to assets/ (the dirs specs/scenes/*/scene.yaml lists). Re-runs itself in the revolve-assets
-# container (assets_pipeline/Dockerfile, built here; no GPU, no Gazebo).
+# container (assets_pipeline/Dockerfile, built here as $REVOLVE_ASSETS_IMAGE, default revolve-assets:latest; no GPU,
+# no Gazebo).
 #   assets_pipeline/make_assets.sh [--out DIR] [--offline]    --offline: no downloads, room in plain colours
 set -euo pipefail
 cd "$(dirname "$0")/.."                        # the repo root: assets/ is git-ignored there
@@ -18,9 +19,10 @@ while (($#)); do
 done
 if [[ ! -f /.dockerenv ]]; then
   mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
-  docker build -q -t revolve-assets:latest assets_pipeline >/dev/null
+  IMAGE=${REVOLVE_ASSETS_IMAGE:-revolve-assets:latest}
+  docker build -q -t "$IMAGE" assets_pipeline >/dev/null
   exec docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/repo -v "$OUT":/out -w /repo \
-    revolve-assets:latest bash assets_pipeline/make_assets.sh --out /out $OFFLINE
+    "$IMAGE" bash assets_pipeline/make_assets.sh --out /out $OFFLINE
 fi
 
 A=assets_pipeline

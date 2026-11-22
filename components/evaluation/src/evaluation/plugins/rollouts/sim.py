@@ -9,8 +9,9 @@ The record is the evaluator's verdict (DATAGEN 4.3): passed, phases {name: statu
 bag, result_file; `error` when there is none: `wall limit` (the client ran over `wall_s`), `interrupted`, `infrastructure`, or
 the client's failure. Params (yaml `rollout: {plugin: sim, ...}`): `record` (images | no-images, default images: a policy needs
 the cameras, the oracle does not), `wall_s` (wall seconds per episode, 600), `ready_s` (wall seconds to be ready, 180),
-`infra_retries` (3). Limits of the episode itself (budget, phase timeouts) are the task's. Only policies that bring their own
-actions (`client_only`: the oracle) run: a served checkpoint is blocked on the new simulator."""
+`infra_retries` (3), `lead_s` (0.1: time_from_start of each streamed point). Limits of the episode itself (budget, phase
+timeouts) are the task's. Only policies that bring their own actions (`client_only`: the oracle) run: a served checkpoint is
+blocked on the new simulator."""
 from __future__ import annotations
 
 import json
@@ -29,7 +30,7 @@ from ...core.registry import REGISTRY
 from ...core.sims import sim_prefix
 from ...core.termination import LIMITS
 
-PARAMS = ("record", "wall_s", "ready_s", "infra_retries")
+PARAMS = ("record", "wall_s", "ready_s", "infra_retries", "lead_s")
 CLIENT_SRC = "/repo/components/evaluation/src"           # in the client container (the repo is mounted at /repo)
 BLOCKED = ("policy {name!r} is not available on the new simulator: a served checkpoint needs a v2 dataset, a retrained "
            "checkpoint and a Rosetta contract for the new bag topics (use `policy: {{plugin: oracle}}`)")
@@ -74,7 +75,9 @@ class SimRollout(Rollout):
         if self.record not in ("images", "no-images"):
             raise EvalError(f"rollout sim: record must be images or no-images, not {self.record!r}")
         limits = {k: float(params.get(k) or v) for k, v in LIMITS.items()}
-        self.wall_s, self.ready_s, self.infra_retries = limits["wall_s"], limits["ready_s"], int(params.get("infra_retries", 3))
+        self.wall_s, self.ready_s = limits["wall_s"], limits["ready_s"]
+        self.infra_retries = int(params.get("infra_retries", 3))
+        self.lead_s = float(params.get("lead_s", 0.1))
         self.prefix, self.scenes = sim_prefix(spec), {}
         self.lock, self.stopped = threading.Lock(), threading.Event()
         self.pool = self.domain_pool()
@@ -91,7 +94,8 @@ class SimRollout(Rollout):
         """The policy client of one episode in a container beside the sim -> its exit code (a SimFault for a sim that is
         broken, TimeoutExpired over `wall_s`)."""
         command = ["python3", "-m", "evaluation.rollout_client", "--sim-out", str(session.out), "--rollout", str(rollout),
-                   *map(in_container, args), "--ready-s", str(self.ready_s), *(["--reset"] if reset else [])]
+                   *map(in_container, args), "--ready-s", str(self.ready_s), "--lead-s", str(self.lead_s),
+                   *(["--reset"] if reset else [])]
         client = session.client(command, pythonpath=[CLIENT_SRC], mounts=[rollout])
         return client.run(log, timeout=self.wall_s, watch=lambda: None if self.stopped.is_set() else session.check())
 

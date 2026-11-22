@@ -283,7 +283,8 @@ def test_the_client_container_command(item, tmp_path):
     bag = REPO / "runs" / "x" / "episode_0_bag"
     assert r.run_client(Session(), tmp_path / "r0", ["--bag", str(bag)], True, tmp_path / "c.log") == 0
     assert seen["command"] == ["python3", "-m", "evaluation.rollout_client", "--sim-out", str(tmp_path / "sim"), "--rollout",
-                               str(tmp_path / "r0"), "--bag", "/repo/runs/x/episode_0_bag", "--ready-s", "60.0", "--reset"]
+                               str(tmp_path / "r0"), "--bag", "/repo/runs/x/episode_0_bag", "--ready-s", "60.0", "--lead-s", "0.1",
+                               "--reset"]
     assert seen["pythonpath"] == [S.CLIENT_SRC] and seen["mounts"] == [tmp_path / "r0"] and seen["timeout"] == 90.0
     assert seen["fault"] == "fault"
     r.stopped.set()

@@ -16,17 +16,17 @@ from revolve_common.sim_session import READY_TIMEOUT_S, RESULT_TIMEOUT, SimFault
 
 from .oracle_actions import ACTION_HZ, CMD_VEL, ActionSeries, read_bag
 
-LEAD_S = 0.1                    # time_from_start of a streamed point (the simulator's contract test uses 0.1 s)
+LEAD_S = 0.1                    # default time_from_start of a streamed point (the simulator's contract test uses 0.1 s)
 MATCH_TIMEOUT_S = 30.0          # wall: the sim's controllers must subscribe before the episode starts
 
 
 class RosStreamer:
     """Publishes one action: a single-point JointTrajectory per controller and the TwistStamped base command."""
 
-    def __init__(self, node, series: ActionSeries):
+    def __init__(self, node, series: ActionSeries, lead_s: float = LEAD_S):
         from geometry_msgs.msg import TwistStamped
         from trajectory_msgs.msg import JointTrajectory
-        self.node, self.series = node, series
+        self.node, self.series, self.lead_s = node, series, lead_s
         self.arms = {c: node.create_publisher(JointTrajectory, f"/{c}/joint_trajectory", 10) for c in series.joints}
         self.base = node.create_publisher(TwistStamped, CMD_VEL, 10)
 
@@ -46,7 +46,7 @@ class RosStreamer:
             m = JointTrajectory()                           # a zero header stamp: start now
             m.joint_names = list(self.series.joints[c])
             m.points = [JointTrajectoryPoint(positions=[float(v) for v in positions[c]])]
-            m.points[0].time_from_start.nanosec = int(LEAD_S * 1e9)
+            m.points[0].time_from_start.nanosec = int(self.lead_s * 1e9)
             pub.publish(m)
         t = TwistStamped()
         t.header.stamp = self.node.get_clock().now().to_msg()
@@ -95,10 +95,10 @@ def main(argv=None) -> None:
     ap.add_argument("--bag", required=True, help="the datagen episode bag whose actions are replayed (the oracle)")
     ap.add_argument("--reset", action="store_true", help="the sim already ran an episode: reset it first")
     ap.add_argument("--ready-s", type=float, default=READY_TIMEOUT_S)
+    ap.add_argument("--lead-s", type=float, default=LEAD_S, help="time_from_start of each streamed point")
     a = ap.parse_args(argv)
     series = read_bag(a.bag)
-    run_client(lambda client: play(client, a.rollout, series, RosStreamer(client.node, series), a.reset, a.ready_s),
-               a.sim_out)
+    run_client(lambda c: play(c, a.rollout, series, RosStreamer(c.node, series, a.lead_s), a.reset, a.ready_s), a.sim_out)
 
 
 if __name__ == "__main__":

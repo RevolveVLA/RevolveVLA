@@ -19,13 +19,22 @@ from .core.pipeline import STEPS, Pipeline, PluginSet
 from .core.spec import DatagenSpec, load
 
 
+REMOVED_RANDOMISERS = {      # the old simulator's start streams -> the one that replaced them
+    name: "robot_start (x_m, y_m, yaw_rad, arm: the scene instance's robot_start, DATAGEN-v2.md 8.1)"
+    for name in ("robot_base", "reach_start", "drive_start", "grasp")}
+
+
 def build_plugins(spec: DatagenSpec, steps) -> PluginSet:
     def one(kind, ref):
         return registry.create(kind, ref.plugin, spec, ref.params) if ref else None
 
     def many(kind, refs):
         return [one(kind, r) for r in refs]
+    if old := [n for n in spec.randomisers if n in REMOVED_RANDOMISERS]:
+        raise DatagenError(f"randomisers.{old[0]}: removed with the old simulator; use {REMOVED_RANDOMISERS[old[0]]}")
     p = PluginSet(randomisers={n: registry.create("randomiser", n) for n in spec.randomisers})
+    if {"sample", "generate"} & set(steps) and any(r.scene_field for r in p.randomisers.values()):
+        p.instancer = registry.create("instancer", "scene_instance", spec, {})
     if {"sample", "generate"} & set(steps):
         p.samplers = {s.sampler.strategy: registry.create("sampler", s.sampler.strategy) for s in spec.splits}
     if "generate" in steps:
@@ -44,7 +53,7 @@ def list_randomisers(a, ap) -> int:
     if not (a.task and a.robot):
         ap.error("--list-randomisers needs --task and --robot")
     try:
-        print(listing.render(a.task, a.robot, a.variant))
+        print(listing.render(a.task, a.robot))
     except DatagenError as e:
         print(f"datagen: {e}", file=sys.stderr)
         return 1
@@ -64,7 +73,7 @@ def main(argv=None, root: Path | None = None) -> int:
     gui.add_argument("--headless", action="store_true", help="no GUI (run.headless true)")
     ap.add_argument("--list-randomisers", action="store_true",
                     help="print the randomisers usable for --task and --robot (no spec), their dims and ranges")
-    ap.add_argument("--task"), ap.add_argument("--robot"), ap.add_argument("--variant", help="the generator's variant")
+    ap.add_argument("--task"), ap.add_argument("--robot")
     a = ap.parse_args(argv)
     sys.path[:0] = [p for p in os.environ.get("DATAGEN_PLUGIN_PATH", "").split(os.pathsep) if p]
     if a.list_randomisers:

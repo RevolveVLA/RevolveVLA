@@ -1,7 +1,7 @@
 """Plugin interfaces (small, one job each) and the value objects they exchange.
 
-Constructor convention (registry.create): Sampler / Randomiser take no arguments; Generator, Recorder, Converter,
-Validator and Check take `(spec: DatagenSpec, params: Mapping)`, the params being their yaml block's free-form keys.
+Constructor convention (registry.create): Sampler / Randomiser take no arguments; Instancer, Generator, Recorder,
+Converter, Validator and Check take `(spec: DatagenSpec, params: Mapping)`, the params being their yaml block's free-form keys.
 Values are plain JSON types so the manifest can store them as they are."""
 from __future__ import annotations
 
@@ -69,7 +69,11 @@ class Sampler(ABC):
 
 
 class Randomiser(ABC):
-    """One stream of variation (robot_base, grasp, ...): its hard limits and how a generator realises its values."""
+    """One stream of variation (robot_start, ...): its hard limits and how a generator realises its values.
+
+    `scene_field`: the scene.yaml key this stream replaces in every scene instance (None: it does not touch the scene);
+    `realise(values, {"base": <that key in the base scene>})` is then the new value of the key."""
+    scene_field: str | None = None
 
     @abstractmethod
     def limits(self, spec: DatagenSpec) -> Mapping[str, Dim]:
@@ -78,6 +82,23 @@ class Randomiser(ABC):
     @abstractmethod
     def realise(self, values: Mapping[str, Any], context: Mapping[str, Any]) -> Mapping[str, Any]:
         """Dim values (by plain dim name) -> what the generator applies; `context` is the generator's own data."""
+
+    def measure(self, realised: Mapping[str, Any], base: Any) -> Mapping[str, Any]:
+        """What `realise` returned (and the base scene's value of the key) -> the plain dim values it amounts to, for the
+        realised min_distance; {} if none."""
+        return {}
+
+
+class Instancer(ABC):
+    """Writes the scene instance of a config: the base scene with each `scene_field` randomiser's realisation."""
+
+    @abstractmethod
+    def write(self, config: Config, out: Path) -> Result:
+        """Write `out`/scene.yaml; Result.paths["scene"] = the file, `realised` = `realised(config)`."""
+
+    @abstractmethod
+    def realised(self, config: Config) -> Mapping[str, Any]:
+        """The start the instance holds, as `<randomiser>.<dim>` values comparable with the sampled ones."""
 
 
 class Generator(ABC):

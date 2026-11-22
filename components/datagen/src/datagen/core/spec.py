@@ -97,6 +97,7 @@ class DatagenSpec:
     checks: tuple[PluginRef, ...] = ()
     seed: int = 0
     run: RunSpec = RunSpec()
+    scene: str | None = None            # the base scene the instances copy (default: the task's scene)
 
     def dims(self) -> dict[str, Dim]:
         """{`<randomiser>.<dim>`: Dim} of every varied dimension."""
@@ -110,6 +111,8 @@ class DatagenSpec:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self)
         d.pop("out"), d.pop("run")
+        if d["scene"] is None:          # keeps the hash of a spec without `scene` as it was
+            d.pop("scene")
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -258,7 +261,7 @@ def _check_pools_and_sources(splits, at):
 
 def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
     d = _mapping(raw, source, required=("task", "robot", "out", "generator", "splits"),
-                 optional=("recorder", "converter", "randomisers", "validators", "checks", "seed", "run"))
+                 optional=("recorder", "converter", "randomisers", "validators", "checks", "seed", "run", "scene"))
     rand = {}
     for r, dims in _mapping(d.get("randomisers", {}), f"{source}.randomisers", free=True).items():
         at = f"{source}.randomisers.{r}"
@@ -277,7 +280,8 @@ def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
         converter=_plugin(d["converter"], f"{source}.converter") if "converter" in d else None,
         randomisers=rand, validators=_plugins(d.get("validators", []), f"{source}.validators"),
         checks=_plugins(d.get("checks", []), f"{source}.checks"), seed=_int(d.get("seed", 0), f"{source}.seed"),
-        run=_run(d.get("run", {}), f"{source}.run"))
+        run=_run(d.get("run", {}), f"{source}.run"),
+        scene=_str(d["scene"], f"{source}.scene") if "scene" in d else None)
 
 
 def load(path: str | Path) -> DatagenSpec:

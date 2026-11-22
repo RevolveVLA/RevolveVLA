@@ -16,7 +16,7 @@
                                      container name)
   ./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
-  ./revolve datagen --list-randomisers --task T --robot R [--variant V]   what a task + robot can vary (dims, ranges)
+  ./revolve datagen --list-randomisers --task T --robot R   what a task + robot can vary (dims, ranges)
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,

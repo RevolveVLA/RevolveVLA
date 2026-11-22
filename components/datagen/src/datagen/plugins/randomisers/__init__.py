@@ -20,6 +20,7 @@ Adding a stream (lighting, object pose, ...) = one new module here, no core edit
 Then a spec says `randomisers: {lighting: {lux: [300, 800]}}`; samplers, pool, manifest and checks need nothing.
 The registry finds it as `datagen.plugins.randomisers.lighting` (a name that is not a module here: put it on
 $DATAGEN_PLUGIN_PATH). `limits()` and `realise()` must not import torch or the generator's stack: the host samples
-with them. The generator plugin calls `realise(config.of(name), context)` for each randomiser of the spec; `context`
-is the generator's own data, each randomiser documents the keys it reads (robot_base: `box_centre`, `facing`).
+with them. A stream that varies the scene sets `scene_field = "<scene.yaml key>"`: its `realise(values, {"base": <the
+base scene's value of that key>})` is then written into every scene instance (see robot_start). A stream that is
+compared on its realised start also overrides `measure` (see Randomiser).
 """

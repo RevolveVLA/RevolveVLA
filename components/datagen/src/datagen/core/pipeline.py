@@ -2,7 +2,8 @@
 
 Every step reads and writes only the manifest, so each is idempotent and a killed run resumes: sampling is kept,
 the walk skips decided seeds, record redoes episodes without a good recording, convert reruns when its episodes
-change. Layout under `out`: manifest.json, report.md, <split>/episodes/seed_<n>/, dataset/. A recorder's Result.paths["episode"]
+change. Layout under `out`: manifest.json, report.md, <split>/scene_<seed>/scene.yaml (the scene instance, written by
+`sample` when a randomiser varies the scene), <split>/episodes/seed_<n>/, dataset/. A recorder's Result.paths["episode"]
 is the dir convert reads (default: <split>/episodes/seed_<n>).
 
 `spec.run.workers` configs are generated (and episodes recorded) at a time; every decision is still taken in the
@@ -10,7 +11,7 @@ sequential order (pool.walk), so the manifest does not depend on it. A GUI run (
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -19,7 +20,8 @@ from . import pool, separation
 from .errors import DatagenError
 from .interrupt import Interrupted
 from .pool import PoolExhausted
-from .interfaces import (Check, Config, Converter, Generator, Randomiser, Recorder, Result, Sampler, Validator)
+from .interfaces import (Check, Config, Converter, Generator, Instancer, Randomiser, Recorder, Result, Sampler,
+                         Validator)
 from .spec import DatagenSpec, SplitSpec, check_limits
 
 STEPS = ("sample", "generate", "record", "convert", "check")
@@ -33,6 +35,7 @@ class PipelineError(DatagenError):
 class PluginSet:
     samplers: Mapping[str, Sampler] = field(default_factory=dict)         # by strategy
     randomisers: Mapping[str, Randomiser] = field(default_factory=dict)   # by name
+    instancer: Instancer | None = None            # writes the scene instance of every sampled config
     generator: Generator | None = None
     recorder: Recorder | None = None
     converter: Converter | None = None
@@ -88,6 +91,10 @@ class Pipeline:
     def episode_dir(self, config: Config) -> Path:
         return self.out / config.split / "episodes" / f"seed_{config.seed}"
 
+    def scene_dir(self, config: Config) -> Path:
+        """Where the config's scene instance lives (`<out>/<split>/scene_<seed>/scene.yaml`)."""
+        return self.out / config.split / f"scene_{config.seed}"
+
     def _configs(self, split: SplitSpec) -> list[Config]:
         return [Config.from_dict(d) for d in self.manifest.split(split.name)["sampled"]]
 
@@ -109,10 +116,19 @@ class Pipeline:
                 rec["sampled"] = [c.to_dict() for c in configs]
                 if sampler.redrawn:
                     rec["redrawn"] = list(sampler.redrawn)
+            self._write_instances(s)
             if s.name not in self._sampled:
                 self._sampled.add(s.name)
                 self.log(f"sample {s.name}: {len(rec['sampled'])} configs")
         self.manifest.save()
+
+    def _write_instances(self, split: SplitSpec):
+        """The scene instance of every sampled config that has none yet (a rejected one stays, to see why)."""
+        if self.plugins.instancer is None or self.dry_run:
+            return
+        for c in self._configs(split):
+            if not (self.scene_dir(c) / "scene.yaml").exists():
+                self.plugins.instancer.write(c, self.scene_dir(c))
 
     def _generate(self, splits):
         gen = self._need("generator", self.plugins.generator)
@@ -129,6 +145,8 @@ class Pipeline:
                                               self.episode_dir(config))
 
             def accept(config, step, res):             # in walk order: reads the configs accepted before it
+                if step == "generate" and res.ok and not res.realised and self.plugins.instancer:
+                    res = replace(res, realised=self.plugins.instancer.realised(config))     # the sim starts at the instance
                 if step == "generate" and (why := separation.too_close(s, self.spec.dims(), res, self.manifest.data)):
                     return "realised", Result.fail(why)       # the pool walk replaces it in its cell
                 return step, res

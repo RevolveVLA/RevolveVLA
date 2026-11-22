@@ -254,3 +254,20 @@ def test_optional_depth_and_roll_ranges(specs_copy):
     edit(p, lambda d: d["planner"]["grasp"].update(depth_range=[0.0, 0.03], roll_range_deg=[-100.0, -80.0]))
     g = specs.load(p, robot="mobile_panda").task.grasp
     assert (g.depth_range, g.roll_range_deg) == ([0.0, 0.03], [-100.0, -80.0])
+
+
+# ---- eval success rule
+def test_fridge_task_has_a_success_rule():
+    t = specs.load(SPECS / "tasks" / "open_fridge_door" / "task.yaml", robot="mobile_panda").task
+    assert (t.success.joint_deg, t.success.hold_s, t.success.held_fraction) == (60.0, 1.0, 0.9)
+    assert specs.load(SPECS / "tasks" / "open_drawer" / "task.yaml", robot="mobile_panda").task.success is None
+
+
+def test_bad_success_rule(specs_copy):
+    p = specs_copy / "tasks" / "open_fridge_door" / "task.yaml"
+    edit(p, lambda d: d["success"].update(held_fraction=1.5))
+    with pytest.raises(specs.SpecError, match="success.held_fraction"):
+        specs.load(p, robot="mobile_panda")
+    edit(p, lambda d: d["success"].pop("bar_z_m"))
+    with pytest.raises(specs.SpecError, match="success.bar_z_m"):
+        specs.load(p, robot="mobile_panda")

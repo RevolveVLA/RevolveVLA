@@ -151,5 +151,12 @@ sanity:
 # Policy rollouts (closed loop): sim time from the first action, wait before it, run-on after a success
 rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0}
 
+# Eval success of a policy rollout, from its state log (common/revolve_common/success.py): the door at or above
+# joint_deg for hold_s, opened with the handle held (gripper closed, both fingers on it, the bar between the
+# fingers) for held_fraction of the travel. The phase gates stay the verdict recovery regenerates from; the open
+# gate's slip is the door link's origin, not the handle (a hand turning with the door fails it).
+success: {joint_deg: 60.0, hold_s: 1.0, held_fraction: 0.9, contact_s: 0.05, half_width_m: 0.007, width_tol_m: 0.006,
+          bar_max_m: 0.02, bar_z_m: 1.025}
+
 # Live validator settings: contact stamps lag the sim; restore check of a saved phase state
 live: {contact_wait_s: 0.05, restore_pos_max_m: 0.001, restore_rot_max_deg: 0.1}

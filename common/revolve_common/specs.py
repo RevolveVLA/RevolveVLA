@@ -136,6 +136,22 @@ class Rollout(Strict):
     real_time_factor: float = Field(gt=0)
 
 
+class Success(Strict):
+    """Eval success of a policy rollout, judged from its state log (success.py): the object joint at or above
+    joint_deg for hold_s, with the handle held for at least held_fraction of the travel from 0 to joint_deg. Held:
+    gripper closed, both fingers on the handle within contact_s, each finger open half_width_m +- width_tol_m, the
+    handle bar's centre (at height bar_z_m, the grasp pose turned with the joint) within bar_max_m of the TCP across
+    the bar."""
+    joint_deg: float = Field(gt=0)
+    hold_s: float = Field(gt=0)
+    held_fraction: float = Field(gt=0, le=1)
+    contact_s: float = Field(gt=0)
+    half_width_m: float = Field(gt=0)
+    width_tol_m: float = Field(gt=0)
+    bar_max_m: float = Field(gt=0)
+    bar_z_m: float
+
+
 class Live(Strict):
     contact_wait_s: float = Field(ge=0)
     restore_pos_max_m: float = Field(gt=0)
@@ -290,6 +306,7 @@ class Task(Strict):
     sanity: Sanity
     rollout: Rollout
     live: Live
+    success: Success | None = None          # eval success of policy rollouts (absent: only the phase verdict)
     robots: dict[str, TaskRobot] = {}       # per-robot settings (reach-dependent numbers), optional
     # per robot: where its base starts and what may vary; a robot without a block (or null) has no start design:
     # AutoMoMa's whole-body IK picks the base

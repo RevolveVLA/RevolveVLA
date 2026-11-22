@@ -104,7 +104,7 @@ class Evaluator(Node):
             ('run_dir', ''), ('autostart', True), ('rate_hz', 100.0), ('gz_log', ''), ('bag', True))}
         repo = Path(p['repo']).resolve()
         _, scene, _, articulated = make_world(p['scene'], repo)
-        self.res = specs.resolve(repo / 'specs', p['task'], robot=p['robot'])
+        self.res = specs.resolve(repo / 'specs', p['task'], robot=p['robot'], scene=scene)   # on this scene (instance)
         robot, urdf, _, contact_links = describe(repo, p['robot'], arm=scene.robot_start.arm)
         self.robot, self.world = robot.name, scene.name
         self.root, links = urdf_links(urdf)

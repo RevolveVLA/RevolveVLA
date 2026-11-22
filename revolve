@@ -7,9 +7,10 @@
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration, assets)
   ./revolve sim --scene S --robot R [--task T [--no-autostart] [--record images|no-images] [--out DIR]] [--gui]
-                [--name N] [--domain-id D]   run the simulator (the world from scene S, a name or a scene.yaml file,
-                                     robot R at the scene's robot_start; components/simulator/README.md) in the
-                                     simulator image, on the GPU;
+                [--name N] [--domain-id D]   run the simulator (the world from scene S, a name or a scene instance
+                                     file, robot R at the scene's robot_start; components/simulator/README.md) in
+                                     the simulator image, on the GPU, once the scene, robot and task pass the
+                                     checks of `validate`;
                                      --task: the evaluator, episode results and bags (with or without the camera
                                      images) in DIR (default runs/sim/<time>_<task>/); --gui: also the gz GUI on the
                                      host's X display; ROS 2 on its own ROS_DOMAIN_ID (printed; default from the
@@ -20,9 +21,10 @@
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
-                                     robot and task under specs/, and tasks/sanity.yaml; a scene.yaml outside specs/
-                                     is a scene instance), against the model SDFs in
-                                     the scene's asset search path; --robot: also check the tasks with robot R;
+                                     robot and task under specs/, and tasks/sanity.yaml; or scene instance files,
+                                     components/simulator/README.md), against the model SDFs in the scene's asset
+                                     search path;
+                                     --robot: also check the tasks and the scenes' robot_start with robot R;
                                      --no-assets: names and syntax only (no asset files read)
 
 Python: the repo's .venv (git-ignored; see common/README.md), with the host's PYTHONPATH (ROS) dropped.
@@ -57,6 +59,13 @@ def cmd_validate(a):
     from revolve_common import specs
     root = REPO / "specs"
     paths = [Path(p) for p in a.spec] or specs.all_specs(root)
+    robot = None
+    if a.robot:
+        try:
+            robot = specs.load(specs.spec_path(root, "robots", a.robot), assets=not a.no_assets)
+        except specs.SpecError as e:
+            print(e, file=sys.stderr)
+            return 1
     rc = 0
     for path in paths:
         path = path.resolve()        # load the absolute path (the caller's cwd may be anywhere); print it repo-relative
@@ -70,7 +79,12 @@ def cmd_validate(a):
                 print(f"OK {p}: task {r.name} on scene {r.scene}{with_robot}; phases {phases}; "
                       f"sanity {', '.join(res.sanity)}")
             elif isinstance(r, specs.Scene):
-                print(f"OK {p}: scene {r.name}, models {', '.join(r.models)}")
+                # what `revolve sim` refuses (nonzero initial joints), the robot start with --robot
+                errs = specs.check_run(path, a.robot, assets=not a.no_assets)
+                if errs:
+                    raise specs.SpecError("\n".join(errs))
+                print(f"OK {p}: scene {r.name}, models {', '.join(r.models)}"
+                      + (f"; robot_start fits robot {robot.name}" if robot else ""))
             elif isinstance(r, specs.Robot):
                 print(f"OK {p}: robot {r.name}, poses {', '.join(r.poses)}")
             else:
@@ -144,25 +158,30 @@ def sim_docker_args(name, gui=False, domain=0, out=None, mounts=()):
 
 
 def cmd_sim(a):
-    from revolve_common import gpu
-    gpu.launch_check()
+    # the arguments first: a refused one starts nothing (exit 1, one line on stderr)
+    for flag, given in (("--out", a.out), ("--record", a.record), ("--no-autostart", a.no_autostart)):
+        if given and not a.task:
+            sys.exit(f"revolve sim: {flag} needs --task (without a task there are no episodes)")
+    from revolve_common import gpu, specs
+    errs = specs.check_run(a.scene, a.robot, a.task)     # what the launch would refuse, before docker
+    if errs:
+        sys.exit("revolve sim: " + "\n".join(errs))
+    try:
+        gpu.launch_check()
+    except gpu.GpuError as e:
+        sys.exit(f"revolve sim: {e}")
     out = None
     if a.out:
-        if not a.task:
-            sys.exit("revolve sim: --out needs --task (it holds the episode results and bags)")
         out = Path(a.out).resolve()
         out.mkdir(parents=True, exist_ok=True)      # by the user, before docker would create it as root
-    scene, mounts = a.scene, []
-    if scene.endswith(".yaml"):     # a scene file (e.g. a randomizer's scene instance): its path in the container
-        p = Path(scene).resolve()
-        if not p.is_file():
-            sys.exit(f"revolve sim: no scene file {p}")
-        if p.is_relative_to(REPO):
-            scene = f"/repo/{p.relative_to(REPO)}"
-        else:
-            scene, mounts = str(p), [p]
+    p, mounts = specs.scene_file(a.scene, REPO / "specs").resolve(), []      # the launch gets the scene file
+    if p.is_relative_to(REPO):
+        scene = f"/repo/{p.relative_to(REPO)}"
+    else:
+        scene, mounts = str(p), [p]
     launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={scene}", f"robot:={a.robot}",
-              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}", f"record:={a.record}"] if a.task else []) + \
+              f"gui:={'true' if a.gui else 'false'}"] + \
+        ([f"task:={a.task}", f"record:={a.record or 'images'}"] if a.task else []) + \
         (["autostart:=false"] if a.no_autostart else []) + ([f"run_dir:={out}"] if out else [])
     domain = sim_domain(a.name, a.domain_id)
     print(f"revolve sim: ROS_DOMAIN_ID={domain} (from the host: export ROS_DOMAIN_ID={domain})", file=sys.stderr,
@@ -246,8 +265,8 @@ def main():
     s.add_argument("--task", help="specs/tasks/<task> (checked against the scene and robot)")
     s.add_argument("--no-autostart", action="store_true", help="with --task: start episodes only on the "
                    "/evaluator/start service (default: the first one starts when the evaluator has every input)")
-    s.add_argument("--record", choices=("images", "no-images"), default="images", help="with --task: record each "
-                   "episode with the camera images (JPEG; default) or without them")
+    s.add_argument("--record", choices=("images", "no-images"), help="with --task: record each episode with the "
+                   "camera images (JPEG; default images) or without them")
     s.add_argument("--out", metavar="DIR", help="with --task: write the episode results and bags into DIR (a host "
                    "directory, created if missing; default runs/sim/<time>_<task>/)")
     s.add_argument("--gui", action="store_true", help="also start the gz GUI client")
@@ -260,7 +279,8 @@ def main():
                                             help="<spec.yaml> [stage] [--set S] [--dry-run] [--workers N] [--gui]")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="*")
-    v.add_argument("--robot", help="also check the tasks with this robot (specs/robots/<robot>)")
+    v.add_argument("--robot", help="also check the tasks and the scenes' robot_start with this robot "
+                   "(specs/robots/<robot>)")
     v.add_argument("--no-assets", action="store_true", help="names and syntax only: no asset files read")
     if sys.argv[1:2] == ["assets"]:
         return subprocess.call(["bash", str(REPO / "assets_pipeline" / "make_assets.sh"), *sys.argv[2:]], cwd=REPO)

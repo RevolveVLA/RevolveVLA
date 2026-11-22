@@ -24,7 +24,7 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from revolve_common import specs
 from revolve_sim.robot import controller_types, describe, robot_dir
-from revolve_sim.world import make_world, scene_path
+from revolve_sim.world import make_world
 
 SIM_TIME = {'use_sim_time': True}
 JTC = 'joint_trajectory_controller/JointTrajectoryController'
@@ -48,15 +48,13 @@ def setup(context):
     arg = lambda n: LaunchConfiguration(n).perform(context)  # noqa: E731
     repo = Path(arg('repo')).resolve()
     tmp = Path(tempfile.mkdtemp(prefix='revolve_sim_'))
-    scene = specs.load(scene_path(arg('scene'), repo))
+    scene = specs.load(specs.scene_file(arg('scene'), repo / 'specs'))
     robot, urdf, cams, contacts = describe(repo, arg('robot'), arm=scene.robot_start.arm)
     (tmp / 'robot.urdf').write_text(urdf)
     world_sdf, scene, resource_paths, models = make_world(arg('scene'), repo, robot=(robot.name, tmp / 'robot.urdf'))
     task = arg('task')
     if task:    # the task fits this scene (a scene instance keeps its scene's name) and robot
-        on = specs.resolve(repo / 'specs', task, robot=robot.name).task.scene
-        if on != scene.name:
-            raise specs.SpecError(f'task {task} is on scene {on}, not {scene.name}')
+        specs.resolve(repo / 'specs', task, robot=robot.name, scene=scene)
     controllers = robot_dir(repo, robot.name) / robot.controllers
 
     (tmp / f'{scene.name}.sdf').write_text(world_sdf)

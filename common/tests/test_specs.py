@@ -346,6 +346,20 @@ def test_robot_start_arm_is_checked_with_a_robot(tree):
     assert specs.resolve(tree, "open", robot="bot").robot.arm_dof == 3
 
 
+def test_resolve_on_a_given_scene(tree):
+    """resolve(scene=): the task runs on that scene (a scene instance) instead of its own scene file, and the robot
+    start checked is the given scene's."""
+    own = tree / "scenes/room/scene.yaml"
+    given = specs.load(own).model_copy(update={"robot_start": specs.RobotStart(base=[1, 0, 0], arm="folded")})
+    edit(own, lambda d: d["robot_start"].update(arm="home"))
+    assert specs.resolve(tree, "open", robot="bot", scene=given).scene.robot_start.arm == "folded"
+    bad = given.model_copy(update={"robot_start": specs.RobotStart(base=[1, 0, 0], arm=[0, 0])})
+    with pytest.raises(SpecError, match="robot_start.arm has 2 joints, robot bot 3"):
+        specs.resolve(tree, "open", robot="bot", scene=bad)
+    with pytest.raises(SpecError, match="task open is on scene room, not garage"):
+        specs.resolve(tree, "open", scene=given.model_copy(update={"name": "garage"}))
+
+
 def test_metric_registry_names():
     assert set(specs.METRICS) == {"joint", "distance", "angle", "contacts", "gripper_opening", "slip",
                                   "peak_body_speed", "penetration", "non_finite_commands", "gz_log_problem_lines"}
@@ -444,4 +458,54 @@ def test_names_must_be_topic_name_tokens(tree, tmp_path):
     edit(tree / "robots/bot.v2/robot.yaml", lambda d: d.update(name="bot.v2"))
     with pytest.raises(SpecError, match="'bot.v2': this name is part of ROS 2 topic names"):
         specs.load(tree / "robots/bot.v2/robot.yaml", assets=False)
+
+
+# ------------------------------------------------------------------ scene instances
+@pytest.mark.parametrize("rel", ["scenes/room/seed_7/scene.yaml", "scene/room2/scene.yaml", "instances/scene.yaml"])
+def test_scene_yaml_elsewhere_in_specs_is_rejected(tree, rel):
+    """A scene instance lives outside specs/; inside it, a scene is specs/scenes/<name>/scene.yaml only."""
+    with pytest.raises(SpecError, match="not specs/"):
+        specs.load(write(tree / rel, (tree / "scenes/room/scene.yaml").read_text()))
+
+
+@pytest.mark.parametrize("name", ["seed_7.yaml", "scene.yml"])
+def test_scene_instance_file_is_named_scene_yaml(tree, tmp_path, name):
+    with pytest.raises(SpecError, match="a scene instance file is named scene.yaml"):
+        specs.load(write(tmp_path / "out" / name, (tree / "scenes/room/scene.yaml").read_text()), root=tree)
+
+
+def test_a_specs_folder_without_sanity_yaml_is_no_specs_root(tree, tmp_path):
+    """E.g. a run dir with a `specs` folder: its scene.yaml is an instance (assets from `root`), not a spec."""
+    p = write(tmp_path / "runs/x/specs/seed_3/scene.yaml", (tree / "scenes/room/scene.yaml").read_text())
+    assert specs.load(p, root=tree).name == "room"
+    with pytest.raises(SpecError, match="not under a specs/"):
+        specs.load(write(tmp_path / "runs/x/specs/robots/bot/robot.yaml", "name: bot\n"))
+
+
+# ------------------------------------------------------------------ check_run: what `revolve sim` refuses
+@pytest.fixture
+def instance(tree, tmp_path):
+    """A runnable scene instance of room outside specs/ (its joints at 0: the simulator's only start)."""
+    d = yaml.safe_load((tree / "scenes/room/scene.yaml").read_text())
+    d["models"]["cabinet"]["joints"]["slide"] = 0.0
+    return write(tmp_path / "runs/exp/scene_7/scene.yaml", yaml.safe_dump(d))
+
+
+def test_check_run_passes_a_runnable_instance(tree, instance):
+    assert specs.check_run(instance, "bot", "open", root=tree) == []
+    assert specs.check_run(instance, root=tree) == []
+
+
+@pytest.mark.parametrize("change, task, needle", [
+    (lambda d: d["robot_start"].update(arm="home"), None, "robot_start.arm 'home' is not a pose of robot bot"),
+    (lambda d: d["robot_start"].update(arm=[0, 0]), "open", "robot_start.arm has 2 joints, robot bot 3"),
+    (lambda d: d["models"]["cabinet"]["joints"].update(slide=0.1), None, "nonzero initial joint positions"),
+    (lambda d: d.update(name="garage"), "open", "task open is on scene room, not garage"),
+    (lambda d: d["models"].update(box={"model": "nope"}), None, "model://nope"),
+], ids=["unknown-pose", "arm-length-with-task", "nonzero-joint", "other-scene-for-task", "missing-model"])
+def test_check_run_refuses_what_the_launch_refuses(tree, instance, change, task, needle):
+    edit(instance, change)
+    errs = specs.check_run(instance, "bot", task, root=tree)
+    assert errs and str(instance) in errs[0], errs
+    assert needle in "\n".join(errs), errs
 

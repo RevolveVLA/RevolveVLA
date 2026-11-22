@@ -1,24 +1,24 @@
-"""Fake datagen plugins for the CPU tests (no docker, no GPU): tiny files, scripted failures, a call log.
+"""Fake datagen plugins for the CPU tests (no docker, no GPU, no sim): scripted delays, a call log.
 
-Registered under the module's own name, so a spec says `plugin: fake_datagen` (put tests/ on $DATAGEN_PLUGIN_PATH).
-Params: generator / recorder `fail_seeds`, validator `reject_seeds`, generator `realised` {seed: x} (the realised
-`fake_datagen.x` of that seed; others report only `x`), generator / recorder `delays` {seed: seconds} (a slow job; the
-generator's output dir exists while it sleeps), generator `delay` (seconds for every seed). `KILL_AFTER = n` makes the generator raise
-KeyboardInterrupt on its (n+1)-th call (a killed run; a spec param would change the spec hash). A subprocess (the CLI
-system tests) gets both through the environment: $FAKE_DATAGEN_KILL_AFTER, and its calls appended to $FAKE_DATAGEN_LOG."""
+Registered under the module's own name, so a spec says `plugin: fake_datagen` (put tests/ on $DATAGEN_PLUGIN_PATH). The sim
+is the `fake` runner (plugins/runners/fake.py: which scenes pass, which sims fault). Params: generator `delays` {seed:
+seconds} (a slow expert; the scene dir exists while it sleeps), generator `delay` (seconds for every seed), validator
+`reject_seeds`. `KILL_AFTER = n` makes the generator raise KeyboardInterrupt on its (n+1)-th drive (a killed run; a spec
+param would change the spec hash). A subprocess (the CLI system tests) gets both through the environment:
+$FAKE_DATAGEN_KILL_AFTER, and its calls appended to $FAKE_DATAGEN_LOG."""
 import json
 import os
 import threading
 import time
 from pathlib import Path
 
-from datagen.core.interfaces import Converter, Generator, Randomiser, Recorder, Result, Validator
+from datagen.core.interfaces import Converter, Generator, Instancer, Randomiser, Result, Validator
 from datagen.core.registry import register
 from datagen.core.spec import Range
 
 KILL_AFTER = int(os.environ["FAKE_DATAGEN_KILL_AFTER"]) if "FAKE_DATAGEN_KILL_AFTER" in os.environ else None
-CALLS = []      # ("generate"|"record"|"convert"|"validate", seed) in call order
-ACTIVE = {"now": 0, "peak": 0}      # generator / recorder calls running at once, and the most there were
+CALLS = []      # ("drive"|"convert"|"validate", seed) in call order
+ACTIVE = {"now": 0, "peak": 0}      # generator drives running at once, and the most there were
 _LOCK = threading.Lock()
 
 
@@ -50,13 +50,30 @@ class Knob(Randomiser):
         return {"offset": values["x"]}
 
 
+def seed_of(instance: Path) -> int:
+    return int(instance.parent.name.split("_")[1])
+
+
 @register("generator", "fake_datagen")
 class FakeGenerator(Generator):
     def __init__(self, spec, params):
-        self.fail, self.n, self.realised = set(params.get("fail_seeds", [])), 0, params.get("realised", {})
+        self.n = 0
         self.delay, self.delays = params.get("delay", 0), {int(k): v for k, v in params.get("delays", {}).items()}
+        self.fail, self.realised = set(params.get("fail_seeds", [])), params.get("realised", {})
+
+    def drive(self, client, instance, task, robot):
+        seed = seed_of(instance)
+        called("drive", seed)
+        self.n += 1
+        if KILL_AFTER is not None and self.n > KILL_AFTER:
+            raise KeyboardInterrupt("simulated kill")
+        if seconds := self.delays.get(seed, self.delay):
+            slow("drive", seed, seconds)
+        return {"expert": "fake_v1", "notes": f"seed {seed}"}
 
     def generate(self, config, out):
+        """What evaluation's heldout set still calls (it realises a start through the generator; PRD 05 moves it onto scene
+        instances, then this goes): `fail_seeds`, `realised` {seed: x} and the delays as the old fake had them."""
         called("generate", config.seed)
         self.n += 1
         if KILL_AFTER is not None and self.n > KILL_AFTER:
@@ -66,27 +83,23 @@ class FakeGenerator(Generator):
             slow("generate", config.seed, seconds)
         if config.seed in self.fail:
             return Result.fail("planner found no path")
-        (out / "episode.json").write_text(json.dumps(dict(config.values)))
         realised = {"x": config.values.get("fake_datagen.x")}
         if config.seed in self.realised:
             realised["fake_datagen.x"] = self.realised[config.seed]
         return Result(realised=realised, paths={"episode": str(out / "episode.json")})
 
 
-@register("recorder", "fake_datagen")
-class FakeRecorder(Recorder):
-    def __init__(self, spec, params):
-        self.fail = set(params.get("fail_seeds", []))
-        self.delays = {int(k): v for k, v in params.get("delays", {}).items()}
+class FakeInstancer(Instancer):
+    """Scripted starts: `realised` {seed: {"fake_datagen.x": x}} (what the sim's start of that instance is)."""
 
-    def record(self, config, generated, out):
-        called("record", config.seed)
-        if seconds := self.delays.get(config.seed):
-            slow("record", config.seed, seconds)
-        if config.seed in self.fail:
-            return Result.fail("replay diverged")
-        (out / "bag.txt").write_text("bag")
-        return Result(paths={"bag": str(out / "bag.txt")})
+    def __init__(self, realised):
+        self.start = realised
+
+    def write(self, config, out):
+        return Result(realised=self.realised(config))
+
+    def realised(self, config):
+        return self.start.get(config.seed, {})
 
 
 @register("converter", "fake_datagen")
@@ -96,9 +109,7 @@ class FakeConverter(Converter):
 
     def convert(self, episodes, out):
         called("convert", len(episodes))
-        out.mkdir(parents=True, exist_ok=True)
-        (out / "dataset.json").write_text(json.dumps([Path(e).name for e in episodes]))
-        return Result(paths={"dataset": str(out / "dataset.json")})
+        return Result()
 
 
 @register("validator", "fake_datagen")

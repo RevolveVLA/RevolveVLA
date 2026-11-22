@@ -7,7 +7,7 @@ import pytest
 import yaml
 
 from datagen import cli
-from datagen.core import checks, manifest, pipeline, separation, spec as S
+from datagen.core import checks, pipeline, separation, spec as S, state
 from datagen.core.interfaces import Result
 from datagen.core.spec import Choices
 
@@ -15,7 +15,7 @@ DIM = "fake_datagen.x"           # range [-0.5, 0.5]: distances are plain differ
 SPLITS = {"train": {"target": 4, "sampler": {"strategy": "stratified", "bins": {DIM: 2}}, "pool": {"initial": [0, 9]}},
           "heldout": {"target": 2, "pool": {"initial": [20, 29]}, "record": False,
                       "min_distance": {"from": "train", "value": 0.1, "realised": True}}}
-RAW = {"task": "t", "robot": "r", "out": "unused", "generator": {"plugin": "fake_datagen", "checks": 3},
+RAW = {"task": "t", "robot": "r", "out": "unused", "generator": {"plugin": "fake_datagen", "checks": 3}, "runner": {"plugin": "fake"},
        "randomisers": {"fake_datagen": {"x": [-0.5, 0.5]}}, "splits": SPLITS}
 
 
@@ -25,8 +25,7 @@ def spec(**edits):
 
 def used(split, seed, x, realised=None, cell=()):
     return {"config": {"split": split, "seed": seed, "cell": list(cell), "values": {DIM: x}},
-            "generate": {"ok": True, "reason": "", "paths": {}, "realised": {} if realised is None else {DIM: realised}},
-            "record": {"ok": True}}
+            "generate": {"ok": True, "reason": "", "paths": {}, "realised": {} if realised is None else {DIM: realised}}}
 
 
 def sampled(split, seed, x, cell=()):
@@ -56,10 +55,10 @@ def test_a_good_run_passes_every_check():
         assert res.ok, (name, res.reason)
 
 
-def test_target_counts_recorded_for_recording_splits():
+def test_target_counts_the_accepted_scenes():
     m = good()
     assert run("target", m).ok
-    m["splits"]["train"]["used"][1]["record"] = {"ok": False}
+    del m["splits"]["train"]["used"][1]
     assert run("target", m).reason == "train 3/4"
 
 
@@ -171,12 +170,12 @@ def test_report_snapshot():
     m["splits"]["heldout"]["used"][0]["generate"]["realised"][DIM] = 0.241
     m["checks"] = [{"name": n, **Result(*r).to_dict()} for n, r in (("target", (True,)),
                                                                     ("realised_min_distance", (False, "x: 0.041 < 0.1")))]
-    assert manifest.report(sp, m) == f"""# t (r), spec {sp.hash}
+    assert state.report(sp, m) == f"""# t (r), spec {sp.hash}
 
-| split | target | used | rejected | recorded |
-|---|---|---|---|---|
-| train | 4 | 4 | 1 | 4 |
-| heldout | 2 | 2 | 0 | 2 |
+| split | target | used | rejected |
+|---|---|---|---|
+| train | 4 | 4 | 1 |
+| heldout | 2 | 2 | 0 |
 
 cells of train (bins {DIM} 2)
 
@@ -204,10 +203,10 @@ def test_check_exits_non_zero_on_a_failed_check(tmp_path, capsys, x, code):
     m = good() | {"spec_hash": S.parse(raw).hash, "task": "t"}
     m["splits"]["heldout"]["used"][0]["generate"]["realised"][DIM] = x
     (tmp_path / "run").mkdir()
-    (tmp_path / "run" / "manifest.json").write_text(json.dumps(m))
+    (tmp_path / "run" / "state.json").write_text(json.dumps(m))
     assert cli.main([str(tmp_path / "spec.yaml"), "check"]) == code
     assert ("FAIL" in (tmp_path / "run" / "report.md").read_text()) == bool(code)
-    assert json.loads((tmp_path / "run" / "manifest.json").read_text())["checks"][0]["ok"] == (code == 0)
+    assert json.loads((tmp_path / "run" / "state.json").read_text())["checks"][0]["ok"] == (code == 0)
 
 
 # ------------------------------------------------------------------ the walk rejects a too-close realised start
@@ -226,17 +225,17 @@ def test_the_walk_replaces_a_realised_rejection_in_its_cell(tmp_path):
     import fake_datagen as F
     F.CALLS.clear()
     realised = {0: -0.4, 1: 0.4, 20: -0.38, 21: 0.0, 22: 0.1}
-    raw = RAW | {"generator": {"plugin": "fake_datagen", "realised": realised},
-                 "checks": [{"plugin": "realised_min_distance"}],
+    raw = RAW | {"checks": [{"plugin": "realised_min_distance"}],
                  "splits": {"train": {"target": 2, "pool": {"initial": [0, 3]}},
                             "heldout": SPLITS["heldout"] | {"target": 2, "pool": {"initial": [20, 29]}}}}
     sp = S.parse(raw)
-    p = pipeline.Pipeline(sp, cli.build_plugins(sp, ("sample", "generate", "check")), tmp_path, log=lambda m: None)
+    plugins = cli.build_plugins(sp, ("sample", "generate", "check"))
+    plugins.instancer = F.FakeInstancer({s: {DIM: x} for s, x in realised.items()})        # the start of each scene instance
+    p = pipeline.Pipeline(sp, plugins, tmp_path, log=lambda m: None)
     assert p.run(["sample", "generate", "check"])
-    rec = json.loads((tmp_path / "manifest.json").read_text())["splits"]["heldout"]
+    rec = json.loads((tmp_path / "state.json").read_text())["splits"]["heldout"]
     assert rec["rejected"] == [{"seed": 20, "step": "realised", "reason": "min_distance (realised)"}]
     assert [e["config"]["seed"] for e in rec["used"]] == [21, 22]
-    assert ("generate", 20) in F.CALLS                              # it was generated, then judged
 
 
 def test_realised_choices_count_in_the_distance_too():

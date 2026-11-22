@@ -14,7 +14,7 @@ from pathlib import Path
 
 from datagen.core import pool, registry, separation
 from datagen.core.interfaces import Config, Result
-from datagen.core.manifest import Manifest
+from datagen.core.state import State as Manifest        # datagen v2 renamed it (state.json); PRD 05 revisits
 from datagen.core.samplers import distance
 
 from ...core import checks, sets

@@ -8,7 +8,7 @@ import fake_datagen
 import pytest
 import yaml
 from datagen.core.interfaces import Result
-from datagen.core.manifest import Manifest
+from datagen.core.state import State as Manifest
 from datagen.core.pool import PoolExhausted
 from datagen.core.samplers import distance
 from datagen.core.spec import Choices, Range
@@ -45,8 +45,8 @@ def make(root, sets_=None, train=TRAIN, **edits) -> S.EvalSpec:
 
 
 def training_manifest(spec, root, entries, **extra):
-    """runs of `train_run/manifest.json`: entries = [(seed, x, realised x | None, check dir | None)] of split train, used."""
-    m = Manifest.open(root / "train_run" / "manifest.json", spec.train)
+    """runs of `train_run/state.json`: entries = [(seed, x, realised x | None, check dir | None)] of split train, used."""
+    m = Manifest.open(root / "train_run" / "state.json", spec.train)
     rec = m.split("train")
     for seed, x, real, check in entries:
         cell = (min(int((x + 0.5) * 3), 2),)
@@ -137,7 +137,7 @@ def test_no_manifest_measures_sampled_distances_to_the_resampled_training_config
 
 def test_a_realised_distance_without_the_manifest_fails_before_generating(root):
     spec = make(root, {"heldout": HELDOUT | {"min_distance": {"value": 0.1, "realised": True}}})
-    with pytest.raises(EvalError, match=r"sets.heldout.min_distance.realised needs the training manifest .*train_run/manifest.json"):
+    with pytest.raises(EvalError, match=r"sets.heldout.min_distance.realised needs the training manifest .*train_run/state.json"):
         build(spec, root)
     assert not (root / "run").exists() and fake_datagen.CALLS == []
 
@@ -212,7 +212,7 @@ def test_the_train_set_spreads_over_the_cells_and_starts_from_the_training_check
 
 def test_the_train_set_needs_the_manifest_and_its_start_dirs(root):
     spec = make(root, {"train": {"from": "train", "count": 1}})
-    with pytest.raises(EvalError, match="needs the training manifest .*train_run/manifest.json"):
+    with pytest.raises(EvalError, match="needs the training manifest .*train_run/state.json"):
         build(spec, root, "train", plugin=TrainSet)
     training_manifest(spec, root, [(0, 0.0, None, root / "missing")])
     with pytest.raises(EvalError, match="no start dir for training seed 0"):

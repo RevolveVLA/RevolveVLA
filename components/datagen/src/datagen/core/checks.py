@@ -38,7 +38,7 @@ class _Check(Check):
 
 @_builtin("target")
 class TargetReached(_Check):
-    """Every split has its target number of accepted (and, when it records, recorded) episodes."""
+    """Every split has its target number of accepted scenes."""
 
     def run(self, manifest):
         short = []

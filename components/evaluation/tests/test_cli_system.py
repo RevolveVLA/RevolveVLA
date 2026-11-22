@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from datagen.core.manifest import Manifest
+from datagen.core.state import State as Manifest
 
 from evaluation.core import spec as S
 
@@ -65,7 +65,7 @@ def spec_of(root, **edits) -> dict:
 def training_manifest(root, entries=((0, -0.3), (1, 0.0), (2, 0.3)), touched=()):
     """<train out>/manifest.json: the used training configs (seed, x) with their start dirs; `touched` = extra seeds."""
     train = S.parse(spec_of(root), "eval.yaml", root).train
-    m = Manifest.open(root / "train_run" / "manifest.json", train)
+    m = Manifest.open(root / "train_run" / "state.json", train)
     rec = m.split("train")
     for seed, x in entries:
         start = root / "train_run" / "starts" / f"seed_{seed}"

@@ -1,9 +1,10 @@
-"""`./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]`.
+"""`./revolve datagen <spec.yaml | job.yaml> [sample|generate|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]`.
 
 Resolves only the plugins the requested steps need, so `sample` runs on the host without docker. Extra plugin
 modules are found through $DATAGEN_PLUGIN_PATH (os.pathsep separated). `--workers` / `--gui` override the spec's `run:`
-block. Exit code: 0 ok, 1 failed check or error, 128 + n when stopped by signal n (SIGINT 130, SIGTERM 143): the
-manifest is saved and the run's docker jobs are stopped."""
+block (workers = (sim, generator) pairs). A job yaml (DATAGEN-v2.md 8.2: instances made elsewhere) runs as a spec. Exit
+code: 0 ok, 1 failed check or error, 128 + n when stopped by signal n (SIGINT 130, SIGTERM 143): the state is saved and
+the run's sims are stopped."""
 from __future__ import annotations
 
 import argparse
@@ -12,11 +13,12 @@ import os
 import sys
 from pathlib import Path
 
+from . import job
 from .core import checks, registry
 from .core.errors import DatagenError
 from .core.interrupt import Interrupted, interruptible
 from .core.pipeline import STEPS, Pipeline, PluginSet
-from .core.spec import DatagenSpec, load
+from .core.spec import DatagenSpec, PluginRef
 
 
 REMOVED_RANDOMISERS = {      # the old simulator's start streams -> the one that replaced them
@@ -39,8 +41,7 @@ def build_plugins(spec: DatagenSpec, steps) -> PluginSet:
         p.samplers = {s.sampler.strategy: registry.create("sampler", s.sampler.strategy) for s in spec.splits}
     if "generate" in steps:
         p.generator, p.validators = one("generator", spec.generator), many("validator", spec.validators)
-    if "record" in steps:
-        p.recorder = one("recorder", spec.recorder)
+        p.runner = one("runner", spec.runner or PluginRef("sim"))
     if "convert" in steps:
         p.converter = one("converter", spec.converter)
     if "check" in steps:
@@ -66,7 +67,7 @@ def main(argv=None, root: Path | None = None) -> int:
     ap.add_argument("step", nargs="?", default="all", choices=(*STEPS, "all"))
     ap.add_argument("--split", action="append", help="only this split (repeatable)")
     ap.add_argument("--dry-run", action="store_true", help="say what would run; no plugin call, nothing written")
-    ap.add_argument("--workers", type=int, help="configs generated / recorded at a time (overrides run.workers)")
+    ap.add_argument("--workers", type=int, help="scenes run at a time, one (sim, generator) pair each (overrides run.workers)")
     gui = ap.add_mutually_exclusive_group()
     gui.add_argument("--gui", action="store_true", help="show the gz GUI of the replays on $DISPLAY (run.headless false; "
                                                         "one window, so one worker)")
@@ -84,9 +85,12 @@ def main(argv=None, root: Path | None = None) -> int:
         ap.error("--workers must be >= 1")
     steps = STEPS if a.step == "all" else (a.step,)
     try:
-        spec = with_run(load(a.spec), a)
+        spec, scenes = job.load(a.spec, root or Path.cwd())
+        spec = with_run(spec, a)
         out = (Path(spec.out) if Path(spec.out).is_absolute() else (root or Path.cwd()) / spec.out)
-        pipeline = Pipeline(spec, build_plugins(spec, steps), out, a.dry_run, abort=lambda: stop_jobs(out))
+        spec = dataclasses.replace(spec, out=str(out))                  # the plugins see the absolute out
+        plugins = build_plugins(spec, steps)
+        pipeline = Pipeline(spec, plugins, out, a.dry_run, abort=plugins.runner and plugins.runner.stop, scenes=scenes)
         with interruptible():
             return 0 if pipeline.run(steps, a.split) else 1
     except Interrupted as e:
@@ -103,7 +107,3 @@ def with_run(spec: DatagenSpec, a) -> DatagenSpec:
                                            **({"headless": False} if a.gui else {"headless": True} if a.headless else {})})
     return dataclasses.replace(spec, run=run)
 
-
-def stop_jobs(out: Path):
-    from .containers import stop_jobs as stop
-    stop(out, log=lambda m: print(f"datagen: {m}", file=sys.stderr))

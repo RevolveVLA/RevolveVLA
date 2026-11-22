@@ -1,10 +1,10 @@
-"""Training source `datagen` (the default): the training spec's datagen manifest, `<train.out>/manifest.json` or the spec's
-`train_manifest`. A run without a manifest is sampled-only (core/sets.py)."""
+"""Training source `datagen` (the default): the training spec's datagen state, `<train.out>/state.json` or the spec's
+`train_manifest` (datagen v2 keeps manifest.json for DATAGEN-v2.md 8.4). A run without it is sampled-only (core/sets.py)."""
 from __future__ import annotations
 
 from pathlib import Path
 
-from datagen.core.manifest import Manifest
+from datagen.core.state import State as Manifest        # datagen v2: the resumable state is state.json
 
 from ...core.interfaces import TrainingRun, TrainingSource
 from ...core.registry import REGISTRY

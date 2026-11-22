@@ -73,7 +73,7 @@ class SplitSpec:
     sampler: SamplerSpec
     pool: PoolSpec
     min_distance: MinDistance | None = None
-    record: bool = True
+    record: bool = True         # False: sampled and validated only, no sim episodes (a pool kept aside)
 
 
 @dataclass(frozen=True)
@@ -83,14 +83,25 @@ class RunSpec:
     headless: bool = True
 
 
+RECORDINGS = ("images", "no-images")        # `revolve sim --record`
+
+
+@dataclass(frozen=True)
+class EpisodeSpec:
+    """The sim episodes of a scene instance, from the `generator:` block (next to `plugin`): up to `attempts` tries until
+    `per_scene` (yaml `episodes_per_scene`) are accepted by the evaluator; `record`: the sim's bag with or without cameras."""
+    attempts: int = 3
+    per_scene: int = 1
+    record: str = "images"
+
+
 @dataclass(frozen=True)
 class DatagenSpec:
     task: str
     robot: str
     out: str
-    generator: PluginRef
+    generator: PluginRef                # the plugin's own params only (attempts / episodes_per_scene / record are `episodes`)
     splits: tuple[SplitSpec, ...]
-    recorder: PluginRef | None = None
     converter: PluginRef | None = None
     randomisers: Mapping[str, Mapping[str, Dim]] = field(default_factory=dict)
     validators: tuple[PluginRef, ...] = ()
@@ -98,6 +109,9 @@ class DatagenSpec:
     seed: int = 0
     run: RunSpec = RunSpec()
     scene: str | None = None            # the base scene the instances copy (default: the task's scene)
+    runner: PluginRef | None = None     # runs a scene instance's episodes (default `sim`: ./revolve sim + a client container)
+    episodes: EpisodeSpec = EpisodeSpec()
+    raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)    # the parsed yaml (a client container re-parses it)
 
     def dims(self) -> dict[str, Dim]:
         """{`<randomiser>.<dim>`: Dim} of every varied dimension."""
@@ -110,9 +124,10 @@ class DatagenSpec:
     def hash(self) -> str:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self)
-        d.pop("out"), d.pop("run")
-        if d["scene"] is None:          # keeps the hash of a spec without `scene` as it was
-            d.pop("scene")
+        d.pop("out"), d.pop("run"), d.pop("raw")
+        for optional in ("scene", "runner"):      # keeps the hash of a spec without them as it was
+            if d[optional] is None:
+                d.pop(optional)
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -173,6 +188,19 @@ def _plugins(v, at):
     if not isinstance(v, list):
         _fail(at, "expected a list of {plugin: ...}")
     return tuple(_plugin(x, f"{at}[{i}]") for i, x in enumerate(v))
+
+
+def _generator(v, at) -> tuple[PluginRef, EpisodeSpec]:
+    ref = _plugin(v, at)
+    p = dict(ref.params)
+    attempts = _int(p.pop("attempts", 3), f"{at}.attempts", 1)
+    per_scene = _int(p.pop("episodes_per_scene", 1), f"{at}.episodes_per_scene", 1)
+    record = p.pop("record", "images")
+    if record not in RECORDINGS:
+        _fail(f"{at}.record", f"expected one of {RECORDINGS}, got {record!r}")
+    if per_scene > attempts:
+        _fail(f"{at}.episodes_per_scene", f"{per_scene} accepted episodes cannot come from {attempts} attempts")
+    return PluginRef(ref.plugin, p), EpisodeSpec(attempts, per_scene, record)
 
 
 def _dim(v, at) -> Dim:
@@ -261,7 +289,7 @@ def _check_pools_and_sources(splits, at):
 
 def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
     d = _mapping(raw, source, required=("task", "robot", "out", "generator", "splits"),
-                 optional=("recorder", "converter", "randomisers", "validators", "checks", "seed", "run", "scene"))
+                 optional=("converter", "randomisers", "validators", "checks", "seed", "run", "scene", "runner"))
     rand = {}
     for r, dims in _mapping(d.get("randomisers", {}), f"{source}.randomisers", free=True).items():
         at = f"{source}.randomisers.{r}"
@@ -272,11 +300,11 @@ def parse(raw: Any, source: str = "<spec>") -> DatagenSpec:
         _fail(f"{source}.splits", "needs at least one split")
     splits = tuple(_split(n, v, f"{source}.splits.{n}", spec_dims) for n, v in raw_splits.items())
     _check_pools_and_sources(splits, source)
+    generator, episodes = _generator(d["generator"], f"{source}.generator")
     return DatagenSpec(
         task=_str(d["task"], f"{source}.task"), robot=_str(d["robot"], f"{source}.robot"),
-        out=_str(d["out"], f"{source}.out"), generator=_plugin(d["generator"], f"{source}.generator"),
-        splits=splits,
-        recorder=_plugin(d["recorder"], f"{source}.recorder") if "recorder" in d else None,
+        out=_str(d["out"], f"{source}.out"), generator=generator, splits=splits, episodes=episodes, raw=raw,
+        runner=_plugin(d["runner"], f"{source}.runner") if "runner" in d else None,
         converter=_plugin(d["converter"], f"{source}.converter") if "converter" in d else None,
         randomisers=rand, validators=_plugins(d.get("validators", []), f"{source}.validators"),
         checks=_plugins(d.get("checks", []), f"{source}.checks"), seed=_int(d.get("seed", 0), f"{source}.seed"),

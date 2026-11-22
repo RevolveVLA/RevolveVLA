@@ -14,6 +14,7 @@ REVOLVE = TESTS.parents[2] / "revolve"
 ASSETS = TESTS.parents[2] / "assets" / "generated_partnet" / "fridge" / "model.sdf"
 SPEC = {
     "task": "open_fridge_door", "robot": "mobile_panda", "generator": {"plugin": "fake_datagen"},
+    "runner": {"plugin": "fake"},
     "randomisers": {"robot_start": {"x_m": [-1.85, -1.65], "y_m": [1.0, 1.2], "yaw_rad": [1.47, 1.67],
                                     "arm": {"choices": ["folded", "ready"]}}},
     "splits": {"train": {"target": 3, "pool": {"initial": [0, 5]}}},
@@ -70,5 +71,15 @@ def test_generate_rejects_colliding_starts_and_replaces_them(tmp_path):
                    "splits": {"train": {"target": 4, "pool": {"initial": [0, 3], "replacement": [4, 60]}}}}
     r = run(tmp_path, "datagen", "generate", spec=spec)
     assert r.returncode == 0, r.stderr
-    m = json.loads((tmp_path / "run" / "manifest.json").read_text())["splits"]["train"]
+    m = json.loads((tmp_path / "run" / "state.json").read_text())["splits"]["train"]
     assert len(m["used"]) == 4 and m["rejected"] and all(e["reason"].startswith("collision") for e in m["rejected"])
+
+
+@pytest.mark.parametrize("name", ["fridge_panda_v2", "drawer_so101xl_v2", "smoke_v2"])
+def test_the_repo_datagen_specs_sample_valid_instances(tmp_path, name):
+    spec = yaml.safe_load((TESTS.parents[2] / "specs" / "datagen" / f"{name}.yaml").read_text())
+    r = run(tmp_path, "datagen", "sample", spec=spec | {"splits": {k: v | {"target": 2, "pool": {"initial": [0, 3]}}
+                                                                    for k, v in list(spec["splits"].items())[:1]}})
+    assert r.returncode == 0, r.stderr
+    found = instances(tmp_path)
+    assert len(found) == 4 and run(tmp_path, "validate", "--no-assets", str(found[0])).returncode == 0

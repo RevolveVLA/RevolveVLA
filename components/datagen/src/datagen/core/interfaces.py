@@ -1,6 +1,6 @@
 """Plugin interfaces (small, one job each) and the value objects they exchange.
 
-Constructor convention (registry.create): Sampler / Randomiser take no arguments; Instancer, Generator, Recorder,
+Constructor convention (registry.create): Sampler / Randomiser take no arguments; Instancer, Generator, Runner,
 Converter, Validator and Check take `(spec: DatagenSpec, params: Mapping)`, the params being their yaml block's free-form keys.
 Values are plain JSON types so the manifest can store them as they are."""
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .spec import DatagenSpec, Dim, SplitSpec
 
@@ -101,22 +101,51 @@ class Instancer(ABC):
         """The start the instance holds, as `<randomiser>.<dim>` values comparable with the sampled ones."""
 
 
+class EpisodeClient(Protocol):
+    """What a generator and the episode loop use of the live sim (revolve_common.sim_client.SimClient in a client
+    container; sim_fake.FakeClient on the CPU): DATAGEN-v2.md 4.2-4.4 plus rclpy access (SimClient.node, .tf)."""
+
+    def wait_ready(self, timeout_s: float = ...) -> None: ...
+    def reset(self, timeout_s: float = ...) -> None: ...
+    def start_episode(self) -> int: ...
+    def wait_result(self, n: int, timeout_s: float = ...) -> dict: ...
+    def wait_files(self, n: int, timeout_s: float = ...) -> dict: ...
+    def now(self) -> float: ...
+
+
 class Generator(ABC):
+    """The expert: commands the robot of a started episode through the sim's contract topics (DATAGEN-v2.md 5). It does
+    not randomise anything (the scene instance is the variation), does not record (the sim does) and does not judge
+    (the evaluator does)."""
+
     @abstractmethod
-    def generate(self, config: Config, out: Path) -> Result:
-        """Make the expert episode for `config` under `out`; `realised` = the start it actually used."""
+    def drive(self, client: EpisodeClient, instance: Path, task: str, robot: str) -> Mapping[str, Any]:
+        """Called after /evaluator/start of an episode on the sim of `instance` (the scene.yaml): command the robot until
+        done or given up (the episode ends on its own at the evaluator's verdict or timeout; the caller waits for the
+        result). -> {"expert": a name that identifies the expert version, "notes": free text (optional)}."""
 
 
-class Recorder(ABC):
+class Runner(ABC):
+    """Runs the episodes of scene instances on the sim: one sim per instance, the episode loop of
+    core/episodes.py, relaunch on infrastructure faults. Called from the pipeline's worker threads (one call = one
+    (sim, generator) pair)."""
+
     @abstractmethod
-    def record(self, config: Config, generated: Result, out: Path) -> Result:
-        """Replay a generated episode into the sensor recording under `out`."""
+    def run(self, seed: int, instance: Path, generator: Generator) -> None:
+        """Make the episodes of the scene instance `instance` (<dir>/scene.yaml; <dir> is the sim's --out) until
+        `spec.episodes` is satisfied (core/episodes.py: finished), appending each try to <dir>/datagen.json. Episodes
+        already there count (a resumed run). Raises SceneError when the scene cannot be run (infrastructure retries used
+        up, the generator crashed)."""
+
+    def stop(self) -> None:
+        """Stop what running `run` calls started (their containers); called when the run is interrupted."""
 
 
 class Converter(ABC):
     @abstractmethod
     def convert(self, episodes: Sequence[Path], out: Path) -> Result:
-        """Recorded episodes -> the training dataset under `out`."""
+        """Recorded episodes -> the training dataset under `out`. (No converter runs yet: DATAGEN-v2.md 7 has no Rosetta
+        contract for the new bags.)"""
 
 
 class Validator(ABC):
@@ -128,7 +157,7 @@ class Validator(ABC):
 
 
 class Check(ABC):
-    """Whole-run check over the manifest (a dict, see manifest.py); the verdict reads as one line of the report."""
+    """Whole-run check over the run state (a dict, see state.py); the verdict reads as one line of the report."""
     name: str
 
     @abstractmethod

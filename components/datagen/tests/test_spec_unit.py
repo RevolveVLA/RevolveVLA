@@ -10,8 +10,8 @@ REPO = Path(__file__).resolve().parents[3]
 
 GOOD = {
     "task": "open_fridge_door", "robot": "mobile_panda", "out": "runs/datagen/x",
-    "generator": {"plugin": "automoma", "attempts": 50, "checks": 3},
-    "recorder": {"plugin": "rosetta"}, "converter": {"plugin": "rosetta", "format": "lerobot"},
+    "generator": {"plugin": "moveit", "attempts": 5, "episodes_per_scene": 2, "record": "no-images", "checks": 3},
+    "runner": {"plugin": "sim", "infra_retries": 2}, "converter": {"plugin": "rosetta", "format": "lerobot"},
     "randomisers": {"robot_base": {"x_m": [-0.15, 0.15], "y_m": [-0.15, 0.15], "yaw_deg": [-27, 27]},
                     "grasp": {"id": {"choices": [0, 1, 2]}}},
     "splits": {
@@ -42,7 +42,8 @@ def bad(**edits):
 def test_parse_full_spec():
     s = S.parse(GOOD)
     assert (s.task, s.robot, s.seed) == ("open_fridge_door", "mobile_panda", 0)
-    assert s.generator == S.PluginRef("automoma", {"attempts": 50, "checks": 3})
+    assert s.generator == S.PluginRef("moveit", {"checks": 3}) and s.episodes == S.EpisodeSpec(5, 2, "no-images")
+    assert s.runner == S.PluginRef("sim", {"infra_retries": 2}) and s.raw["task"] == "open_fridge_door"
     assert s.randomisers["robot_base"]["yaw_deg"] == S.Range(-27, 27)
     assert s.randomisers["grasp"]["id"] == S.Choices((0, 1, 2))
     train, held = s.splits
@@ -56,7 +57,8 @@ def test_parse_full_spec():
 def test_minimal_spec_defaults():
     s = S.parse({"task": "t", "robot": "r", "out": "o", "generator": {"plugin": "g"},
                  "splits": {"a": {"target": 1, "pool": {"initial": [0, 0]}}}})
-    assert s.recorder is None and s.converter is None and s.randomisers == {} and s.validators == () and s.seed == 0
+    assert s.runner is None and s.episodes == S.EpisodeSpec(3, 1, "images") and s.converter is None
+    assert s.randomisers == {} and s.validators == () and s.seed == 0
     assert s.splits[0].sampler == S.SamplerSpec("random") and s.splits[0].record
 
 
@@ -64,6 +66,10 @@ def test_minimal_spec_defaults():
     ({"task": None}, "<spec>", "missing key 'task'"),
     ({"extra": 1}, "<spec>.extra", "unknown key"),
     ({"generator": {"attempts": 3}}, "<spec>.generator", "`plugin`"),
+    ({"generator": {"plugin": "g", "attempts": 0}}, "<spec>.generator.attempts", ">= 1"),
+    ({"generator": {"plugin": "g", "record": "video"}}, "<spec>.generator.record", "no-images"),
+    ({"generator": {"plugin": "g", "attempts": 1, "episodes_per_scene": 2}}, "<spec>.generator.episodes_per_scene", "cannot come"),
+    ({"recorder": {"plugin": "rosetta"}}, "<spec>.recorder", "unknown key"),
     ({"splits": {}}, "<spec>.splits", "at least one"),
     ({"seed": "a"}, "<spec>.seed", "integer"),
     ({"randomisers__robot_base__x_m": [0.2, -0.2]}, "randomisers.robot_base.x_m", "lo"),
@@ -102,7 +108,7 @@ def test_hash_is_stable_and_tracks_settings():
     assert S.parse(bad(run={"workers": 4, "headless": False})).hash == h        # nor how the run executes
     assert S.parse(bad(seed=1)).hash != h
     assert S.parse(bad(splits__train__target=51)).hash != h
-    assert S.parse(bad(generator={"plugin": "automoma", "attempts": 51, "checks": 3})).hash != h
+    assert S.parse(bad(generator={"plugin": "moveit", "attempts": 6, "episodes_per_scene": 2, "record": "no-images", "checks": 3})).hash != h
 
 
 def test_load_reports_the_file(tmp_path):

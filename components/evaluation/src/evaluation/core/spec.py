@@ -89,7 +89,7 @@ class EvalSpec:
     train: DatagenSpec
     out: str
     sets: Mapping[str, SetSpec]
-    train_manifest: str = ""                            # the `datagen` training plugin's manifest (default <train.out>/manifest.json)
+    train_manifest: str = ""                            # the `datagen` training plugin's manifest (default <train.out>/state.json)
     training: PluginRef = PluginRef("datagen")          # where the training configs come from: datagen | legacy_layouts
     ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle)
     policy: PluginRef = PluginRef("smolvla")
@@ -243,7 +243,7 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
     fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("training", "policy", "rollout") if k in d}
     return EvalSpec(
         train=train, out=_str(d["out"], f"{source}.out"), sets=sets,
-        train_manifest=_str(d.get("train_manifest", f"{train.out}/manifest.json"), f"{source}.train_manifest"),
+        train_manifest=_str(d.get("train_manifest", f"{train.out}/state.json"), f"{source}.train_manifest"),
         ckpt=_ckpt(d["ckpt"], f"{source}.ckpt") if "ckpt" in d else None,
         judge=_judge(d.get("judge"), load_task(train.task, root or Path.cwd()), f"{source}.judge"),
         rollouts=_int(d.get("rollouts", 1), f"{source}.rollouts", 1), retries=_int(d.get("retries", 0), f"{source}.retries", 0),

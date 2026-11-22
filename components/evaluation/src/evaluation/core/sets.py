@@ -74,10 +74,8 @@ class Training:
         return seeds
 
     def usable(self, name: str) -> list[Mapping]:
-        """The used entries of split `name` that produced a start (and a recording, when the split records)."""
-        record = self.spec.split(name).record
-        return [e for e in self.rec(name)["used"]
-                if e["generate"]["ok"] and (not record or e.get("record", {}).get("ok"))]
+        """The used entries of split `name` that produced a start (datagen v2 has no record step: an accepted scene)."""
+        return [e for e in self.rec(name)["used"] if e["generate"]["ok"]]
 
 
 def derive(spec: EvalSpec, s: SetSpec) -> DatagenSpec:
@@ -89,7 +87,7 @@ def derive(spec: EvalSpec, s: SetSpec) -> DatagenSpec:
         raise EvalError(f"sets.{s.name}: the set has the name of the training split it measures against: rename it")
     source = [dataclasses.replace(spec.train.split(md.source), min_distance=None)] if md else []
     mine = SplitSpec(s.name, s.count, s.sampler, s.pool, md, record=False)
-    return dataclasses.replace(spec.train, splits=(*source, mine), recorder=None, converter=None, validators=(),
+    return dataclasses.replace(spec.train, splits=(*source, mine), converter=None, validators=(),
                                checks=())
 
 

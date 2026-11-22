@@ -22,10 +22,8 @@ def seeds(r: Mapping) -> set[int]:
 
 
 def progress(split: SplitSpec, r: Mapping) -> dict:
-    """target, used, rejected, recorded; done = what counts towards the target (recorded when the split records)."""
-    recorded = sum(e.get("record", {}).get("ok", False) for e in r["used"])
-    return {"target": split.target, "used": len(r["used"]), "rejected": len(r["rejected"]), "recorded": recorded,
-            "done": recorded if split.record else len(r["used"])}
+    """target, used, rejected; done = what counts towards the target (the accepted scenes)."""
+    return {"target": split.target, "used": len(r["used"]), "rejected": len(r["rejected"]), "done": len(r["used"])}
 
 
 def distances(spec: DatagenSpec, split: SplitSpec, data: Mapping) -> dict:

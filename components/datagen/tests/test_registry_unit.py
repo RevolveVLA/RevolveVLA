@@ -40,14 +40,14 @@ def test_module_on_the_path_is_imported_lazily(clean, tmp_path, monkeypatch):
     (tmp_path / "lazy_plugin_mod.py").write_text(textwrap.dedent("""
         from datagen.core.registry import register
         LOADED = True
-        @register("recorder", "lazy_plugin_mod")
+        @register("generator", "lazy_plugin_mod")
         class R: pass
         @register("converter", "lazy_plugin_mod")
         class C: pass
     """))
     monkeypatch.syspath_prepend(str(tmp_path))
     assert "lazy_plugin_mod" not in sys.modules
-    assert registry.get("recorder", "lazy_plugin_mod").__name__ == "R"
+    assert registry.get("generator", "lazy_plugin_mod").__name__ == "R"
     assert registry.get("converter", "lazy_plugin_mod").__name__ == "C"       # one module, two kinds
     sys.modules.pop("lazy_plugin_mod")
 

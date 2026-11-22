@@ -76,7 +76,7 @@ class Registry:
         sys.path[:0] = [p for p in os.environ.get(self.path_env or "", "").split(os.pathsep) if p]
 
 
-KINDS = ("sampler", "randomiser", "instancer", "generator", "recorder", "converter", "validator", "check")
+KINDS = ("sampler", "randomiser", "instancer", "generator", "runner", "converter", "validator", "check")
 CORE = {"sampler": "datagen.core.samplers", "check": "datagen.core.checks"}      # built-in plugins
 _DEFAULT = Registry(KINDS, "datagen", CORE, "DATAGEN_PLUGIN_PATH")
 _PLUGINS = _DEFAULT._plugins

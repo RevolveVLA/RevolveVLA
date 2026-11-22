@@ -16,6 +16,7 @@ from datagen.scene import base, footprint as FP, sdf_boxes as SB
 from datagen.scene.instance import Variation
 
 RAW = {"task": "open_fridge_door", "robot": "mobile_panda", "out": "unused", "generator": {"plugin": "scene_gen"},
+       "runner": {"plugin": "fake"},
        "randomisers": {"robot_start": {"x_m": [-1.85, -1.65], "y_m": [1.0, 1.2], "yaw_rad": [1.47, 1.67],
                                        "arm": {"choices": ["folded", "ready"]}}},
        "splits": {"train": {"target": 3, "pool": {"initial": [0, 3], "replacement": [4, 9]}},
@@ -26,13 +27,13 @@ BASE = base.read_scene(S.parse(RAW))["robot_start"]       # kitchen_partnet: bas
 
 @register("generator", "scene_gen")
 class SceneGen(I.Generator):
-    """Accepts everything and reports nothing: the pipeline fills `realised` from the scene instance."""
+    """Drives nothing (the fake runner's sim passes by itself): the pipeline fills `realised` from the scene instance."""
 
     def __init__(self, spec, params):
         pass
 
-    def generate(self, config, out):
-        return I.Result()
+    def drive(self, client, instance, task, robot):
+        return {"expert": "scene_gen"}
 
 
 def spec_of(**edits):
@@ -307,12 +308,12 @@ def test_a_colliding_start_is_rejected_and_replaced_from_the_pool(tmp_path, monk
     spec = spec_of(randomisers=wide, validators=[{"plugin": "collision_free"}])
     pl = pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path, log=lambda m: None)
     pl.run(["sample"])
-    sampled = {c["seed"]: I.Config.from_dict(c) for c in pl.manifest.split("train")["sampled"]}
+    sampled = {c["seed"]: I.Config.from_dict(c) for c in pl.state.split("train")["sampled"]}
     x1 = Variation(spec).realisation(sampled[1])["robot_start"]["base"][0]
     monkeypatch.setattr(CF, "scene_boxes", lambda scene, repo: blocked(x1))
     pl = pipeline.Pipeline(spec, cli.build_plugins(spec, pipeline.STEPS), tmp_path, log=lambda m: None)
     pl.run(["generate"], ["train"])
-    rec = pl.manifest.split("train")
+    rec = pl.state.split("train")
     rejected = {e["seed"]: e for e in rec["rejected"]}
     assert rejected[1]["step"] == "validate" and rejected[1]["reason"].startswith("collision: footprint")
     assert len(rec["used"]) == 3 and not {e["config"]["seed"] for e in rec["used"]} & set(rejected)
@@ -331,12 +332,12 @@ def test_collision_free_needs_a_robot_start_and_known_footprint_keys():
 def test_the_realised_start_is_the_instances_and_drives_min_distance(tmp_path):
     pl = make(tmp_path)
     pl.run(["sample", "generate"])
-    m = pl.manifest.data["splits"]
+    m = pl.state.data["splits"]
     train = m["train"]["used"][0]
     sampled = train["config"]["values"]
     assert train["generate"]["realised"]["robot_start.x_m"] == pytest.approx(sampled["robot_start.x_m"], abs=1e-6)
     assert train["generate"]["realised"]["robot_start.arm"] == sampled["robot_start.arm"]
-    d = stats.distances(pl.spec, pl.spec.split("heldout"), pl.manifest.data)
+    d = stats.distances(pl.spec, pl.spec.split("heldout"), pl.state.data)
     assert d["realised"] is not None and d["realised"][0] >= 0.2 - 1e-6 and not d["unreported"]
 
 

@@ -7,7 +7,8 @@ factor (rollout.wall_limit) instead of 285 s.
 
   python components/evaluation/evaluate.py --task T --ckpt runs/<exp>/turn_<k>/ckpt --seeds 100-103 \
       --set heldout --out runs/<exp>/turn_<k>/eval --starts runs/<exp>/starts [--rollouts-per-seed 1] \
-      [--retries 0] [--parallel N] [--policy smolvla|oracle] [--source DATAGEN_OUT ...] [--gui] [--video]
+      [--retries 0] [--parallel N] [--policy smolvla|oracle] [--source DATAGEN_OUT ...] [--gui] [--video] \
+      [--actions-per-chunk N] [--chunk-size-threshold X]
   evaluate(task, ckpt, seeds, out, set_name, starts_dir, ...) -> eval_summary dict
 
 Per seed: its start (starts.py: the first replay-accepted attempt of the seed's plan run, cached in starts_dir),
@@ -16,6 +17,8 @@ A rollout that fails phase P is retried up to `retries` times (experiment eval.r
 runs again from the failed attempt's phase_states/P_start.npz (restored in step 0). A stack error (no verdict)
 is re-run once. `parallel` rollouts at a time (default: what the GPU memory holds, default_parallel).
 --gui: watch the rollouts in the gz GUI on the host's X display (DISPLAY + XAUTHORITY); forces parallel 1.
+--actions-per-chunk / --chunk-size-threshold override rollout.RUNNER_PARAMS (default: unchanged); recorded as
+runner_params in the summary when given.
 --video: each rollout also records the scene camera into <rollout dir>/video.mp4 (not part of the verdict).
 
 Layout under out/<set>/:
@@ -104,7 +107,7 @@ def done(rec):
 class Evaluation:
     def __init__(self, task, ckpt, seeds, out, set_name, starts_dir, policy="smolvla", rollouts_per_seed=1, retries=0,
                  parallel=None, sources=(), budget_s=None, wait_s=None, after_success_s=None, rtf=None,
-                 runner=None, gui=False, video=False, say=lambda m: print(m, flush=True)):
+                 runner=None, gui=False, video=False, runner_params=None, say=lambda m: print(m, flush=True)):
         self.task, self.ckpt, self.seeds, self.policy = task, ckpt, list(seeds), policy
         self.out = Path(out).resolve() / set_name
         self.set, self.starts_dir, self.sources = set_name, Path(starts_dir), list(sources)
@@ -112,6 +115,9 @@ class Evaluation:
         self.parallel = 1 if gui else parallel or default_parallel(policy)    # one GUI window at a time
         self.gui, self.video = gui, video
         self.budget = dict(budget_s=budget_s, wait_s=wait_s, after_success_s=after_success_s)
+        self.runner_params = runner_params or {}
+        if runner_params:
+            self.budget["runner_params"] = runner_params
         self.rtf = rtf or measured_rtf(self.parallel)
         self.rtfs, self.lock = [], threading.Lock()
         self.runner = runner or R.run          # tests pass a stub
@@ -222,6 +228,8 @@ class Evaluation:
                  rollout_wall_s=dict(median=statistics.median(num("wall_s")) if num("wall_s") else None,
                                      max=max(num("wall_s")) if num("wall_s") else None),
                  eval_wall_s=wall_s, gpu_memory=gpu, updated_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+        if self.runner_params:
+            s["runner_params"] = self.runner_params
         J.write_json(self.out / "eval_summary.json", s)
         self.say(f"done: first try {k1}/{n}, with retries {k}/{n}, all_pass {s['all_pass']}")
         return s
@@ -245,6 +253,8 @@ def main(argv=None):
     ap.add_argument("--rollouts-per-seed", type=int, default=1)
     ap.add_argument("--retries", type=int, default=0)
     ap.add_argument("--parallel", type=int, default=None)
+    ap.add_argument("--actions-per-chunk", type=int, default=None, help="runner: actions per chunk (>= 1)")
+    ap.add_argument("--chunk-size-threshold", type=float, default=None, help="runner: chunk size threshold [0, 1]")
     ap.add_argument("--budget-s", type=float, default=None, help="override task.yaml rollout.budget_s (tests)")
     ap.add_argument("--wait-s", type=float, default=None)
     ap.add_argument("--gui", action="store_true", help="show the gz GUI on $DISPLAY (one rollout at a time)")
@@ -252,9 +262,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.policy == "smolvla" and not a.ckpt:
         ap.error("--ckpt is required for --policy smolvla")
+    runner = {k: v for k, v in dict(actions_per_chunk=a.actions_per_chunk,
+                                    chunk_size_threshold=a.chunk_size_threshold).items() if v is not None}
+    if runner.get("actions_per_chunk", 1) < 1 or not 0 <= runner.get("chunk_size_threshold", 0) <= 1:
+        ap.error("--actions-per-chunk must be >= 1 and --chunk-size-threshold in [0, 1]")
     s = evaluate(a.task, Path(a.ckpt).resolve() if a.ckpt else None, S.G.parse_seeds(a.seeds), a.out, a.set, a.starts,
                  policy=a.policy, rollouts_per_seed=a.rollouts_per_seed, retries=a.retries, parallel=a.parallel,
-                 sources=a.source, budget_s=a.budget_s, wait_s=a.wait_s, gui=a.gui, video=a.video)
+                 sources=a.source, budget_s=a.budget_s, wait_s=a.wait_s, gui=a.gui, video=a.video, runner_params=runner)
     return 1 if s["errors"] else 0
 
 

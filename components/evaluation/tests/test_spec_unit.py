@@ -4,7 +4,7 @@ import dataclasses
 from pathlib import Path
 
 import pytest
-from datagen.core.spec import Range, SpecError
+from datagen.core.spec import PluginRef, Range, SpecError
 
 from evaluation.core import spec as S
 
@@ -43,6 +43,7 @@ def test_the_repo_example_loads():
     assert spec.train.task == "open_fridge_door" and spec.train_manifest == "runs/datagen/fridge_base50/manifest.json"
     assert spec.judge.plugin == "c2" and spec.ckpt.source == "local" and (spec.rollouts, spec.retries) == (5, 1)
     assert spec.sets["heldout"].min_distance.value == 0.1 and spec.sets["train"].source == "train"
+    assert spec.training == PluginRef("legacy_layouts", {"run": "runs/fridge_base50"}) and spec.sets["heldout"].pool.initial == (510, 529)
 
 
 def test_values_and_defaults(root):

@@ -70,7 +70,7 @@ def test_all_runs_the_stages_and_resumes(tmp_path, capsys):
     assert sorted(roll) == [f"{s}_r{i}" for s in (100, 101, 102) for i in (0, 1)]
     assert roll["100_r0"]["passed"] and not roll["101_r0"]["passed"]
     assert (tmp_path / "run" / "heldout" / "100_r0").is_dir() and (tmp_path / "run" / "heldout" / "starts" / "seed_100").is_dir()
-    assert (tmp_path / "run" / "report.md").read_text().count("## ") == 2 and "| 100 |" in (tmp_path / "run" / "report.md").read_text()
+    assert (tmp_path / "run" / "report.md").read_text().count("## ") == 3 and "| 100 |" in (tmp_path / "run" / "report.md").read_text()
     assert len(calls(tmp_path)) == 10
     assert evaluate(tmp_path) == 0 and len(calls(tmp_path)) == 10                 # resume: nothing re-run
 

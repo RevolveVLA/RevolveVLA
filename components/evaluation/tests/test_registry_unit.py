@@ -73,7 +73,7 @@ def test_the_datagen_functions_are_its_default_instance():
 
 
 def test_evaluation_registry_has_its_own_kinds_and_finds_external_plugins(monkeypatch):
-    assert REGISTRY.kinds == ("ckpt", "set", "rollout", "policy", "judge") and REGISTRY.package == "evaluation"
+    assert REGISTRY.kinds == ("ckpt", "set", "rollout", "policy", "judge", "training") and REGISTRY.package == "evaluation"
     with pytest.raises(dg.RegistryError, match="unknown plugin kind"):
         REGISTRY.register("generator", "x")
     with pytest.raises(dg.RegistryError, match="no judge plugin 'nope'"):

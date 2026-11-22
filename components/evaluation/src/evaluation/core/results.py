@@ -40,6 +40,11 @@ def metrics(rollouts: Mapping[str, Mapping]) -> dict[str, Any]:
             "errors": sum(bool(r["tries"][-1]["record"].get("error")) for r in rollouts.values())}
 
 
+def pooled(sets: Mapping[str, Mapping], names) -> dict[str, Any]:
+    """metrics over the rollouts of several sets together."""
+    return metrics({f"{n}/{k}": r for n in names for k, r in sets.get(n, {}).get("rollouts", {}).items()})
+
+
 def config_rows(block: Mapping) -> list[dict]:
     """Per config: seed, cell, values and its rollouts' first-try / final passes."""
     rolls = block.get("rollouts", {})
@@ -82,19 +87,21 @@ class Results:
         tmp.write_text(json.dumps(self.data, indent=1))
         os.replace(tmp, self.path)
 
-    def report(self, judge: str, names) -> str:
-        """The report.md text: ckpt origin, then per set its summary, checks, first-try failure reasons and configs."""
+    def report(self, judge: str, names, kinds: Mapping[str, str] | None = None) -> str:
+        """The report.md text: ckpt origin, then per set its summary, checks, first-try failure reasons and configs; with
+        several sets the pooled row and, with `kinds` {set: seen|new}, the seen-vs-new gap."""
         d = self.data
         ckpt = d["ckpt"]
         lines = [f"# Evaluation {d['spec_hash']}", "", f"Judge {judge}. Checkpoint: "
                  + (f"{ckpt['path']} ({json.dumps(ckpt['origin'])})" if ckpt else "none (policy brings its own actions)"), ""]
+        pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"
+        row = lambda m: (f"{m['rollouts']} | {m['first_try_passed']} ({pct(m['first_try_success'])}) | "
+                         f"{m['passed_with_retries']} ({pct(m['success_with_retries'])}) | {m['errors']}")
+        head = ["| rollouts | first try | with retries | stack errors |", "|---|---|---|---|"]
         for n in names:
             block = d["sets"].get(n, {})
             m = block.get("metrics") or metrics(block.get("rollouts", {}))
-            pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"
-            lines += [f"## {n}", "", "| rollouts | first try | with retries | stack errors |", "|---|---|---|---|",
-                      f"| {m['rollouts']} | {m['first_try_passed']} ({pct(m['first_try_success'])}) | "
-                      f"{m['passed_with_retries']} ({pct(m['success_with_retries'])}) | {m['errors']} |", ""]
+            lines += [f"## {n}" + (f" ({kinds[n]})" if kinds and n in kinds else ""), "", *head, f"| {row(m)} |", ""]
             if checks := block.get("checks"):
                 lines += ["| check | result |", "|---|---|"]
                 lines += [f"| {c} | {'PASS' if r['ok'] else 'FAIL'}{' ' + r['reason'] if r.get('reason') else ''} |"
@@ -107,4 +114,13 @@ class Results:
                 lines += [f"| {r['seed']} | {','.join(map(str, r['cell']))} | "
                           f"{', '.join(f'{k}={v:.3g}' if isinstance(v, float) else f'{k}={v}' for k, v in r['values'].items())} | "
                           f"{r['first_try_passed']}/{r['rollouts']} | {r['passed']}/{r['rollouts']} |" for r in rows] + [""]
+        if len(names) > 1:
+            groups = {"all sets": list(names)} | {k: [n for n in names if kinds[n] == k] for k in ("seen", "new")
+                                                  if kinds and any(kinds.get(n) == k for n in names)}
+            ms = {g: pooled(d["sets"], ns) for g, ns in groups.items()}
+            lines += ["## all sets", "", "| group | " + head[0][1:], "|---" + head[1], *(f"| {g} | {row(m)} |" for g, m in ms.items())]
+            if "seen" in ms and "new" in ms:
+                gap = lambda key: "-" if None in (ms["seen"][key], ms["new"][key]) else f"{100 * (ms['seen'][key] - ms['new'][key]):+.0f} pts"
+                lines.append(f"| gap seen - new | | {gap('first_try_success')} | {gap('success_with_retries')} | |")
+            lines.append("")
         return "\n".join(lines)

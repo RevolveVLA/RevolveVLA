@@ -60,6 +60,7 @@ class Pipeline:
             self._plan(stages, names)
             return True
         self.out.mkdir(parents=True, exist_ok=True)
+        self.results.data["training"] = {"plugin": self.spec.training.plugin, **self.spec.training.params}
         ok = True
         for stage in stages:
             ok &= getattr(self, f"_{stage}")(names) is not False
@@ -121,4 +122,5 @@ class Pipeline:
             walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e))
 
     def _report(self, names):
-        (self.out / "report.md").write_text(self.results.report(self.spec.judge.plugin, names))
+        kinds = {n: "seen" if t.kind == "train" else "new" for n, t in self.spec.sets.items()}
+        (self.out / "report.md").write_text(self.results.report(self.spec.judge.plugin, names, kinds))

@@ -1,6 +1,6 @@
 """Plugin interfaces (small, one job each) and the value objects they exchange.
 
-Constructor convention (REGISTRY.create): CkptSource, Rollout, Policy and Judge take `(spec: EvalSpec, params: Mapping)`,
+Constructor convention (REGISTRY.create): CkptSource, TrainingSource, Rollout, Policy and Judge take `(spec: EvalSpec, params: Mapping)`,
 the params being their yaml block's free-form keys; EvalSet takes `(spec)`. Configs are datagen's `Config` (sampled
 dims) and `Result` (ok / reason) value objects."""
 from __future__ import annotations
@@ -45,6 +45,20 @@ class Built:
 class Verdict:
     passed: bool
     detail: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TrainingRun:
+    """The run the policy was trained on: where it lives (for messages) and its datagen-manifest-shaped data
+    (`{spec_hash, splits: {<split>: {sampled, used, rejected}}}`; None = no manifest: sampled-only)."""
+    path: Path
+    data: Mapping[str, Any] | None
+
+
+class TrainingSource(ABC):
+    @abstractmethod
+    def load(self, root: Path) -> TrainingRun:
+        """The training run, read in memory (never written); `root` = what the spec's relative paths are relative to."""
 
 
 class CkptSource(ABC):

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from datagen.core.interfaces import Config, Result
 
-from evaluation.core.interfaces import Built, CkptSource, EvalItem, EvalSet, Judge, Policy, ResolvedCkpt, Rollout, Verdict
+from evaluation.core.interfaces import Built, CkptSource, EvalItem, EvalSet, Judge, Policy, ResolvedCkpt, Rollout, TrainingRun, TrainingSource, Verdict
 from evaluation.core.registry import REGISTRY
 
 
@@ -28,6 +28,15 @@ class FakeCkpt(CkptSource):
 
     def resolve(self, out):
         return ResolvedCkpt(str(out / "ckpt"), f"fake {self.params.get('tag', '')}".strip())
+
+
+@REGISTRY.register("training", "fake_eval")
+class FakeTraining(TrainingSource):
+    def __init__(self, spec, params):
+        pass
+
+    def load(self, root):
+        return TrainingRun(root / "fake_training", None)
 
 
 @REGISTRY.register("set", "fake_eval")

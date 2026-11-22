@@ -1,7 +1,7 @@
 """What the eval set plugins share: the training run they are measured against and the in-memory DatagenSpec that lets
 datagen's generator, sampler and checks work on an eval set (zero datagen changes).
 
-The training run = the training spec + its manifest (`spec.train_manifest`). Without a manifest only the training
+The training run = the training spec + its manifest, read by the `training` plugin (`spec.training`). Without a manifest only the training
 splits' sampled configs are known: they are re-sampled (deterministic in seed, split and pool) and the first `target` of
 a split stand in for its used configs ("sampled-only": no realised starts, no start dirs)."""
 from __future__ import annotations
@@ -13,10 +13,10 @@ from typing import Mapping, Sequence
 
 from datagen.core import registry, stats
 from datagen.core.interfaces import Config
-from datagen.core.manifest import Manifest
 from datagen.core.spec import DatagenSpec, Dim, SplitSpec
 
 from .errors import EvalError
+from .registry import REGISTRY
 from .spec import EvalSpec, SetSpec
 
 
@@ -34,10 +34,8 @@ class Training:
 
     @classmethod
     def load(cls, spec: EvalSpec, root: Path) -> Training:
-        path = Path(spec.train_manifest)
-        path = path if path.is_absolute() else root / path
-        # Manifest.open refuses a manifest made by another training spec (ManifestError)
-        return cls(spec.train, path, Manifest.open(path, spec.train, persist=False).data if path.exists() else None)
+        run = REGISTRY.create("training", spec.training.plugin, spec, spec.training.params).load(root)
+        return cls(spec.train, run.path, run.data)
 
     @property
     def sampled_only(self) -> bool:

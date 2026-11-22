@@ -62,7 +62,8 @@ class EvalSpec:
     train: DatagenSpec
     out: str
     sets: Mapping[str, SetSpec]
-    train_manifest: str = ""                            # the training run's manifest (default <train.out>/manifest.json)
+    train_manifest: str = ""                            # the `datagen` training plugin's manifest (default <train.out>/manifest.json)
+    training: PluginRef = PluginRef("datagen")          # where the training configs come from: datagen | legacy_layouts
     ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle)
     policy: PluginRef = PluginRef("smolvla")
     rollout: PluginRef = PluginRef("docker")
@@ -190,7 +191,7 @@ def _check_pools(train: DatagenSpec, sets, at):
 def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpec:
     """`root` (default cwd) is what the relative `train:` path is relative to."""
     d = _mapping(raw, source, required=("train", "sets", "out"),
-                 optional=("train_manifest", "ckpt", "policy", "rollout", "judge", "rollouts", "retries", "runner", "run"))
+                 optional=("train_manifest", "training", "ckpt", "policy", "rollout", "judge", "rollouts", "retries", "runner", "run"))
     train_path = Path(_str(d["train"], f"{source}.train"))
     train = load_train(train_path if train_path.is_absolute() else (root or Path.cwd()) / train_path)
     raw_sets = _mapping(d["sets"], f"{source}.sets", free=True)
@@ -198,7 +199,7 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
         _fail(f"{source}.sets", "needs at least one set")
     sets = {n: _set(n, v, train, f"{source}.sets.{n}") for n, v in raw_sets.items()}
     _check_pools(train, sets.values(), source)
-    fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("policy", "rollout") if k in d}
+    fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("training", "policy", "rollout") if k in d}
     return EvalSpec(
         train=train, out=_str(d["out"], f"{source}.out"), sets=sets,
         train_manifest=_str(d.get("train_manifest", f"{train.out}/manifest.json"), f"{source}.train_manifest"),

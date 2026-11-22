@@ -1,6 +1,7 @@
 # The 30k SmolVLA checkpoint on 10 held-out fridge-door configs (inside the training ranges of specs/datagen/fridge_base50.yaml,
-# >= 0.1 away from its training configs) and 10 training starts. `./revolve evaluate specs/eval/fridge_base50_30k.yaml [--dry-run]`
-train: specs/datagen/fridge_base50.yaml        # task, robot, randomisers, generator, seed, training manifest (<train.out>/manifest.json)
+# >= 0.1 away from its training configs, sampled and realised) and 10 training starts. `./revolve evaluate specs/eval/fridge_base50_30k.yaml [--dry-run]`
+train: specs/datagen/fridge_base50.yaml        # task, robot, randomisers, generator, seed
+training: {plugin: legacy_layouts, run: runs/fridge_base50}      # the run the 30k ckpt was trained on (read only; no datagen manifest)
 ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
 # ckpt: {source: hf, repo: org/name, revision: main, subfolder: checkpoints/030000/pretrained_model}
 policy: {plugin: smolvla}
@@ -9,7 +10,7 @@ sets:
   heldout:
     count: 10
     sampler: {strategy: sobol}
-    pool: {initial: [500, 529], replacement: [530, 599]}
+    pool: {initial: [510, 529], replacement: [530, 599]}      # 500-509 were the earlier held-out seeds
     min_distance: {value: 0.1, realised: true}
   train: {from: train, count: 10}
 rollouts: 5                                    # per config

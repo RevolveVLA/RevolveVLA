@@ -17,10 +17,12 @@ Values are SI: m, rad, s, m/s. Entities (the metric parameters that name things)
   <model>::<link>::<collision>  one collision of that link (e.g. a handle)
   <target>                    a task target alias (targets: {handle: fridge::top_door::top_door_handle})
   any, any_except_targets     contacts `to` only: every body except the robot itself and the ground (and the targets)
-Unknown keys are errors everywhere.
+Unknown keys, duplicate keys and non-finite numbers (.nan, .inf) are errors everywhere. The scene name, the scene's
+model names and the robot name are parts of ROS 2 topic names: letters, digits and _, not starting with a digit.
 """
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -88,7 +90,7 @@ class SpecError(ValueError):
 
 
 class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)   # every number finite
 
 
 # ------------------------------------------------------------------ conditions
@@ -120,6 +122,12 @@ class Condition(Strict):
         value = v.pop(ops[0])
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"metric {name}: {ops[0]} needs a number, got {value!r}")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:        # an int too large for a float
+            finite = False
+        if not finite:
+            raise ValueError(f"metric {name}: {ops[0]} needs a finite number, got {value!r}")
         out = {"metric": name, "op": ops[0], "value": value}
         for k in ("for_s", *cls.EXTRA_KEYS):
             if k in v:
@@ -178,6 +186,7 @@ def _param(metric, key, p, v):
 
 # ------------------------------------------------------------------ entities
 NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
+TOPIC_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")   # a ROS 2 topic name token (no - or ., no leading digit)
 RESERVED = ("robot", *ANY_NAMES)
 
 
@@ -269,6 +278,15 @@ def _name(v):
     return v
 
 
+def _topic_name(v):
+    """The scene name, a scene model's entity name and the robot name are parts of ROS 2 topic names
+    (/world/<scene>/..., /model/<model>/pose, /model/<robot>/pose)."""
+    if not TOPIC_NAME.match(v):
+        raise ValueError(f"{v!r}: this name is part of ROS 2 topic names: letters, digits and _, not starting "
+                         f"with a digit")
+    return v
+
+
 class SceneModel(Strict):
     model: str                                   # model:// name (the folder in the asset search path)
     pose: list[float] = Field(default=[0.0, 0.0, 0.0, 0.0], min_length=4, max_length=4)   # x, y, z [m], yaw [rad]
@@ -294,11 +312,16 @@ class Scene(Strict):
     models: dict[str, SceneModel] = Field(min_length=1)
     robot_start: RobotStart
 
+    @field_validator("name")
+    @classmethod
+    def _scene_name(cls, v):
+        return _topic_name(v)
+
     @field_validator("models")
     @classmethod
     def _names(cls, v):
         for k in v:
-            _name(k)
+            _topic_name(_name(k))
         return v
 
 
@@ -373,6 +396,11 @@ class Robot(Strict):
     frames: dict[str, str] = {}      # alias -> link (robot::<alias>, e.g. tcp, hand, base)
     groups: dict[str, list[str]] = {}   # alias -> links (e.g. fingers)
 
+    @field_validator("name")
+    @classmethod
+    def _robot_name(cls, v):
+        return _topic_name(v)
+
     @model_validator(mode="after")
     def _check(self):
         sizes = {len(p) for p in self.poses.values()}
@@ -423,7 +451,7 @@ def check_robot_files(robot, folder):
 class Phase(Strict):
     """Ordered: all `done` conditions true -> the next phase; a `while` condition false, or timeout_s passed in this
     phase -> the task fails in this phase."""
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True)
     name: str
     done: list[Condition] = Field(min_length=1)
     while_: list[Condition] = Field(default=[], alias="while")
@@ -518,9 +546,34 @@ class Resolved:
     robot: Robot | None = None
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load, but a duplicate key is an error (safe_load keeps the last value without a word).
+    Merge keys (<<: *anchor) stay legal, and an explicit key may override a merged one."""
+
+    def construct_mapping(self, node, deep=False):
+        self._check_unique(node)
+        return super().construct_mapping(node, deep)
+
+    def _check_unique(self, node):
+        seen = set()
+        for k, v in node.value:
+            if k.tag == "tag:yaml.org,2002:merge":       # its mapping(s): their own keys must be unique too
+                for m in v.value if isinstance(v, yaml.SequenceNode) else [v]:
+                    if isinstance(m, yaml.MappingNode):
+                        self._check_unique(m)
+                continue
+            key = self.construct_object(k, deep=True)
+            try:
+                if (type(key), key) in seen:              # 1 and true are different YAML keys
+                    raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", k.start_mark)
+                seen.add((type(key), key))
+            except TypeError:        # an unhashable key: SafeLoader's own error below
+                pass
+
+
 def read_yaml(path):
     try:
-        data = yaml.safe_load(Path(path).read_text())
+        data = yaml.load(Path(path).read_text(), Loader=_UniqueKeyLoader)
     except (OSError, yaml.YAMLError) as e:
         raise SpecError(f"{path}: {e}") from None
     if not isinstance(data, dict):

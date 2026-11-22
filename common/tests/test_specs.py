@@ -1,5 +1,6 @@
 """specs: the scene / robot / task / sanity schemas, the entity checks against model SDFs, the sanity merge.
 Self-contained (a small spec tree + fake assets in tmp), plus the repo's own specs (names only without assets/)."""
+import shutil
 import textwrap
 
 import pytest
@@ -365,3 +366,82 @@ def test_scene_instance_outside_specs(tree, tmp_path):
         specs.load(p, root=tree)
     with pytest.raises(SpecError, match="not under a specs/"):
         specs.load(write(tmp_path / "runs/exp/task.yaml", TASK))
+
+
+# ------------------------------------------------------------------ YAML: duplicate and merge keys
+def replace_in(path, old, new):
+    text = path.read_text()
+    assert old in text
+    path.write_text(text.replace(old, new, 1))
+    return path
+
+
+@pytest.mark.parametrize("file, old, new, key", [
+    ("scenes/room/scene.yaml", "name: room\n", "name: room\nname: room\n", "name"),
+    ("scenes/room/scene.yaml", "{slide: 0.1}", "{slide: 0.1, slide: 0.0}", "slide"),
+    ("tasks/open/task.yaml", "le: 0.015}", "le: 0.015, le: 5.0}", "le"),
+    ("robots/bot/robot.yaml", "poses: {ready: [0, 0, 0],", "poses: {ready: [0, 0, 0], ready: [0, 1, 0],", "ready"),
+    ("tasks/sanity.yaml", "gz_log:", "body_speed: {metric: peak_body_speed, lt: 9.0}\ngz_log:", "body_speed"),
+], ids=["scene-name", "scene-joint", "condition-op", "robot-pose", "sanity-check"])
+def test_duplicate_key_is_rejected(tree, file, old, new, key):
+    p = replace_in(tree / file, old, new)
+    with pytest.raises(SpecError, match=f"{p}: duplicate key '{key}'"):
+        specs.load(p)
+
+
+def test_merge_keys_are_legal_and_an_explicit_key_overrides(tree):
+    p = tree / "scenes/room/scene.yaml"
+    replace_in(p, "  cabinet: {model: cabinet, pose: [-2.6, 0.3, 0, 0], joints: {slide: 0.1}}",
+               "  cabinet: &cab {model: cabinet, pose: [-2.6, 0.3, 0, 0], joints: {slide: 0.1}}\n"
+               "  cabinet_2:\n    <<: *cab\n    pose: [2.0, 1.0, 0, 0]")
+    scene = specs.load(p)
+    assert scene.models["cabinet_2"].model == "cabinet" and scene.models["cabinet_2"].pose == [2.0, 1.0, 0, 0]
+    replace_in(p, "    pose: [2.0, 1.0, 0, 0]", "    pose: [2.0, 1.0, 0, 0]\n    pose: [3.0, 1.0, 0, 0]")
+    with pytest.raises(SpecError, match="duplicate key 'pose'"):       # two explicit keys stay a duplicate
+        specs.load(p)
+    with pytest.raises(SpecError, match="duplicate key 'k'"):          # inside an inline merged mapping too
+        specs.read_yaml(write(tree.parent / "inline.yaml", "b: {<<: {k: 1, k: 2}}\n"))
+
+
+def test_keys_of_different_yaml_types_are_different_keys(tmp_path):
+    assert specs.read_yaml(write(tmp_path / "a.yaml", "1: a\ntrue: b\n")) == {1: "b"}    # one Python key, no error
+    with pytest.raises(SpecError, match="duplicate key 1"):
+        specs.read_yaml(write(tmp_path / "b.yaml", "1: a\n1: b\n"))
+
+
+# ------------------------------------------------------------------ every number finite
+@pytest.mark.parametrize("file, change, field", [
+    ("scenes/room/scene.yaml", lambda d: d["robot_start"]["base"].__setitem__(0, float("nan")), "robot_start.base"),
+    ("scenes/room/scene.yaml", lambda d: d["models"]["cabinet"]["pose"].__setitem__(1, float("inf")), "pose"),
+    ("robots/bot/robot.yaml", lambda d: d["poses"]["ready"].__setitem__(1, float("-inf")), "poses.ready"),
+    ("tasks/open/task.yaml", lambda d: d.update(budget_s=float("inf")), "budget_s"),
+    ("tasks/open/task.yaml", lambda d: d["phases"][0]["done"][0].update(le=float("nan")), "le needs a finite number"),
+    ("tasks/open/task.yaml", lambda d: d["phases"][0]["done"][0].update(le=10 ** 400), "le needs a finite number"),
+], ids=["base-nan", "pose-inf", "robot-pose-inf", "budget-inf", "threshold-nan", "threshold-10e400"])
+def test_non_finite_number_is_rejected(tree, file, change, field):
+    """NaN / Inf anywhere, and a threshold too large for a float (it raised OverflowError), named by the field the
+    user wrote (a NaN threshold was reported as the internal `value`)."""
+    p = tree / file
+    edit(p, change)
+    with pytest.raises(SpecError, match=field):
+        specs.load(p)
+
+
+# ------------------------------------------------------------------ names that become ROS 2 topic names
+def test_names_must_be_topic_name_tokens(tree, tmp_path):
+    """The scene name, its model names and the robot name end up in topics (/world/<w>/..., /model/<m>/pose)."""
+    scene = yaml.safe_load((tree / "scenes/room/scene.yaml").read_text())
+    for bad in ("kitchen-2", "room.v2", "1room"):
+        with pytest.raises(SpecError, match=f"'{bad}': this name is part of ROS 2 topic names"):
+            specs.load(write(tmp_path / "out/scene.yaml", yaml.safe_dump({**scene, "name": bad})), root=tree)
+    p = tree / "scenes/room/scene.yaml"
+    edit(p, lambda d: d["models"].update({"table-01": d["models"]["box"]}))
+    with pytest.raises(SpecError, match="'table-01': this name is part of ROS 2 topic names"):
+        specs.load(p)
+    edit(p, lambda d: d["models"].update({"table_01": d["models"].pop("table-01")}))
+    assert "table_01" in specs.load(p).models
+    shutil.copytree(tree / "robots/bot", tree / "robots/bot.v2")
+    edit(tree / "robots/bot.v2/robot.yaml", lambda d: d.update(name="bot.v2"))
+    with pytest.raises(SpecError, match="'bot.v2': this name is part of ROS 2 topic names"):
+        specs.load(tree / "robots/bot.v2/robot.yaml", assets=False)
+

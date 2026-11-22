@@ -41,7 +41,7 @@ def parse(root, **edits):
 def test_the_repo_example_loads():
     spec = S.load(REPO / "specs" / "eval" / "fridge_base50_30k.yaml", REPO)
     assert spec.train.task == "open_fridge_door" and spec.train_manifest == "runs/datagen/fridge_base50/manifest.json"
-    assert spec.judge.plugin == "c2" and spec.ckpt.source == "local" and (spec.rollouts, spec.retries) == (5, 1)
+    assert spec.judge.plugin == "c2" and spec.ckpt.source == "local" and (spec.rollouts, spec.retries) == (2, 1)
     assert spec.sets["heldout"].min_distance.value == 0.1 and spec.sets["train"].source == "train"
     assert spec.training == PluginRef("legacy_layouts", {"run": "runs/fridge_base50"}) and spec.sets["heldout"].pool.initial == (510, 529)
 

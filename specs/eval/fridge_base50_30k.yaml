@@ -13,7 +13,7 @@ sets:
     pool: {initial: [510, 529], replacement: [530, 599]}      # 500-509 were the earlier held-out seeds
     min_distance: {value: 0.1, realised: true}
   train: {from: train, count: 10}
-rollouts: 5                                    # per config
+rollouts: 2                                    # per config
 retries: 1                                     # policy again from the failed phase start, up to N times
 runner: {actions_per_chunk: 21, chunk_size_threshold: 0}      # no-blend (20 executed)
 judge: {criterion: c2}

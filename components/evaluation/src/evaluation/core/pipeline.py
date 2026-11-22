@@ -1,25 +1,24 @@
 """sample -> check -> rollout -> report, over injected plugins.
 
-`sample` builds every eval set (configs + start dirs, resumable), `check` reports the sets' checks, `rollout` runs
-`rollouts` policy runs per config and judges each, `report` writes report.md. Stages that need a built set build it
-(idempotent), so each can run alone. Rollout records and verdicts are kept in `<out>/results.json`, saved after every
-rollout, so a killed run resumes; a changed spec hash refuses an existing `out`. Layout: `<out>/<set>/<seed>_r<i>/`.
-
-Retries (`spec.retries`) are the only second-attempt mechanism and belong to a later PRD (walk); the seam is the
-Rollout's `restore` argument."""
+`sample` builds every eval set (configs + start dirs, resumable), `check` reports the sets' checks, `rollout` walks each
+set's configs x `rollouts` (core/walk.py: parallel, retries, resume) and judges every try, `report` writes report.md.
+Stages that need a built set build it (idempotent), so each can run alone. Everything is kept in `<out>/results.json`
+(core/results.py), saved after every rollout, so a killed run resumes; a changed spec hash refuses an existing `out`.
+Layout: `<out>/<set>/<seed>_r<i>/` (+ `retry_<j>/`). `abort` stops what the sample and rollout stages started (docker jobs)
+when the run is interrupted."""
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from .errors import EvalError
 from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, ResolvedCkpt, Rollout
+from .results import Results
 from .sets import repo_root
 from .spec import EvalSpec
 from .task import load_task
+from .walk import RetryPolicy, Walk
 
 STAGES = ("sample", "check", "rollout", "report")
 
@@ -39,22 +38,18 @@ class PluginSet:
 
 class Pipeline:
     def __init__(self, spec: EvalSpec, plugins: PluginSet, out: Path, dry_run: bool = False,
-                 log: Callable[[str], None] = print):
-        self.spec, self.plugins, self.out, self.dry_run, self.log = spec, plugins, out, dry_run, log
+                 log: Callable[[str], None] = print, abort: Callable[[], None] | None = None):
+        self.spec, self.plugins, self.out, self.dry_run, self.log, self.abort = spec, plugins, out, dry_run, log, abort
         self.gui = not spec.run.headless
-        self.workers = (spec.run.workers or 1) if spec.run.headless else 1     # a GUI run has one window
-        self.results_path = out / "results.json"
-        self.results = self._open()
+        self.workers = (spec.run.workers or 1) if spec.run.headless else 1     # sample stage; a GUI run has one window
+        self.results = Results.open(out / "results.json", spec.hash)
         self._built: dict[str, Built] = {}
 
-    def _open(self) -> dict:
-        if not self.results_path.exists():
-            return {"spec_hash": self.spec.hash, "ckpt": None, "sets": {}}
-        data = json.loads(self.results_path.read_text())
-        if data["spec_hash"] != self.spec.hash:
-            raise PipelineError(f"{self.out} holds the results of another spec (hash {data['spec_hash']}, this one "
-                                f"{self.spec.hash}): use another `out` or delete it")
-        return data
+    def rollout_workers(self) -> int:
+        """Rollouts at a time: the GUI's one, `run.workers`, else the rollout plugin's default (free GPU memory)."""
+        if self.gui:
+            return 1
+        return self.spec.run.workers or self.plugins.rollout.default_workers(self.plugins.policy)
 
     def run(self, stages: Sequence[str] = STAGES, sets: Sequence[str] | None = None) -> bool:
         """Run `stages` on `sets` (default all); False when a check failed."""
@@ -93,7 +88,7 @@ class Pipeline:
     # ---------------------------------------------------------------- stages
     def _build(self, name: str) -> Built:
         if name not in self._built:
-            self._built[name] = self.plugins.sets[name].build(self.spec.sets[name], self.out, self.workers)
+            self._built[name] = self.plugins.sets[name].build(self.spec.sets[name], self.out, self.workers, self.abort)
             self.log(f"sample {name}: {len(self._built[name].items)} configs")
         return self._built[name]
 
@@ -107,40 +102,23 @@ class Pipeline:
             for check, r in self._build(n).checks.items():
                 self.log(f"check {n} {check}: {'PASS' if r.ok else 'FAIL'}" + (f" ({r.reason})" if r.reason else ""))
                 ok &= r.ok
-            self.results["sets"].setdefault(n, {})["checks"] = {c: r.to_dict() for c, r in self._build(n).checks.items()}
-        self._save()
+            self.results.set(n)["checks"] = {c: r.to_dict() for c, r in self._build(n).checks.items()}
+        self.results.save()
         return ok
 
     def _rollout(self, names):
-        p = self.plugins
-        if p.policy.needs_ckpt and self.spec.ckpt is None:
-            raise PipelineError(f"policy {self.spec.policy.plugin!r} needs a `ckpt:`")
+        p, s = self.plugins, self.spec
+        if p.policy.needs_ckpt and s.ckpt is None:
+            raise PipelineError(f"policy {s.policy.plugin!r} needs a `ckpt:`")
         ckpt = p.ckpt.resolve(self.out) if p.ckpt and p.policy.needs_ckpt else None
-        self.results["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
-        task = load_task(self.spec.train.task, repo_root(self.spec, self.out))
+        self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
+        walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt,
+                    load_task(s.train.task, repo_root(s, self.out)), self.out, self.rollout_workers(), self.gui, self.log,
+                    self.abort)
         for n in names:
-            done = self.results["sets"].setdefault(n, {}).setdefault("rollouts", {})
-            for item in self._build(n).items:
-                for i in range(self.spec.rollouts):
-                    key = f"{item.config.seed}_r{i}"
-                    if key in done:
-                        continue
-                    record = p.rollout.run(item, self.out / n / key, seed=item.config.seed, runner=self.spec.runner,
-                                           policy=p.policy, ckpt=ckpt, gui=self.gui)
-                    v = p.judge.score(record, self.out / n / key, task)
-                    done[key] = {"seed": item.config.seed, "record": record, "passed": v.passed, "detail": dict(v.detail)}
-                    self._save()
-                    self.log(f"rollout {n} {key}: {'PASS' if v.passed else 'FAIL'}")
+            built = self._build(n)
+            self.results.set(n)["configs"] = [dict(c.config.to_dict(), start=str(c.start_dir)) for c in built.items]
+            walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e))
 
     def _report(self, names):
-        lines = [f"# Evaluation {self.spec.hash}", ""]
-        for n in names:
-            rolls = self.results["sets"].get(n, {}).get("rollouts", {})
-            passed = sum(r["passed"] for r in rolls.values())
-            lines.append(f"- {n}: {passed}/{len(rolls)} rollouts passed ({self.spec.judge.plugin})")
-        (self.out / "report.md").write_text("\n".join(lines) + "\n")
-
-    def _save(self):
-        tmp = self.results_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.results, indent=1))
-        os.replace(tmp, self.results_path)
+        (self.out / "report.md").write_text(self.results.report(self.spec.judge.plugin, names))

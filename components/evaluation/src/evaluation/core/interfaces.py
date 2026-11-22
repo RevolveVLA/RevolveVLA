@@ -8,7 +8,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from datagen.core.interfaces import Config, Result
 
@@ -57,8 +57,9 @@ class CkptSource(ABC):
 
 class EvalSet(ABC):
     @abstractmethod
-    def build(self, spec: SetSpec, out: Path, workers: int) -> Built:
-        """The set's configs + start dirs (written under `<out>/<spec.name>/`) and its checks; resumable."""
+    def build(self, spec: SetSpec, out: Path, workers: int, abort: Callable[[], None] | None = None) -> Built:
+        """The set's configs + start dirs (written under `<out>/<spec.name>/`) and its checks; resumable. `abort()` stops
+        what the build's workers started (generator jobs) when it fails or is interrupted."""
 
 
 class Policy(ABC):

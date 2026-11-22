@@ -17,7 +17,7 @@ class TrainSet(EvalSet):
     def __init__(self, spec):
         self.spec = spec
 
-    def build(self, set_spec, out, workers):
+    def build(self, set_spec, out, workers, abort=None):
         root = sets.repo_root(self.spec, out)
         training = sets.Training.load(self.spec, root)
         training.need_manifest(f"set {set_spec.name!r} (from: {set_spec.source})")

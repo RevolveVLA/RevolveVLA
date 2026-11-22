@@ -35,7 +35,7 @@ class FakeSet(EvalSet):
     def __init__(self, spec):
         pass
 
-    def build(self, spec, out, workers):
+    def build(self, spec, out, workers, abort=None):
         seeds = (spec.pool.seeds() if spec.pool else range(spec.count))[:spec.count]
         items = []
         for s in seeds:

@@ -27,7 +27,7 @@ class HeldoutSet(EvalSet):
     def __init__(self, spec):
         self.spec = spec
 
-    def build(self, set_spec, out, workers):
+    def build(self, set_spec, out, workers, abort=None):
         spec, name, md = self.spec, set_spec.name, set_spec.min_distance
         training = sets.Training.load(spec, sets.repo_root(spec, out))
         if md and md.realised:
@@ -53,7 +53,7 @@ class HeldoutSet(EvalSet):
             for c in left:
                 shutil.rmtree(base / f"seed_{c.seed}", ignore_errors=True)
         pool.walk([Config.from_dict(c) for c in rec["sampled"]], rec, set_spec.count, attempt, manifest.save, workers,
-                  accept, discard=discard)
+                  accept, abort, discard)
         view = {"splits": {**trained["splits"], name: rec}}
         results = checks.run_checks(checks.set_checks(spec, derived, name, training), view, training)
         return Built([self._item(e, base) for e in rec["used"]], results)

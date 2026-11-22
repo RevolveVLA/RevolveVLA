@@ -3,7 +3,7 @@
 Resolves only the plugins the requested stages need; `--dry-run` resolves none (it prints the plan from the spec).
 Extra plugin modules are found through $EVAL_PLUGIN_PATH (datagen's, which the sets use, through $DATAGEN_PLUGIN_PATH;
 os.pathsep separated). `--workers` / `--gui` override the spec's `run:` block. Exit code: 0 ok, 1 failed check or error, 2 invalid spec, 128 + n when stopped by signal n
-(results saved: rerun the same command to resume). Never imports rollout.py / docker: the plugins do, lazily."""
+(results saved: rerun the same command to resume; the run's docker jobs are stopped). Never imports rollout.py / docker: the plugins do, lazily."""
 from __future__ import annotations
 
 import argparse
@@ -63,7 +63,8 @@ def main(argv=None, root: Path | None = None) -> int:
     try:
         spec = with_run(load(a.spec, root), a)
         out = Path(spec.out) if Path(spec.out).is_absolute() else root / spec.out
-        pipeline = Pipeline(spec, PluginSet() if a.dry_run else build_plugins(spec, stages), out, a.dry_run)
+        pipeline = Pipeline(spec, PluginSet() if a.dry_run else build_plugins(spec, stages), out, a.dry_run,
+                            abort=lambda: stop_jobs(out))
         with interruptible():
             return 0 if pipeline.run(stages, a.set) else 1
     except Interrupted as e:
@@ -75,3 +76,9 @@ def main(argv=None, root: Path | None = None) -> int:
     except DatagenError as e:
         print(f"evaluate: {e}", file=sys.stderr)
         return 1
+
+
+def stop_jobs(out: Path):
+    """Kill the docker jobs (generator, policy server, simulator) of the run at `out`: what an interrupt leaves behind."""
+    from datagen.containers import stop_jobs as stop
+    stop(out, log=lambda m: print(f"evaluate: {m}", file=sys.stderr))

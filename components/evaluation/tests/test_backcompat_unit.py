@@ -87,6 +87,11 @@ def test_runner_params_flags_are_validated(monkeypatch):
     monkeypatch.setattr(E, "evaluate", lambda *a, **kw: dict(errors=0, kw=kw))
     base = ["--task", TASK, "--seeds", "5", "--out", "o", "--starts", "s", "--policy", "oracle"]
     assert E.main(base + ["--actions-per-chunk", "21", "--chunk-size-threshold", "0"]) == 0
-    for bad in (["--actions-per-chunk", "0"], ["--chunk-size-threshold", "1.5"]):
+    seen = []
+    monkeypatch.setattr(E, "evaluate", lambda *a, **kw: seen.append(kw["runner_params"]) or dict(errors=0))
+    E.main(base)
+    E.main(base + ["--chunk-size-threshold", "0.5", "--aggregate-fn", "latest_only"])
+    assert seen == [{}, dict(chunk_size_threshold=0.5, aggregate_fn_name="latest_only")]    # opt-in: nothing by default
+    for bad in (["--actions-per-chunk", "0"], ["--chunk-size-threshold", "1.5"], ["--aggregate-fn", "median"]):
         with pytest.raises(SystemExit):
             E.main(base + bad)

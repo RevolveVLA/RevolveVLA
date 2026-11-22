@@ -37,9 +37,8 @@ class DockerRollout(Rollout):
         self.spec, self.workers = spec, None
 
     def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):
-        runner_params = dict(actions_per_chunk=runner.actions_per_chunk, chunk_size_threshold=runner.chunk_size_threshold)
         return load().run(item.start_dir, out, seed=seed, policy=policy.name, ckpt=ckpt.path if ckpt else None,
-                          restore=restore, runner_params=runner_params, gui=gui, task=self.task,
+                          restore=restore, runner_params=runner.params(), gui=gui, task=self.task,
                           **{**self.params, "rtf": self.rtf(policy)})
 
     def default_workers(self, policy):

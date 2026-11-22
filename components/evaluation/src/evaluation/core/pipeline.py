@@ -15,6 +15,7 @@ from typing import Callable, Mapping, Sequence
 from .errors import EvalError
 from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, ResolvedCkpt, Rollout
 from .results import Results
+from .runner import check_chunk_size
 from .sets import repo_root
 from .spec import EvalSpec
 from .task import load_task
@@ -72,7 +73,9 @@ class Pipeline:
         say(f"stages: {', '.join(stages)}; out {self.out}")
         say(f"ckpt: {s.ckpt.source} {dict(s.ckpt.params)} (nothing resolved)" if s.ckpt else "ckpt: none")
         say(f"policy {s.policy.plugin}, rollout {s.rollout.plugin}, judge {s.judge.plugin}, "
-            f"runner {s.runner.actions_per_chunk} actions per chunk, chunk_size_threshold {s.runner.chunk_size_threshold}")
+            f"runner {s.runner.describe()}")
+        if s.runner.warning:
+            say(f"warning: {s.runner.warning}")
         runs = 0
         for n in names:
             t = s.sets[n]
@@ -118,6 +121,13 @@ class Pipeline:
         if p.policy.needs_ckpt and s.ckpt is None:
             raise PipelineError(f"policy {s.policy.plugin!r} needs a `ckpt:`")
         ckpt = p.ckpt.resolve(self.out) if p.ckpt and p.policy.needs_ckpt else None
+        if s.runner.warning:
+            self.log(f"warning: {s.runner.warning}")
+        chunk_size = check_chunk_size(s.runner, ckpt)
+        r = s.runner
+        self.results.data["runner"] = {"n_action_steps": r.n_action_steps, "actions_per_chunk": r.actions_per_chunk,
+                                       "chunk_size_threshold": r.chunk_size_threshold, "aggregate": r.aggregate,
+                                       "ckpt_chunk_size": chunk_size, "text": r.describe()}
         self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
         task = load_task(s.train.task, repo_root(s, self.out))
         policy = task and rollout_policy(task.rollout, s.rollout.params, p.rollout.rtf(p.policy))

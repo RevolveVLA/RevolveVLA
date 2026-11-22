@@ -71,6 +71,8 @@ LABEL = "revolve.rollout"
 POLICIES = ("smolvla", "oracle")
 # Rosetta d552e34's policy_runner defaults, as the earlier pipeline's policy config wrote them out
 RUNNER_PARAMS = dict(actions_per_chunk=30, chunk_size_threshold=0.95, aggregate_fn_name="weighted_average")
+# lerobot 0.6.1 (revolve-training image) lerobot.async_inference.configs.AGGREGATE_FUNCTIONS: the names `aggregate_fn_name` takes
+AGGREGATE_FNS = ("weighted_average", "latest_only", "average", "conservative")
 SERVE_READY_S = 300            # legacy: "RosettaPolicyServer started on" within 300 s
 RUNNER_JSON_S = 90             # rosetta_goal.py: cancel the goal + runner.json after the sim's summary.json
 SETUP_S = 240                  # = task rollout.setup_s default: container start, models, world load, client up

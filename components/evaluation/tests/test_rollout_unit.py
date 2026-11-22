@@ -35,6 +35,17 @@ def test_runner_params_yaml_default_and_override():
     assert over["policy_runner"]["ros__parameters"] == dict(R.RUNNER_PARAMS, actions_per_chunk=21, chunk_size_threshold=0.0)
 
 
+def test_runner_params_yaml_aggregate():
+    import rollout as R
+    get = lambda **o: yaml.safe_load(R.runner_params_yaml(o))["policy_runner"]["ros__parameters"]
+    for runner, want in [(RunnerSpec(11, 0.0), dict(actions_per_chunk=11, chunk_size_threshold=0.0, aggregate_fn_name="weighted_average")),
+                         (RunnerSpec(21, 0.5, "weighted_average"), dict(actions_per_chunk=21, chunk_size_threshold=0.5,
+                                                                         aggregate_fn_name="weighted_average")),
+                         (RunnerSpec(21, 0.5, "latest_only"), dict(actions_per_chunk=21, chunk_size_threshold=0.5,
+                                                                    aggregate_fn_name="latest_only"))]:
+        assert get(**runner.params()) == want
+
+
 def test_policies():
     assert (smolvla.name, smolvla.needs_ckpt, smolvla.client_only) == ("smolvla", True, False)
     assert (oracle.name, oracle.needs_ckpt, oracle.client_only) == ("oracle", False, True)
@@ -55,6 +66,9 @@ def test_docker_passes_the_rollout_run_kwargs(monkeypatch, item, tmp_path):
     assert kw == dict(seed=501, policy="smolvla", ckpt=ckpt.path, restore=(tmp_path / "prev", "open"), gui=True,
                       task="open_fridge_door", runner_params=dict(actions_per_chunk=21, chunk_size_threshold=0.0),
                       budget_s=6, rtf=0.2)
+    r.run(item, tmp_path / "o3", seed=1, runner=RunnerSpec(11, 0.5, "average"), policy=smolvla, ckpt=ckpt)
+    assert calls[1][1]["runner_params"] == dict(actions_per_chunk=11, chunk_size_threshold=0.5, aggregate_fn_name="average")
+    calls.pop()
     r.run(item, tmp_path / "o2", seed=1, runner=RunnerSpec(), policy=oracle, ckpt=None)
     assert calls[1][1]["policy"] == "oracle" and calls[1][1]["ckpt"] is None and calls[1][1]["restore"] is None
 

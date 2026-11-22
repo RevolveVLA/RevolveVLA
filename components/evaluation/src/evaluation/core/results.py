@@ -99,6 +99,8 @@ class Results:
         ckpt = d["ckpt"]
         lines = [f"# Evaluation {d['spec_hash']}", "", f"Judge {judge}. Checkpoint: "
                  + (f"{ckpt['path']} ({json.dumps(ckpt['origin'])})" if ckpt else "none (policy brings its own actions)"), ""]
+        if r := d.get("runner"):
+            lines += [f"Runner: {r['text']}" + (f", ckpt chunk_size {r['ckpt_chunk_size']}" if r.get("ckpt_chunk_size") else ""), ""]
         pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"
         row = lambda m: (f"{m['rollouts']} | {m['first_try_passed']} ({pct(m['first_try_success'])}) | "
                          f"{m['passed_with_retries']} ({pct(m['success_with_retries'])}) | {m['errors']}")

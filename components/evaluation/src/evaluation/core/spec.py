@@ -19,6 +19,10 @@ from datagen.core.spec import load as load_train
 from .task import load_task
 
 NEEDS_SUCCESS = ("c1", "c2")                            # the judges that score a task's `success:` rule
+# lerobot 0.6.1 (revolve-training image) lerobot.async_inference.configs.AGGREGATE_FUNCTIONS, the registry Rosetta's
+# `aggregate_fn_name` is looked up in (the host venv has no lerobot to import it from)
+AGGREGATE_FNS = ("weighted_average", "latest_only", "average", "conservative")
+DEFAULT_AGGREGATE = "weighted_average"                  # Rosetta's, used when `aggregate` is absent
 
 
 @dataclass(frozen=True)
@@ -29,10 +33,33 @@ class CkptSpec:
 
 @dataclass(frozen=True)
 class RunnerSpec:
-    """Rosetta's policy runner: actions per chunk (the first is dropped, so 21 = 20 executed) and the queue fraction
-    below which the next chunk is requested (0: only when empty, so chunks are not blended)."""
+    """Rosetta's policy runner: actions per chunk (the first is dropped, so 21 = `n_action_steps` 20 executed), the queue
+    fraction below which the next chunk is requested (0: only when empty, so chunks do not overlap) and, for overlapping
+    chunks (threshold > 0), the `aggregate` function of lerobot's registry that blends them (None: Rosetta's default)."""
     actions_per_chunk: int = 21
     chunk_size_threshold: float = 0.0
+    aggregate: str | None = None
+
+    @property
+    def n_action_steps(self) -> int:
+        return self.actions_per_chunk - 1
+
+    @property
+    def warning(self) -> str | None:
+        if self.aggregate and self.chunk_size_threshold == 0:
+            return (f"runner: aggregate {self.aggregate!r} has no effect with chunk_size_threshold 0 "
+                    "(chunks do not overlap): set a threshold > 0 to ensemble")
+        return None
+
+    def describe(self) -> str:
+        agg = self.aggregate or (f"{DEFAULT_AGGREGATE} (default)" if self.chunk_size_threshold else "none (no overlap)")
+        return (f"{self.n_action_steps} action steps ({self.actions_per_chunk} per chunk), "
+                f"chunk_size_threshold {self.chunk_size_threshold}, aggregate {agg}")
+
+    def params(self) -> dict[str, Any]:
+        """The overrides of rollout.py's RUNNER_PARAMS (the client's runner_params.yaml)."""
+        return {"actions_per_chunk": self.actions_per_chunk, "chunk_size_threshold": self.chunk_size_threshold,
+                **({"aggregate_fn_name": self.aggregate} if self.aggregate else {})}
 
 
 @dataclass(frozen=True)
@@ -78,6 +105,8 @@ class EvalSpec:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self) | {"train": self.train.hash}
         d.pop("out"), d.pop("run")
+        if d["runner"]["aggregate"] is None:                # as before the field existed (an existing out keeps its hash)
+            del d["runner"]["aggregate"]
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
 
@@ -99,12 +128,24 @@ def _judge(v, task, at) -> PluginRef:
 
 
 def _runner(v, at) -> RunnerSpec:
-    d = _mapping(v, at, optional=("actions_per_chunk", "chunk_size_threshold"))
+    d = _mapping(v, at, optional=("n_action_steps", "actions_per_chunk", "chunk_size_threshold", "temporal_ensembling"))
     apc = _int(d.get("actions_per_chunk", RunnerSpec.actions_per_chunk), f"{at}.actions_per_chunk", 1)
+    if "n_action_steps" in d:
+        n = _int(d["n_action_steps"], f"{at}.n_action_steps", 1)
+        if "actions_per_chunk" in d and apc != n + 1:
+            _fail(at, f"n_action_steps {n} and actions_per_chunk {apc} disagree (actions_per_chunk = n_action_steps + 1: "
+                      "give one of the two keys)")
+        apc = n + 1
     thr = _num(d.get("chunk_size_threshold", RunnerSpec.chunk_size_threshold), f"{at}.chunk_size_threshold")
     if not 0 <= thr <= 1:
         _fail(f"{at}.chunk_size_threshold", f"must be in [0, 1], got {thr}")
-    return RunnerSpec(apc, float(thr))
+    agg = None
+    if "temporal_ensembling" in d:
+        agg = _str(_mapping(d["temporal_ensembling"], f"{at}.temporal_ensembling", required=("aggregate",))["aggregate"],
+                   f"{at}.temporal_ensembling.aggregate")
+        if agg not in AGGREGATE_FNS:
+            _fail(f"{at}.temporal_ensembling.aggregate", f"unknown aggregate {agg!r} (known: {list(AGGREGATE_FNS)})")
+    return RunnerSpec(apc, float(thr), agg)
 
 
 def _run(v, at) -> RunSpec:

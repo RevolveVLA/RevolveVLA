@@ -15,6 +15,7 @@ sets:
   train: {from: train, count: 10}
 rollouts: 2                                    # per config
 retries: 1                                     # policy again from the failed phase start, up to N times
-runner: {actions_per_chunk: 21, chunk_size_threshold: 0}      # no-blend (20 executed)
+runner: {n_action_steps: 20, chunk_size_threshold: 0}      # 20 executed per chunk, no overlap = no ensembling
+# runner: {n_action_steps: 10, chunk_size_threshold: 0.5, temporal_ensembling: {aggregate: weighted_average}}   # aggregate: weighted_average|latest_only|average|conservative
 judge: {criterion: c2}
 run: {workers: 2, headless: true}

@@ -72,6 +72,62 @@ def test_hash_ignores_out_and_run_but_not_settings(root):
     assert other.hash != base.hash
 
 
+def test_runner_n_action_steps_and_actions_per_chunk(root):
+    r = lambda **runner: parse(root, runner=runner).runner
+    assert r() == S.RunnerSpec(21, 0.0, None) and r().n_action_steps == 20
+    assert r(n_action_steps=10) == S.RunnerSpec(11, 0.0) and r(actions_per_chunk=31).n_action_steps == 30
+    assert r(n_action_steps=10, actions_per_chunk=11) == S.RunnerSpec(11, 0.0)            # consistent: accepted
+    assert parse(root, runner={"n_action_steps": 10}).hash == parse(root, runner={"actions_per_chunk": 11}).hash
+    with pytest.raises(SpecError, match=r"runner: n_action_steps 10 and actions_per_chunk 30 disagree"):
+        r(n_action_steps=10, actions_per_chunk=30)
+    with pytest.raises(SpecError, match=r"runner.n_action_steps: must be >= 1"):
+        r(n_action_steps=0)
+
+
+def test_runner_temporal_ensembling(root):
+    spec = parse(root, runner={"chunk_size_threshold": 0.5, "temporal_ensembling": {"aggregate": "latest_only"}})
+    assert spec.runner == S.RunnerSpec(21, 0.5, "latest_only") and spec.runner.warning is None
+    assert spec.hash != parse(root, runner={"chunk_size_threshold": 0.5}).hash
+    for name in S.AGGREGATE_FNS:
+        assert parse(root, runner={"temporal_ensembling": {"aggregate": name}}).runner.aggregate == name
+    for bad, match in [({"aggregate": "median"}, r"runner.temporal_ensembling.aggregate: unknown aggregate 'median' \(known: \['weighted_average'"),
+                       ({}, r"runner.temporal_ensembling: missing key 'aggregate'"),
+                       ({"aggregate": "average", "x": 1}, r"runner.temporal_ensembling.x: unknown key")]:
+        with pytest.raises(SpecError, match=match):
+            parse(root, runner={"temporal_ensembling": bad})
+
+
+def test_runner_aggregate_without_overlap_warns(root):
+    r = parse(root, runner={"temporal_ensembling": {"aggregate": "average"}}).runner          # threshold 0: parses, warns
+    assert "no effect with chunk_size_threshold 0" in r.warning and "'average'" in r.warning
+    assert S.RunnerSpec().warning is None
+
+
+def test_runner_params_and_text():
+    assert S.RunnerSpec().params() == dict(actions_per_chunk=21, chunk_size_threshold=0.0)            # no aggregate override
+    r = S.RunnerSpec(11, 0.5, "conservative")
+    assert r.params() == dict(actions_per_chunk=11, chunk_size_threshold=0.5, aggregate_fn_name="conservative")
+    assert S.RunnerSpec().describe() == "20 action steps (21 per chunk), chunk_size_threshold 0.0, aggregate none (no overlap)"
+    assert "aggregate weighted_average (default)" in S.RunnerSpec(21, 0.5).describe()
+    assert "10 action steps (11 per chunk)" in r.describe() and "aggregate conservative" in r.describe()
+
+
+def test_aggregate_names_match_rollout_py():
+    import rollout as R
+    assert S.AGGREGATE_FNS == R.AGGREGATE_FNS and S.DEFAULT_AGGREGATE in S.AGGREGATE_FNS
+
+
+def test_the_default_hash_is_as_before_the_aggregate_field(root):
+    """An out written before `aggregate` existed keeps its hash (the default runner block is hashed as it was)."""
+    import hashlib, json
+    spec = parse(root)
+    d = dataclasses.asdict(spec) | {"train": spec.train.hash}
+    d.pop("out"), d.pop("run")
+    assert "aggregate" in d["runner"]
+    del d["runner"]["aggregate"]
+    assert spec.hash == hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 def test_train_path_is_relative_to_root_or_absolute(root):
     assert parse(root).train.task == "t"
     assert parse(root, train=str(root / "train.yaml")).train.task == "t"

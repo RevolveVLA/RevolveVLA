@@ -17,8 +17,8 @@ A rollout that fails phase P is retried up to `retries` times (experiment eval.r
 runs again from the failed attempt's phase_states/P_start.npz (restored in step 0). A stack error (no verdict)
 is re-run once. `parallel` rollouts at a time (default: what the GPU memory holds, default_parallel).
 --gui: watch the rollouts in the gz GUI on the host's X display (DISPLAY + XAUTHORITY); forces parallel 1.
---actions-per-chunk / --chunk-size-threshold override rollout.RUNNER_PARAMS (default: unchanged); recorded as
-runner_params in the summary when given.
+--actions-per-chunk / --chunk-size-threshold / --aggregate-fn override rollout.RUNNER_PARAMS (default: unchanged);
+recorded as runner_params in the summary when given.
 --video: each rollout also records the scene camera into <rollout dir>/video.mp4 (not part of the verdict).
 
 Layout under out/<set>/:
@@ -255,6 +255,8 @@ def main(argv=None):
     ap.add_argument("--parallel", type=int, default=None)
     ap.add_argument("--actions-per-chunk", type=int, default=None, help="runner: actions per chunk (>= 1)")
     ap.add_argument("--chunk-size-threshold", type=float, default=None, help="runner: chunk size threshold [0, 1]")
+    ap.add_argument("--aggregate-fn", choices=R.AGGREGATE_FNS, default=None,
+                    help="runner: how overlapping chunks blend (only with --chunk-size-threshold > 0)")
     ap.add_argument("--budget-s", type=float, default=None, help="override task.yaml rollout.budget_s (tests)")
     ap.add_argument("--wait-s", type=float, default=None)
     ap.add_argument("--gui", action="store_true", help="show the gz GUI on $DISPLAY (one rollout at a time)")
@@ -263,7 +265,8 @@ def main(argv=None):
     if a.policy == "smolvla" and not a.ckpt:
         ap.error("--ckpt is required for --policy smolvla")
     runner = {k: v for k, v in dict(actions_per_chunk=a.actions_per_chunk,
-                                    chunk_size_threshold=a.chunk_size_threshold).items() if v is not None}
+                                    chunk_size_threshold=a.chunk_size_threshold,
+                                    aggregate_fn_name=a.aggregate_fn).items() if v is not None}
     if runner.get("actions_per_chunk", 1) < 1 or not 0 <= runner.get("chunk_size_threshold", 0) <= 1:
         ap.error("--actions-per-chunk must be >= 1 and --chunk-size-threshold in [0, 1]")
     s = evaluate(a.task, Path(a.ckpt).resolve() if a.ckpt else None, S.G.parse_seeds(a.seeds), a.out, a.set, a.starts,

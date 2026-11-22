@@ -154,3 +154,27 @@ def test_revolve_evaluate_dry_run_on_the_repo_spec():
                          input=yaml.safe_dump({"train": "specs/datagen/fridge_base50.yaml", "out": "x", "sets": {}, "typo": 1}),
                          capture_output=True, text=True, cwd=REPO)
     assert bad.returncode == 2 and "typo: unknown key" in bad.stderr
+
+
+def test_runner_in_dry_run_results_and_report(tmp_path, capsys):
+    runner = {"n_action_steps": 10, "chunk_size_threshold": 0.5, "temporal_ensembling": {"aggregate": "average"}}
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"runner": runner}) == 0
+    out = capsys.readouterr().out
+    assert "runner 10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average" in out and "warning" not in out
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"runner": {"temporal_ensembling": {"aggregate": "average"}}}) == 0
+    assert "[dry-run] warning: runner: aggregate 'average' has no effect with chunk_size_threshold 0" in capsys.readouterr().out
+    assert evaluate(tmp_path, spec=SPEC | {"runner": runner}) == 0
+    r = json.loads((tmp_path / "run" / "results.json").read_text())["runner"]
+    assert r == {"n_action_steps": 10, "actions_per_chunk": 11, "chunk_size_threshold": 0.5, "aggregate": "average",
+                 "ckpt_chunk_size": None, "text": "10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average"}
+    assert "Runner: 10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average\n" in (tmp_path / "run" / "report.md").read_text()
+
+
+def test_runner_longer_than_the_ckpt_chunk_is_refused(tmp_path, capsys):
+    for out in ("run", "run2"):
+        (tmp_path / out / "ckpt").mkdir(parents=True)
+        (tmp_path / out / "ckpt" / "config.json").write_text(json.dumps({"chunk_size": 50}))
+    assert evaluate(tmp_path, "rollout", spec=SPEC | {"runner": {"n_action_steps": 49}}) == 0      # 50 per chunk fits
+    assert json.loads((tmp_path / "run" / "results.json").read_text())["runner"]["ckpt_chunk_size"] == 50
+    assert evaluate(tmp_path, "rollout", spec=SPEC | {"runner": {"n_action_steps": 50}, "out": "run2"}) != 0
+    assert "n_action_steps 50 needs 51 actions per chunk" in capsys.readouterr().err

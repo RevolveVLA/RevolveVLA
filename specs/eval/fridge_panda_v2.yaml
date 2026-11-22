@@ -1,0 +1,20 @@
+# A policy on open_fridge_door (mobile_panda, new simulator): 10 held-out scene instances (inside the training ranges of
+# specs/datagen/fridge_panda_v2.yaml, >= 0.1 away from its training instances, collision-free; instances are written under out/heldout/)
+# and 10 of its training instances. `./revolve evaluate specs/eval/fridge_panda_v2.yaml sample|check|all [--dry-run]`.
+# BLOCKED (rollout): a smolvla ckpt needs a v2 dataset (no Rosetta contract for the new bags yet); the `sim` rollout plugin is PRD 06.
+train: specs/datagen/fridge_panda_v2.yaml      # task, robot, randomisers, validators, seed, and the run that made the training instances
+ckpt: {source: local, path: runs/ckpts/fridge_panda_v2}
+policy: {plugin: smolvla}
+out: runs/eval/fridge_panda_v2
+sets:
+  heldout:
+    count: 10
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 529], replacement: [530, 599]}     # the pool the training spec keeps aside (record: false)
+    min_distance: {value: 0.1}
+  train: {from: train, count: 10}              # needs runs/datagen/fridge_panda_v2/state.json
+rollout: {plugin: sim}                         # limits (budget_s, ...) go here as plugin params
+rollouts: 2                                    # per config
+retries: 0
+runner: {n_action_steps: 20, chunk_size_threshold: 0}
+run: {workers: 2, headless: true}

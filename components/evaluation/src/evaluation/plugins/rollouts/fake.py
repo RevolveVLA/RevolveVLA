@@ -45,7 +45,7 @@ class FakeRollout(Rollout):
              "result": {"failed_phase": failed, "regenerate": None, "failed_checks": [failed] if failed else []}}))
         end = self.end_reasons.get(seed) or ("success" if failed is None else "budget")
         error = {"wall_limit": "sim job over its wall limit 1 s", "stack_error": "RuntimeError: fake stack error"}.get(end)
-        record = dict(seed=seed, dir=str(out), policy=policy.name, ckpt=ckpt.path if ckpt else None, start=str(item.start_dir),
+        record = dict(seed=seed, dir=str(out), policy=policy.name, ckpt=ckpt.path if ckpt else None, scene=str(item.scene),
                       restore=None if restore is None else dict(source=str(restore[0]), phase=restore[1]),
                       phases=None if error else status, failed_phase=failed, regenerate=None,
                       failed_checks=[failed] if failed else [], passed=failed is None and not error, error=error, end_reason=None if error else end)

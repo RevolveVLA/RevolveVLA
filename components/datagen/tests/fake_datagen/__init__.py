@@ -59,7 +59,6 @@ class FakeGenerator(Generator):
     def __init__(self, spec, params):
         self.n = 0
         self.delay, self.delays = params.get("delay", 0), {int(k): v for k, v in params.get("delays", {}).items()}
-        self.fail, self.realised = set(params.get("fail_seeds", [])), params.get("realised", {})
 
     def drive(self, client, instance, task, robot):
         seed = seed_of(instance)
@@ -70,23 +69,6 @@ class FakeGenerator(Generator):
         if seconds := self.delays.get(seed, self.delay):
             slow("drive", seed, seconds)
         return {"expert": "fake_v1", "notes": f"seed {seed}"}
-
-    def generate(self, config, out):
-        """What evaluation's heldout set still calls (it realises a start through the generator; PRD 05 moves it onto scene
-        instances, then this goes): `fail_seeds`, `realised` {seed: x} and the delays as the old fake had them."""
-        called("generate", config.seed)
-        self.n += 1
-        if KILL_AFTER is not None and self.n > KILL_AFTER:
-            raise KeyboardInterrupt("simulated kill")
-        out.mkdir(parents=True, exist_ok=True)
-        if seconds := self.delays.get(config.seed, self.delay):
-            slow("generate", config.seed, seconds)
-        if config.seed in self.fail:
-            return Result.fail("planner found no path")
-        realised = {"x": config.values.get("fake_datagen.x")}
-        if config.seed in self.realised:
-            realised["fake_datagen.x"] = self.realised[config.seed]
-        return Result(realised=realised, paths={"episode": str(out / "episode.json")})
 
 
 class FakeInstancer(Instancer):

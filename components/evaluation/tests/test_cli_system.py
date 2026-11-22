@@ -1,6 +1,6 @@
 """System test: `./revolve evaluate` as a subprocess on the host venv (CPU, no docker, no GPU, no network).
 
-The plugins are the real ones where they run on CPU: the `heldout` / `train` sets (datagen's fake generator), the `local` / `hf`
+The plugins are the real ones where they run on CPU: the `heldout` / `train` sets (fake randomiser: no instance files; the real scene_instance in the last test), the `local` / `hf`
 checkpoint sources + relabel, the `smolvla` policy, the `fake` rollout (as `fake_eval_log`: + the state log c1/c2 read) and the judges
 c0 / c1 / c2. `hf` runs against a stub huggingface_hub (fake_hf/): no download. Each test gets a root dir (`specs/` copied in, the
 training spec, a checkpoint under runs/); paths in the specs are absolute, so the repo's runs/ is never written."""
@@ -30,7 +30,7 @@ TRAIN = {
                "heldout": {"target": 2, "pool": {"initial": [20, 24]}, "record": False}},
 }
 HELDOUT = {"count": 3, "pool": {"initial": [100, 109], "replacement": [110, 119]}, "sampler": {"strategy": "sobol"},
-           "min_distance": {"value": 0.1, "realised": False}}
+           "min_distance": {"value": 0.1}}
 SPEC = {
     "ckpt": {"source": "local", "path": "runs/ckpts/c"}, "policy": {"plugin": "smolvla"},
     "rollout": {"plugin": "fake_eval_log", "fail_seeds": [101], "push_seeds": [102], "closed_seeds": [0]},
@@ -63,17 +63,18 @@ def spec_of(root, **edits) -> dict:
 
 
 def training_manifest(root, entries=((0, -0.3), (1, 0.0), (2, 0.3)), touched=()):
-    """<train out>/manifest.json: the used training configs (seed, x) with their start dirs; `touched` = extra seeds."""
+    """<train out>/state.json: the used training configs (seed, x) with their scene instances; `touched` = extra seeds."""
     train = S.parse(spec_of(root), "eval.yaml", root).train
     m = Manifest.open(root / "train_run" / "state.json", train)
     rec = m.split("train")
     for seed, x in entries:
-        start = root / "train_run" / "starts" / f"seed_{seed}"
-        start.mkdir(parents=True)
+        scene = root / "train_run" / "train" / f"scene_{seed}" / "scene.yaml"
+        scene.parent.mkdir(parents=True)
+        scene.write_text("name: fake\n")
         rec["sampled"].append({"split": "train", "seed": seed, "cell": [min(int((x + 0.5) * 3), 2)],
                                "values": {"fake_datagen.x": x, "fake_datagen.y": 1.5}})
-        rec["used"].append({"config": rec["sampled"][-1], "generate": {"ok": True, "realised": {"fake_datagen.x": x}, "paths": {"check": str(start)}},
-                            "record": {"ok": True}})
+        rec["used"].append({"config": rec["sampled"][-1], "generate": {"ok": True, "realised": {"fake_datagen.x": x},
+                                                                       "paths": {"scene": f"train/scene_{seed}/scene.yaml"}}})
     rec["sampled"] += [{"split": "train", "seed": s, "cell": [0], "values": {}} for s in touched]
     m.save()
 
@@ -130,7 +131,7 @@ def test_stages_one_by_one_and_set_filter(root):
     assert evaluate(root, "report")[0] == 0 and (root / "runs/eval/sys/report.md").is_file() and calls(root) == []
     rc, out, _ = evaluate(root, "sample", "--set", "train")
     assert rc == 0 and "sample train: 2 configs" in out and not (root / "runs/eval/sys/heldout").exists() and calls(root) == []
-    assert evaluate(root, "sample")[0] == 0 and (root / "runs/eval/sys/heldout/manifest.json").is_file()
+    assert evaluate(root, "sample")[0] == 0 and (root / "runs/eval/sys/heldout/state.json").is_file()
     rc, out, _ = evaluate(root, "check")
     assert rc == 0 and "check heldout in_range: PASS" in out and calls(root) == []
     assert evaluate(root, "rollout", "--set", "train")[0] == 0
@@ -243,21 +244,12 @@ def test_a_check_that_fails_exits_1(root):
     assert not results(root)["sets"]["heldout"]["checks"]["seeds_disjoint"]["ok"]
 
 
-def test_held_out_starts_too_close_to_every_training_config_exit_1(root):
-    train = TRAIN | {"generator": {"plugin": "fake_datagen", "realised": {s: 0.0 for s in range(100, 120)}}}
-    (root / "train.yaml").write_text(yaml.safe_dump(train | {"out": str(root / "train_run")}))
-    training_manifest(root, entries=((0, 0.0),))
-    spec = spec_of(root, sets={"heldout": HELDOUT | {"count": 2, "min_distance": {"value": 0.1, "realised": True}}})
-    rc, out, err = evaluate(root, "sample", spec=spec)
-    assert rc == 1 and "Traceback" not in err and err.startswith("evaluate: ")        # the pool ran out of starts away from training
-
-
-def test_a_realised_distance_needs_the_training_manifest(root):
+def test_a_realised_distance_is_an_alias_and_needs_no_training_state(root):
     spec = spec_of(root, sets={"heldout": HELDOUT | {"min_distance": {"value": 0.1, "realised": True}}})
-    rc, _, err = evaluate(root, "check", spec=spec)
-    assert rc == 1 and "needs the training manifest" in err and not (root / "runs/eval/sys/heldout/starts").exists()
-    rc, out, _ = evaluate(root, "check", spec=spec_of(root, sets={"heldout": HELDOUT}))     # `realised: false` works without it (sampled-only)
-    assert rc == 0 and "check heldout training_configs: PASS (sampled-only" in out
+    rc, out, err = evaluate(root, "check", spec=spec)
+    assert rc == 0, err
+    assert "check heldout training_configs: PASS (sampled-only" in out and "realised_min_distance" not in out
+    assert (root / "runs/eval/sys/heldout/state.json").is_file()
 
 
 def test_a_bad_spec_exits_2_naming_the_key(root):
@@ -266,8 +258,8 @@ def test_a_bad_spec_exits_2_naming_the_key(root):
     assert evaluate(root, "all", spec=spec_of(root) | {"train": str(root / "missing.yaml")})[0] == 2
     rc, _, err = evaluate(root, "all", spec=spec_of(root, sets={"h": {"count": 1, "pool": {"initial": [1, 2]}}}))
     assert rc == 2 and "sets.h.pool" in err
-    rc, _, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": "c2"}))           # main's tasks have no `success:` rule
-    assert rc == 2 and "judge.criterion: c2 needs a `success:` block in task open_fridge_door" in err
+    rc, _, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": "c2"}))           # no state log on the new simulator
+    assert rc == 2 and "judge.criterion: c2 is not available on the new simulator" in err
 
 
 def test_a_changed_spec_refuses_the_existing_out_and_run_does_not_matter(root):
@@ -307,12 +299,24 @@ def test_hf_checkpoint_with_a_stubbed_download(root):
     assert log.read_text().count("snapshot_download") == 1 and log.read_text().count("model_info") == 2   # cached: no second download
 
 
-# ------------------------------------------------------------------ the repo's specs (GPU runs): valid, no training manifest needed
-@pytest.mark.parametrize("name", ["fridge_smoke_eval", "fridge_base50_30k_nomanifest"])
-def test_the_gpu_specs_hold_out_without_a_training_manifest(name):
-    spec = S.load(REPO / "specs" / "eval" / f"{name}.yaml", REPO)
-    assert spec.sets["heldout"].min_distance.realised is False and list(spec.sets) == ["heldout"]
-    assert spec.judge.plugin == "c2" and spec.rollout.plugin == "docker"
+# ------------------------------------------------------------------ the repo's specs: valid, a dry run needs no run or checkpoint
+@pytest.mark.parametrize("name", ["fridge_panda_v2", "drawer_so101xl_v2", "smoke_v2"])
+def test_the_repo_specs_dry_run(name):
     rc = subprocess.run([sys.executable, str(REVOLVE), "evaluate", f"specs/eval/{name}.yaml", "all", "--dry-run"],
                         capture_output=True, text=True, cwd=REPO)
     assert rc.returncode == 0, rc.stderr
+
+
+@pytest.mark.skipif(not (REPO / "assets/generated_partnet/fridge/model.sdf").is_file(), reason="needs the kitchen assets")
+def test_the_smoke_spec_writes_collision_free_instances_without_any_training_run(tmp_path):
+    """Real plugins: the held-out instance of specs/eval/smoke_v2.yaml (scene_instance + collision_free on the fridge scene)."""
+    raw = yaml.safe_load((REPO / "specs/eval/smoke_v2.yaml").read_text()) | {"out": str(tmp_path / "ev")}
+    spec = tmp_path / "smoke.yaml"
+    spec.write_text(yaml.safe_dump(raw))
+    rc = subprocess.run([sys.executable, str(REVOLVE), "evaluate", str(spec), "check", "--set", "heldout"],
+                        capture_output=True, text=True, cwd=REPO)
+    assert rc.returncode == 0, rc.stderr
+    scene = yaml.safe_load((tmp_path / "ev/heldout/scene_500/scene.yaml").read_text())
+    config = json.loads((tmp_path / "ev/heldout/state.json").read_text())["splits"]["heldout"]["used"][0]["config"]
+    assert scene["robot_start"]["base"][0] == pytest.approx(config["values"]["robot_start.x_m"], abs=1e-5)
+    assert "check heldout min_distance: PASS" in rc.stdout

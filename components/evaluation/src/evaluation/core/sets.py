@@ -1,9 +1,10 @@
 """What the eval set plugins share: the training run they are measured against and the in-memory DatagenSpec that lets
-datagen's generator, sampler and checks work on an eval set (zero datagen changes).
+datagen's sampler, validators, instancer and checks work on an eval set (zero datagen changes).
 
-The training run = the training spec + its manifest, read by the `training` plugin (`spec.training`). Without a manifest only the training
-splits' sampled configs are known: they are re-sampled (deterministic in seed, split and pool) and the first `target` of
-a split stand in for its used configs ("sampled-only": no realised starts, no start dirs)."""
+The training run = the training spec + its datagen state (+ manifest.json episodes), read by the `training` plugin
+(`spec.training`). Without a state only the training splits' sampled configs are known: they are re-sampled
+(deterministic in seed, split and pool) and the first `target` of a split stand in for its used configs ("sampled-only":
+no scene instances)."""
 from __future__ import annotations
 
 import dataclasses
@@ -28,14 +29,15 @@ def repo_root(spec: EvalSpec, out: Path) -> Path:
 
 
 class Training:
-    def __init__(self, spec: DatagenSpec, path: Path, data: Mapping | None = None):
-        """data: the training manifest (None when it does not exist: sampled-only)."""
+    def __init__(self, spec: DatagenSpec, path: Path, data: Mapping | None = None, episodes: Mapping | None = None):
+        """data: the training state (None when it does not exist: sampled-only); episodes: its recorded ones by seed."""
         self.spec, self.path, self.data, self._sampled = spec, path, data, {}
+        self.episodes = episodes or {}
 
     @classmethod
     def load(cls, spec: EvalSpec, root: Path) -> Training:
         run = REGISTRY.create("training", spec.training.plugin, spec, spec.training.params).load(root)
-        return cls(spec.train, run.path, run.data)
+        return cls(spec.train, run.path, run.data, run.episodes)
 
     @property
     def sampled_only(self) -> bool:
@@ -43,10 +45,15 @@ class Training:
 
     def need_manifest(self, why: str):
         if self.sampled_only:
-            raise EvalError(f"{why} needs the training manifest {self.path}: run datagen for {self.spec.out} first")
+            raise EvalError(f"{why} needs the training state {self.path}: run datagen for {self.spec.out} first")
+
+    @property
+    def base(self) -> Path:
+        """What the scene paths of the state are relative to: the training run's `out`."""
+        return self.path.parent
 
     def rec(self, name: str) -> Mapping:
-        """The manifest block of training split `name` ({sampled, used: [{config, generate}], rejected})."""
+        """The state block of training split `name` ({sampled, used: [{config, generate}], rejected})."""
         if self.data is not None:
             return stats.rec(self.data, name)
         configs = self._resample(name)
@@ -74,21 +81,21 @@ class Training:
         return seeds
 
     def usable(self, name: str) -> list[Mapping]:
-        """The used entries of split `name` that produced a start (datagen v2 has no record step: an accepted scene)."""
+        """The used entries of split `name` that produced a scene (an accepted one: datagen v2 has no record step)."""
         return [e for e in self.rec(name)["used"] if e["generate"]["ok"]]
 
 
 def derive(spec: EvalSpec, s: SetSpec) -> DatagenSpec:
-    """The training spec (task, robot, generator, randomisers = the training dims, seed) with the set as a
-    `record: false` split beside the training split it keeps `min_distance` from: what AutoMoma(spec, params) and
-    datagen's checks take."""
+    """The training spec (task, robot, randomisers = the training dims, validators, seed) with the set as a
+    `record: false` split beside the training split it keeps `min_distance` from: what the instancer, the validators
+    and datagen's checks take. A set's `min_distance.realised` is dropped: the instance IS the realised start, so the
+    sampled distance is the realised one."""
     md = s.min_distance
     if md and md.source == s.name:
         raise EvalError(f"sets.{s.name}: the set has the name of the training split it measures against: rename it")
     source = [dataclasses.replace(spec.train.split(md.source), min_distance=None)] if md else []
-    mine = SplitSpec(s.name, s.count, s.sampler, s.pool, md, record=False)
-    return dataclasses.replace(spec.train, splits=(*source, mine), converter=None, validators=(),
-                               checks=())
+    mine = SplitSpec(s.name, s.count, s.sampler, s.pool, md and dataclasses.replace(md, realised=False), record=False)
+    return dataclasses.replace(spec.train, splits=(*source, mine), converter=None, checks=())
 
 
 def sample_dims(spec: EvalSpec, s: SetSpec) -> dict[str, Dim]:

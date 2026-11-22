@@ -44,18 +44,21 @@ LEGACY = {      # old simulator rollout / state-log judges / Rosetta contract re
                            "test_served_ckpt_renames_and_relabels_an_external_checkpoint", "test_served_ckpt_relabels_the_shape_alone",
                            "test_served_ckpt_refuses_an_unknown_camera", "test_relabel_wraps_a_source_and_serves_under_out"},
     "test_judges_unit.py": {"test_verdicts_on_state_logs", "test_a_missing_log_fails_with_the_reason_and_a_task_without_rule_is_an_error",
-                            "test_default_judge_follows_the_tasks_success_rule", "test_the_success_block_changes_no_datagen_spec_hash"},
+                            "test_the_success_block_changes_no_datagen_spec_hash"},
     "test_termination_unit.py": {"test_rollout_policy_agrees_with_rollout_py_and_the_shipped_task",
                                  "test_docker_uses_the_measured_rtf_unless_the_yaml_gives_one",
                                  "test_docker_passes_the_wall_limit_params_and_names_them"},
     "test_rollout_unit.py": {"test_runner_params_yaml_default_and_override", "test_runner_params_yaml_aggregate",
                              "test_docker_passes_the_rollout_run_kwargs", "test_docker_sets_the_robot_env_for_rollout_py",
                              "test_docker_default_workers_is_the_gpu_default"},
-    "test_spec_unit.py": {"test_the_repo_example_loads", "test_aggregate_names_match_rollout_py"},
-    "test_trainings_unit.py": {"test_the_real_fridge_base50_run_loads"},
-    "test_cli_unit.py": {"test_revolve_evaluate_dry_run_on_the_repo_spec"},
-    "test_cli_system.py": {"test_every_try_records_why_it_ended_and_the_limits_that_applied",
-                           "test_the_gpu_specs_hold_out_without_a_training_manifest"},
+    "test_spec_unit.py": {"test_aggregate_names_match_rollout_py"},
+    "test_trainings_unit.py": {"test_the_legacy_run_becomes_a_manifest_shaped_training_run",       # legacy_layouts: the spec refuses it
+                               "test_legacy_ranges_that_differ_from_the_training_spec_are_an_error",
+                               "test_a_legacy_run_of_another_task_is_an_error", "test_missing_files_are_errors",
+                               "test_the_training_source_is_in_the_spec_hash",
+                               "test_heldout_realised_distance_is_measured_to_the_legacy_realised_starts",
+                               "test_the_train_set_starts_from_the_legacy_check_dirs", "test_the_real_fridge_base50_run_loads"},
+    "test_cli_system.py": {"test_every_try_records_why_it_ended_and_the_limits_that_applied"},
 }
 collect_ignore = legacy.ignored(LEGACY)
 CACHE = REPO / "runs" / "test_cache" / "evaluation"

@@ -1,6 +1,7 @@
-"""The checks of an eval set, as datagen `Check`s over a manifest-shaped view `{"splits": {<training split>: block,
-<set>: block}}` (stats.rec). Distances are datagen's own (`SampledMinDistance`, `RealisedMinDistance`, measured in the
-TRAINING dims); `InRange` and `SeedsDisjoint` are the eval-specific ones. Each returns a datagen `Result`."""
+"""The checks of an eval set, as datagen `Check`s over a state-shaped view `{"splits": {<training split>: block,
+<set>: block}}` (stats.rec). Distances are datagen's own (`SampledMinDistance`, measured in the TRAINING dims; an
+instance's values are the realised start); `InRange` and `SeedsDisjoint` are the eval-specific ones. Each returns a
+datagen `Result`."""
 from __future__ import annotations
 
 from typing import Mapping

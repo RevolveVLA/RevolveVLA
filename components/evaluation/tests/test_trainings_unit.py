@@ -1,10 +1,11 @@
-"""plugins/trainings (datagen, legacy_layouts) on a tiny synthetic legacy run dir, the sets + checks on top of it, the
-report's seen / new labels, and the real runs/fridge_base50 (read only; skipped when absent)."""
+"""plugins/trainings: `datagen` (state.json + manifest.json of a v2 run), and `legacy_layouts` on a tiny synthetic legacy run
+dir (LEGACY in conftest: the spec refuses it now, PRD 07 deletes those tests); the report's seen / new labels."""
 import json
 from pathlib import Path
 
 import numpy as np
 import pytest
+from datagen.core.spec import SpecError
 
 from evaluation.core import results, sets, spec as S
 from evaluation.core.errors import EvalError
@@ -100,11 +101,33 @@ def test_missing_files_are_errors(root):
         legacy_layouts.LegacyLayouts(make(root), {})
 
 
-def test_the_default_plugin_reads_the_datagen_manifest_as_before(root):
+def test_the_default_plugin_reads_the_datagen_state(root):
     spec = T.make(root)
     assert spec.training.plugin == "datagen" and sets.Training.load(spec, root).sampled_only
-    T.training_manifest(spec, root, [(0, 0.0, None, None)])
-    assert [c.seed for c in sets.Training.load(spec, root).configs("train")] == [0]
+    T.training_state(spec, root, [(0, 0.0, "train/scene_0/scene.yaml")])
+    training = sets.Training.load(spec, root)
+    assert [c.seed for c in training.configs("train")] == [0] and training.episodes == {}      # no manifest.json: no episodes
+    assert training.base == root / "train_run" and training.path == root / "train_run" / "state.json"
+
+
+def test_the_manifest_episodes_are_grouped_by_seed_with_absolute_paths(root):
+    spec = T.make(root)
+    episode = lambda seed, n, bag: {"seed": seed, "scene": f"train/scene_{seed}/scene.yaml", "episode": n,
+                                    "result": f"train/scene_{seed}/episode_{n}.json", "bag": bag, "passed": bag is not None}
+    T.training_state(spec, root, [(0, 0.0, None)], manifest=[episode(0, 1, None), episode(0, 2, "train/scene_0/episode_2_bag"),
+                                                             episode(3, 1, "train/scene_3/episode_1_bag")])
+    eps = sets.Training.load(spec, root).episodes
+    base = root / "train_run"
+    assert sorted(eps) == [0, 3] and [e["episode"] for e in eps[0]] == [1, 2] and eps[0][0]["bag"] is None
+    assert eps[0][1]["bag"] == str(base / "train/scene_0/episode_2_bag") and eps[3][0]["scene"] == str(base / "train/scene_3/scene.yaml")
+    (base / "manifest.json").write_text("{not json")
+    with pytest.raises(EvalError, match="cannot read its episodes"):
+        sets.Training.load(spec, root)
+
+
+def test_legacy_layouts_is_a_spec_error_on_the_new_simulator(root):
+    with pytest.raises(SpecError, match=r"training.plugin: a run of the old simulator .*training: \{plugin: datagen\}"):
+        make(root)
 
 
 def test_the_training_source_is_in_the_spec_hash(root):

@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import fake_datagen
 import numpy as np
 import pytest
 import yaml
@@ -242,10 +241,11 @@ def test_unset_workers_use_the_rollout_plugins_default(tmp_path, monkeypatch):
 
 
 # ------------------------------------------------------------------ abort in the sample stage, SIGINT
-def test_the_sample_stage_aborts_the_generator_jobs(tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_DATAGEN_LOG", str(tmp_path / "gen.log"))
+def test_the_sample_stage_aborts_what_its_workers_started(tmp_path, monkeypatch):
     spec = S.make(tmp_path)
-    monkeypatch.setattr(fake_datagen, "KILL_AFTER", 1)
+    monkeypatch.setattr(S.heldout, "instancer_for", lambda spec: S.SceneWriter())
+    monkeypatch.setattr(S, "KILL_AFTER", [1])
+    S.CALLS.clear()
     aborted = []
     with pytest.raises(KeyboardInterrupt):
         HeldoutSet(spec).build(spec.sets["heldout"], tmp_path / "run", 1, lambda: aborted.append(1))

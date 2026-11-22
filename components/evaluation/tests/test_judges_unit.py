@@ -98,20 +98,15 @@ def parse(root, task="open_fridge_door", **edits):
     return S.parse(raw, "eval.yaml", root)
 
 
-def test_default_judge_follows_the_tasks_success_rule(root):
-    shutil.copytree(REPO / "specs" / "tasks" / "open_drawer", root / "specs" / "tasks" / "open_drawer")
-    assert parse(root).judge.plugin == "c2"
-    assert parse(root, "open_drawer").judge.plugin == "c0"
-    assert parse(root, "no_such_task").judge.plugin == "c0"
+def test_the_default_judge_is_c0_whatever_the_task(root):
+    assert parse(root).judge.plugin == "c0" and parse(root, "no_such_task").judge.plugin == "c0"
     assert parse(root, judge={"criterion": "c0"}).judge.plugin == "c0"
 
 
 @pytest.mark.parametrize("criterion", ["c1", "c2"])
-def test_c1_c2_on_a_task_without_success_is_a_spec_error(root, criterion):
-    shutil.copytree(REPO / "specs" / "tasks" / "open_drawer", root / "specs" / "tasks" / "open_drawer")
-    with pytest.raises(SpecError, match=rf"eval.yaml.judge.criterion: {criterion} needs a `success:` block in task open_drawer"):
-        parse(root, "open_drawer", judge={"criterion": criterion})
-    assert parse(root, "open_drawer", judge={"criterion": "c0"}).judge.plugin == "c0"
+def test_c1_c2_are_a_spec_error_on_the_new_simulator(root, criterion):
+    with pytest.raises(SpecError, match=rf"eval.yaml.judge.criterion: {criterion} is not available on the new simulator"):
+        parse(root, judge={"criterion": criterion})
 
 
 def test_the_pipeline_gives_the_judge_the_rollout_dir_and_the_task(root, monkeypatch):

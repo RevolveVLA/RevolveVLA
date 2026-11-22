@@ -1,5 +1,6 @@
 """EvalSpec: the eval yaml as frozen dataclasses. `train:` points at the TRAINING datagen spec, which supplies the
-task, robot, randomisers (the DR ranges), generator and training manifest; the eval sets are drawn inside those ranges.
+task, robot, randomisers (the DR ranges), validators and training state; the eval sets are scene instances drawn inside
+those ranges.
 
 Every error names the yaml path of the offending key (datagen's SpecError); plugin params are the only free-form
 blocks. `hash` fingerprints the settings and the training spec's hash (not `out`, not `run`)."""
@@ -16,9 +17,10 @@ from datagen.core.spec import (DatagenSpec, Dim, MinDistance, PluginRef, PoolSpe
                                _fail, _int, _mapping, _num, _plugin, _sampler, _seed_range, _str, contains)
 from datagen.core.spec import load as load_train
 
-from .task import load_task
 
-NEEDS_SUCCESS = ("c1", "c2")                            # the judges that score a task's `success:` rule
+NOT_ON_NEW_SIM = ("c1", "c2")                           # judges of the old simulator's state log (no such log in the new bags)
+UNSUPPORTED_TRAINING = {"legacy_layouts": "a run of the old simulator (object-frame starts) cannot be replayed on the new "
+                                          "one: evaluate a datagen v2 run (`training: {plugin: datagen}`)"}
 # lerobot 0.6.1 (revolve-training image) lerobot.async_inference.configs.AGGREGATE_FUNCTIONS, the registry Rosetta's
 # `aggregate_fn_name` is looked up in (the host venv has no lerobot to import it from)
 AGGREGATE_FNS = ("weighted_average", "latest_only", "average", "conservative")
@@ -72,7 +74,8 @@ class RunSpec:
 @dataclass(frozen=True)
 class SetSpec:
     """An eval set. kind `heldout`: `count` new configs from `pool`, drawn by `sampler` inside the training ranges (or the
-    narrower `randomisers`), `min_distance` from the training configs. kind `train`: `count` of the training split `source`."""
+    narrower `randomisers`), `min_distance` from the training configs (`realised` is an alias: an instance's values are
+    the realised start). kind `train`: `count` of the training split `source`."""
     name: str
     kind: str
     count: int
@@ -89,12 +92,12 @@ class EvalSpec:
     train: DatagenSpec
     out: str
     sets: Mapping[str, SetSpec]
-    train_manifest: str = ""                            # the `datagen` training plugin's manifest (default <train.out>/state.json)
-    training: PluginRef = PluginRef("datagen")          # where the training configs come from: datagen | legacy_layouts
+    train_manifest: str = ""                            # the `datagen` training plugin's state file (default <train.out>/state.json)
+    training: PluginRef = PluginRef("datagen")          # where the training configs come from
     ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle)
     policy: PluginRef = PluginRef("smolvla")
     rollout: PluginRef = PluginRef("docker")
-    judge: PluginRef = PluginRef("c0")                  # yaml `judge: {criterion: c0|c1|c2}`: the plugin is the criterion
+    judge: PluginRef = PluginRef("c0")                  # yaml `judge: {criterion: c0}`: the plugin is the criterion (evaluator passed)
     rollouts: int = 1                                   # per config
     retries: int = 0
     runner: RunnerSpec = RunnerSpec()
@@ -116,14 +119,15 @@ def _ckpt(v, at) -> CkptSpec:
     return CkptSpec(_str(d["source"], f"{at}.source"), {k: x for k, x in d.items() if k != "source"})
 
 
-def _judge(v, task, at) -> PluginRef:
-    """The default is c2 when the task has a `success:` rule, else c0; c1/c2 need the rule (task None = not found: unchecked)."""
+def _judge(v, at) -> PluginRef:
+    """c0 (the evaluator's `passed`) unless named; c1 / c2 need the old simulator's state log."""
     if v is None:
-        return PluginRef("c2" if getattr(task, "success", None) else "c0")
+        return PluginRef("c0")
     d = _mapping(v, at, required=("criterion",), free=True)
     criterion = _str(d["criterion"], f"{at}.criterion")
-    if criterion in NEEDS_SUCCESS and task and getattr(task, "success", None) is None:
-        _fail(f"{at}.criterion", f"{criterion} needs a `success:` block in task {task.name} (use c0)")
+    if criterion in NOT_ON_NEW_SIM:
+        _fail(f"{at}.criterion", f"{criterion} is not available on the new simulator (no state log; a stricter rule "
+                                 "has to come from task.yaml): use c0")
     return PluginRef(criterion, {k: x for k, x in d.items() if k != "criterion"})
 
 
@@ -241,11 +245,13 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
     sets = {n: _set(n, v, train, f"{source}.sets.{n}") for n, v in raw_sets.items()}
     _check_pools(train, sets.values(), source)
     fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("training", "policy", "rollout") if k in d}
+    if (why := UNSUPPORTED_TRAINING.get(getattr(fields.get("training"), "plugin", None))):
+        _fail(f"{source}.training.plugin", why)
     return EvalSpec(
         train=train, out=_str(d["out"], f"{source}.out"), sets=sets,
         train_manifest=_str(d.get("train_manifest", f"{train.out}/state.json"), f"{source}.train_manifest"),
         ckpt=_ckpt(d["ckpt"], f"{source}.ckpt") if "ckpt" in d else None,
-        judge=_judge(d.get("judge"), load_task(train.task, root or Path.cwd()), f"{source}.judge"),
+        judge=_judge(d.get("judge"), f"{source}.judge"),
         rollouts=_int(d.get("rollouts", 1), f"{source}.rollouts", 1), retries=_int(d.get("retries", 0), f"{source}.retries", 0),
         runner=_runner(d.get("runner", {}), f"{source}.runner"), run=_run(d.get("run", {}), f"{source}.run"), **fields)
 

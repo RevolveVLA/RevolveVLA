@@ -29,9 +29,11 @@ class ResolvedCkpt:
 
 @dataclass(frozen=True)
 class EvalItem:
-    """One evaluation config: what the policy starts from (a replay-accepted check dir)."""
+    """One evaluation config: the scene instance the policy starts from (`scene.yaml`) and, for a training config, the
+    episodes datagen recorded on it (its manifest.json entries, paths made absolute: `bag`, `result`, `scene`)."""
     config: Config
-    start_dir: Path
+    scene: Path
+    episodes: tuple[Mapping[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -49,10 +51,12 @@ class Verdict:
 
 @dataclass(frozen=True)
 class TrainingRun:
-    """The run the policy was trained on: where it lives (for messages) and its datagen-manifest-shaped data
-    (`{spec_hash, splits: {<split>: {sampled, used, rejected}}}`; None = no manifest: sampled-only)."""
+    """The run the policy was trained on: its state file (for messages; scene paths in it are relative to its dir), its
+    state in datagen's shape (`{spec_hash, splits: {<split>: {sampled, used, rejected}}}`; None = no state: sampled-only)
+    and its recorded episodes by seed (datagen manifest.json `episodes`, paths absolute; empty without a manifest)."""
     path: Path
     data: Mapping[str, Any] | None
+    episodes: Mapping[int, Sequence[Mapping[str, Any]]] = field(default_factory=dict)
 
 
 class TrainingSource(ABC):
@@ -72,8 +76,8 @@ class CkptSource(ABC):
 class EvalSet(ABC):
     @abstractmethod
     def build(self, spec: SetSpec, out: Path, workers: int, abort: Callable[[], None] | None = None) -> Built:
-        """The set's configs + start dirs (written under `<out>/<spec.name>/`) and its checks; resumable. `abort()` stops
-        what the build's workers started (generator jobs) when it fails or is interrupted."""
+        """The set's configs + scene instances (written under `<out>/<spec.name>/`) and its checks; resumable (state in
+        `<out>/<spec.name>/state.json`). `abort()` stops what the build's workers started when it fails or is interrupted."""
 
 
 class Policy(ABC):
@@ -86,7 +90,7 @@ class Rollout(ABC):
     @abstractmethod
     def run(self, item: EvalItem, out: Path, *, seed: int, restore: tuple[Path, str] | None = None,
             runner: RunnerSpec, policy: Policy, ckpt: ResolvedCkpt | None, gui: bool = False) -> dict:
-        """One policy run from `item.start_dir` into `out` (from the saved state `restore` = (rollout dir, phase) when
+        """One policy run from the scene instance `item.scene` into `out` (from the saved state `restore` = (rollout dir, phase) when
         given); the rollout record (a JSON dict: passed, phases, failed_phase, ... as rollout.run returns it)."""
 
     def default_workers(self, policy: Policy) -> int:

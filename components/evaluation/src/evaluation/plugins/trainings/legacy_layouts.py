@@ -1,4 +1,5 @@
-"""Training source `legacy_layouts`: a run made by the pre-datagen generator (`layouts.json` + `turn_0/data/manifest.json`,
+"""LEGACY (old simulator): core/spec.py refuses `training: legacy_layouts` (spec error), so this plugin is unreachable from a
+yaml; PRD 07 deletes it. Training source `legacy_layouts`: a run made by the pre-datagen generator (`layouts.json` + `turn_0/data/manifest.json`,
 e.g. runs/fridge_base50), read as a datagen manifest in memory (nothing is written: a fake manifest under runs/datagen would
 be trusted by a later datagen resume).
 

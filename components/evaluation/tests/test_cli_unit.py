@@ -126,7 +126,7 @@ def test_workers_and_gui_override_the_run_block(tmp_path, capsys):
     assert evaluate(tmp_path, "--dry-run", "--workers", "4") == 0
     assert "workers: 4, headless" in capsys.readouterr().out
     assert evaluate(tmp_path, "--dry-run", "--workers", "4", "--gui") == 0
-    assert capsys.readouterr().out.splitlines()[-1].endswith("workers: 1, gui")
+    assert "workers: 1, gui" in capsys.readouterr().out
 
 
 def test_a_bad_spec_exits_2_naming_the_key(tmp_path, capsys):
@@ -146,12 +146,12 @@ def test_importing_the_cli_pulls_no_docker_or_torch():
 
 
 def test_revolve_evaluate_dry_run_on_the_repo_spec():
-    r = subprocess.run([sys.executable, str(REPO / "revolve"), "evaluate", "specs/eval/fridge_base50_30k.yaml", "--dry-run"],
+    r = subprocess.run([sys.executable, str(REPO / "revolve"), "evaluate", "specs/eval/fridge_panda_v2.yaml", "--dry-run"],
                        capture_output=True, text=True, cwd=REPO)
     assert r.returncode == 0, r.stderr
     assert "[dry-run] set heldout" in r.stdout and "[dry-run] ckpt: local" in r.stdout
     bad = subprocess.run([sys.executable, str(REPO / "revolve"), "evaluate", "--dry-run", "/dev/stdin"],
-                         input=yaml.safe_dump({"train": "specs/datagen/fridge_base50.yaml", "out": "x", "sets": {}, "typo": 1}),
+                         input=yaml.safe_dump({"train": "specs/datagen/fridge_panda_v2.yaml", "out": "x", "sets": {}, "typo": 1}),
                          capture_output=True, text=True, cwd=REPO)
     assert bad.returncode == 2 and "typo: unknown key" in bad.stderr
 

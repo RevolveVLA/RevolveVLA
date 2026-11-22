@@ -1,0 +1,11 @@
+# The oracle (a datagen bag's own actions) on 3 training instances of open_drawer (mobile_so101_xl): proves the eval stack
+# without a checkpoint. Needs runs/datagen/drawer_so101xl_v2/{state.json,manifest.json} (a datagen run) first.
+train: specs/datagen/drawer_so101xl_v2.yaml
+policy: {plugin: oracle}
+out: runs/eval/drawer_so101xl_v2
+sets:
+  train: {from: train, count: 3}
+rollout: {plugin: sim}
+rollouts: 1
+retries: 0
+run: {workers: 1, headless: true}

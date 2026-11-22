@@ -62,7 +62,7 @@ def test_docker_passes_the_rollout_run_kwargs(monkeypatch, item, tmp_path):
                 restore=(tmp_path / "prev", "open"))
     assert rec == {"passed": True}                                                       # the record, unchanged
     (args, kw), = calls
-    assert args == (item.start_dir, tmp_path / "out")
+    assert args == (item.scene, tmp_path / "out")
     assert kw == dict(seed=501, policy="smolvla", ckpt=ckpt.path, restore=(tmp_path / "prev", "open"), gui=True,
                       task="open_fridge_door", runner_params=dict(actions_per_chunk=21, chunk_size_threshold=0.0),
                       budget_s=6, rtf=0.2)

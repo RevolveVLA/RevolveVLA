@@ -38,12 +38,12 @@ def parse(root, **edits):
     return S.parse(raw, "eval.yaml", root)
 
 
-def test_the_repo_example_loads():
-    spec = S.load(REPO / "specs" / "eval" / "fridge_base50_30k.yaml", REPO)
-    assert spec.train.task == "open_fridge_door" and spec.train_manifest == "runs/datagen/fridge_base50/state.json"
-    assert spec.judge.plugin == "c2" and spec.ckpt.source == "local" and (spec.rollouts, spec.retries) == (2, 1)
-    assert spec.sets["heldout"].min_distance.value == 0.1 and spec.sets["train"].source == "train"
-    assert spec.training == PluginRef("legacy_layouts", {"run": "runs/fridge_base50"}) and spec.sets["heldout"].pool.initial == (510, 529)
+@pytest.mark.parametrize("name", ["fridge_panda_v2", "drawer_so101xl_v2", "smoke_v2"])
+def test_the_repo_examples_load(name):
+    spec = S.load(REPO / "specs" / "eval" / f"{name}.yaml", REPO)
+    assert spec.train.out == f"runs/datagen/{name}" and spec.train_manifest == f"runs/datagen/{name}/state.json"
+    assert spec.judge.plugin == "c0" and spec.rollout.plugin == "sim" and spec.training == PluginRef("datagen")
+    assert all(s.pool.initial[0] >= 500 for s in spec.sets.values() if s.kind == "heldout")
 
 
 def test_values_and_defaults(root):
@@ -59,8 +59,19 @@ def test_values_and_defaults(root):
 
 
 def test_judge_criterion_and_params(root):
-    j = parse(root, judge={"criterion": "c2", "grip": 1}).judge
-    assert (j.plugin, dict(j.params)) == ("c2", {"grip": 1})
+    j = parse(root, judge={"criterion": "c0", "grip": 1}).judge
+    assert (j.plugin, dict(j.params)) == ("c0", {"grip": 1})
+
+
+@pytest.mark.parametrize("criterion", ["c1", "c2"])
+def test_the_state_log_judges_are_a_spec_error(root, criterion):
+    with pytest.raises(SpecError, match=f"judge.criterion: {criterion} is not available on the new simulator"):
+        parse(root, judge={"criterion": criterion})
+
+
+def test_a_legacy_layouts_training_run_is_a_spec_error(root):
+    with pytest.raises(SpecError, match="training.plugin: a run of the old simulator"):
+        parse(root, training={"plugin": "legacy_layouts", "run": "runs/x"})
 
 
 def test_hash_ignores_out_and_run_but_not_settings(root):

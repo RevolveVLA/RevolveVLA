@@ -96,7 +96,7 @@ class EvalSpec:
     training: PluginRef = PluginRef("datagen")          # where the training configs come from
     ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle)
     policy: PluginRef = PluginRef("smolvla")
-    rollout: PluginRef = PluginRef("docker")
+    rollout: PluginRef = PluginRef("sim")
     judge: PluginRef = PluginRef("c0")                  # yaml `judge: {criterion: c0}`: the plugin is the criterion (evaluator passed)
     rollouts: int = 1                                   # per config
     retries: int = 0

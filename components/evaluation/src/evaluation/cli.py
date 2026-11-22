@@ -3,7 +3,7 @@
 Resolves only the plugins the requested stages need; `--dry-run` resolves none (it prints the plan from the spec).
 Extra plugin modules are found through $EVAL_PLUGIN_PATH (datagen's, which the sets use, through $DATAGEN_PLUGIN_PATH;
 os.pathsep separated). `--workers` / `--gui` override the spec's `run:` block. Exit code: 0 ok, 1 failed check or error, 2 invalid spec, 128 + n when stopped by signal n
-(results saved: rerun the same command to resume; the run's docker jobs are stopped). Never imports rollout.py / docker: the plugins do, lazily."""
+(results saved: rerun the same command to resume; the run's sim containers are removed). Never imports ROS / docker SDKs: the plugins do, lazily."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +18,7 @@ from datagen.core.spec import SpecError
 
 from .core.pipeline import STAGES, Pipeline, PluginSet
 from .core.registry import REGISTRY
+from .core.sims import sim_prefix
 from .core.spec import EvalSpec, load
 
 
@@ -29,6 +30,7 @@ def build_plugins(spec: EvalSpec, stages) -> PluginSet:
         p.policy = REGISTRY.create("policy", spec.policy.plugin, spec, spec.policy.params)
         p.rollout = REGISTRY.create("rollout", spec.rollout.plugin, spec, spec.rollout.params)
         p.judge = REGISTRY.create("judge", spec.judge.plugin, spec, spec.judge.params)
+        p.rollout.validate(p.policy)
         if spec.ckpt:
             p.ckpt = REGISTRY.create("ckpt", spec.ckpt.source, spec, spec.ckpt.params)
             if p.ckpt.relabel:                       # whatever the source, serve it under the robot contract's cameras
@@ -64,7 +66,7 @@ def main(argv=None, root: Path | None = None) -> int:
         spec = with_run(load(a.spec, root), a)
         out = Path(spec.out) if Path(spec.out).is_absolute() else root / spec.out
         pipeline = Pipeline(spec, PluginSet() if a.dry_run else build_plugins(spec, stages), out, a.dry_run,
-                            abort=lambda: stop_jobs(out))
+                            abort=lambda: stop_jobs(spec))
         with interruptible():
             return 0 if pipeline.run(stages, a.set) else 1
     except Interrupted as e:
@@ -78,7 +80,9 @@ def main(argv=None, root: Path | None = None) -> int:
         return 1
 
 
-def stop_jobs(out: Path):
-    """Kill the docker jobs (generator, policy server, simulator) of the run at `out`: what an interrupt leaves behind."""
-    from datagen.containers import stop_jobs as stop
-    stop(out, log=lambda m: print(f"evaluate: {m}", file=sys.stderr))
+def stop_jobs(spec: EvalSpec):
+    """Remove the sim and client containers of the run (what an interrupt leaves behind)."""
+    from revolve_common.sim_session import stop_sims
+    n = stop_sims(sim_prefix(spec))
+    if n:
+        print(f"evaluate: removed {n} container(s)", file=sys.stderr)

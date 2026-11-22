@@ -68,7 +68,7 @@ class FakeRollout(Rollout):
     def __init__(self, spec, params):
         pass
 
-    def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):
+    def run(self, item, out, *, seed, runner, policy, ckpt, gui=False):
         out.mkdir(parents=True, exist_ok=True)
         logged(f"rollout {item.config.split} {seed} {out.name}")
         return {"passed": seed % 2 == 0, "dir": str(out), "ckpt": ckpt.path if ckpt else None}

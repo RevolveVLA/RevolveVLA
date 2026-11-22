@@ -1,106 +1,64 @@
-"""core/termination.py (why a try ended, the effective rollout limits), the report's termination table, and the docker plugin's
-rtf / wall limit params (CPU: records are synthetic, rollout.run is monkeypatched)."""
+"""core/termination.py (why a try ended, the effective rollout limits) and the report's termination table (CPU: synthetic records)."""
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from evaluation.core import results
-from evaluation.core.registry import REGISTRY
+from evaluation.core.task import load_task
 from evaluation.core.termination import REASONS, rollout_policy, termination
-from evaluation.plugins.rollouts import docker as D
 
-TASK = SimpleNamespace(budget_s=45.0, wait_s=30.0, after_success_s=2.0, wall_safety=2.0, setup_s=240.0)
-spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda"), run=SimpleNamespace(workers=None, headless=True))
-oracle = REGISTRY.create("policy", "oracle", spec, {})
+REPO = __import__("pathlib").Path(__file__).resolve().parents[3]
+TASK = SimpleNamespace(budget_s=45.0, phases=[SimpleNamespace(name="approach", timeout_s=20.0),
+                                              SimpleNamespace(name="grasp", timeout_s=None)])
 
 
 @pytest.mark.parametrize("record, want", [
-    ({"end_reason": "success"}, "success"),
-    ({"end_reason": "budget"}, "budget"),
-    ({"end_reason": "no_action"}, "no_action"),
-    ({"end_reason": "abort"}, "abort"),
-    ({"end_reason": "steps"}, "budget"),                                       # the sim's fallback end
-    ({"end_reason": None}, "unknown"),
+    ({"passed": True, "reason": None}, "success"),
+    ({"passed": False, "reason": "timeout_s"}, "timeout_s"),
+    ({"passed": False, "reason": "budget_s"}, "budget_s"),
+    ({"passed": False, "reason": "while"}, "while"),
+    ({"passed": False, "reason": "sanity"}, "sanity"),
+    ({"passed": False, "reason": "reset"}, "reset"),
+    ({"passed": False, "reason": None}, "unknown"),
+    ({"passed": False, "reason": "something new"}, "unknown"),
     ({}, "unknown"),
-    ({"error": "sim job over its wall limit 1780 s", "sim_exit": None}, "wall_limit"),
-    ({"error": "no phase_report.json (sim exit 3)", "sim_exit": 3}, "wall_limit"),
-    ({"error": "no phase_report.json (sim exit 1)", "sim_exit": 1}, "stack_error"),
-    ({"error": "no phase_report.json (sim exit 137)", "sim_exit": 137}, "interrupted"),
-    ({"error": "RuntimeError: policy server exited before it was ready"}, "stack_error"),
-    ({"error": "RuntimeError: boom", "end_reason": "success", "sim_exit": 137}, "stack_error"),     # the error wins
+    ({"error": "wall limit 600 s: the policy client did not finish; see x"}, "wall_limit"),
+    ({"error": "interrupted: the run was stopped"}, "interrupted"),
+    ({"error": "infrastructure: 3 infrastructure retries used"}, "stack_error"),
+    ({"error": "the policy client exited with 1; see x"}, "stack_error"),
+    ({"error": "RuntimeError: boom", "passed": True}, "stack_error"),                   # the error wins
 ])
 def test_termination_reason(record, want):
     assert termination(record) == want and want in REASONS
 
 
-def test_rollout_policy_is_the_task_block_with_the_yaml_over_it():
-    base = rollout_policy(TASK, {}, None)
-    assert base == {"budget_s": 45.0, "wait_s": 30.0, "after_success_s": 2.0, "wall_safety": 2.0, "setup_s": 240.0,
-                    "rtf": None, "wall_limit_s": None}
-    p = rollout_policy(TASK, {"budget_s": 20, "wall_safety": 3.0, "rtf": 0.3, "video": True, "plugin": "x"}, None)
-    assert (p["budget_s"], p["wait_s"], p["wall_safety"], p["rtf"]) == (20, 30.0, 3.0, 0.3)
-    assert p["wall_limit_s"] == round((30 + 20 + 2) / 0.3 * 3.0, 1) and "video" not in p
-    assert rollout_policy(TASK, {}, 0.5)["wall_limit_s"] == round(77 / 0.5 * 2.0, 1)           # the plugin's rtf
-    assert rollout_policy(TASK, {"rtf": 0.2}, 0.5)["rtf"] == 0.2                                 # the yaml's wins
-    assert rollout_policy(SimpleNamespace(**{**TASK.__dict__, "after_success_s": None}), {}, 1.0)["wall_limit_s"] == 150.0
+def test_rollout_policy_is_the_tasks_limits_with_the_yamls_wall_and_ready_over_them():
+    assert rollout_policy(TASK, {}) == {"budget_s": 45.0, "phase_timeouts_s": {"approach": 20.0}, "wall_s": 600.0, "ready_s": 180.0}
+    p = rollout_policy(TASK, {"wall_s": 90, "record": "no-images", "plugin": "x"})
+    assert (p["wall_s"], p["ready_s"]) == (90, 180.0) and "record" not in p
+    assert rollout_policy(None, {}) == {"budget_s": None, "phase_timeouts_s": {}, "wall_s": 600.0, "ready_s": 180.0}
 
 
-def test_rollout_policy_agrees_with_rollout_py_and_the_shipped_task():
-    import rollout as R
-    from revolve_common import specs
-    ro = specs.load(R.REPO / "specs" / "tasks" / "open_fridge_door" / "task.yaml", robot="mobile_panda").task.rollout
-    for rtf in (0.1, 0.3, 0.0, 1.0):
-        want = R.wall_limit(R.sim_budget_s(ro, budget_s=20), rtf, ro.wall_safety)
-        assert rollout_policy(ro, {"budget_s": 20, "rtf": rtf}, None)["wall_limit_s"] == want
-    assert (ro.wall_safety, ro.setup_s) == (R.SAFETY, R.SETUP_S)             # the task states the old constants
-    assert R.wall_limit(77, 0.3) == R.wall_limit(77, 0.3, R.SAFETY) and R.wall_limit(77, 0.3, 4.0) == pytest.approx(2 * R.wall_limit(77, 0.3), abs=0.2)
+def test_the_shipped_tasks_limits_are_read_from_task_yaml():
+    for name in ("open_fridge_door", "open_drawer"):
+        raw = yaml.safe_load((REPO / "specs" / "tasks" / name / "task.yaml").read_text())
+        p = rollout_policy(load_task(name, REPO), {})
+        assert p["budget_s"] == raw["budget_s"] and p["phase_timeouts_s"] == {
+            ph["name"]: ph["timeout_s"] for ph in raw["phases"] if ph.get("timeout_s")}
+    assert load_task("no_such_task", REPO) is None
 
 
-def test_the_report_has_a_termination_table_per_set():
+def test_the_report_has_a_termination_table_and_the_failed_phase_table_per_set():
     tries = lambda *reasons: [{"passed": False, "termination": r, "record": {"failed_phase": "grasp"}} for r in reasons]
-    sets = {"heldout": {"rollouts": {"1_r0": {"seed": 1, "passed": False, "tries": tries("budget", "no_action")},
-                                      "2_r0": {"seed": 2, "passed": False, "tries": tries("budget")}},
-                        "rollout_policy": rollout_policy(TASK, {"rtf": 0.3}, None)}}
+    sets = {"heldout": {"rollouts": {"1_r0": {"seed": 1, "passed": False, "tries": tries("timeout_s", "while")},
+                                      "2_r0": {"seed": 2, "passed": False, "tries": tries("timeout_s")}},
+                        "rollout_policy": rollout_policy(TASK, {})}}
     r = results.Results(None, {"spec_hash": "h", "ckpt": None, "sets": sets})
-    assert results.metrics(sets["heldout"]["rollouts"])["terminations"] == {"budget": 2, "no_action": 1}
+    assert results.metrics(sets["heldout"]["rollouts"])["terminations"] == {"timeout_s": 2, "while": 1}
     text = r.report("c0", ["heldout"])
-    assert "| termination | tries |\n|---|---|\n| budget | 2 |\n| no_action | 1 |" in text
-    assert "Rollout limits: budget_s 45.0, wait_s 30.0, after_success_s 2.0, wall_safety 2.0, setup_s 240.0, rtf 0.3" in text
-    old = {"1_r0": {"seed": 1, "passed": True, "tries": [{"passed": True, "record": {"end_reason": "success"}}]}}
-    assert results.metrics(old)["terminations"] == {"success": 1}              # a try stored before the key existed
-
-
-@pytest.fixture
-def calls(monkeypatch):
-    calls = []
-    monkeypatch.setattr(D, "load", lambda name="rollout": SimpleNamespace(
-        run=lambda *a, **k: calls.append(k) or {"passed": True}, default_parallel=lambda p: 3,
-        measured_rtf=lambda n: {1: 0.3, 2: 0.31, 3: 0.4}[n]))
-    return calls
-
-
-def run(plugin, tmp_path, workers=None):
-    from datagen.core.interfaces import Config
-    from evaluation.core.interfaces import EvalItem
-    from evaluation.core.spec import RunnerSpec
-    plugin.run(EvalItem(Config("heldout", 1), tmp_path), tmp_path / "o", seed=1, runner=RunnerSpec(), policy=oracle, ckpt=None)
-
-
-def test_docker_uses_the_measured_rtf_unless_the_yaml_gives_one(calls, tmp_path):
-    run(REGISTRY.create("rollout", "docker", spec, {}), tmp_path)
-    assert calls[-1]["rtf"] == 0.4                                            # 3 workers by free GPU memory
-    two = SimpleNamespace(**{**spec.__dict__, "run": SimpleNamespace(workers=2, headless=True)})
-    run(REGISTRY.create("rollout", "docker", two, {}), tmp_path)
-    assert calls[-1]["rtf"] == 0.31
-    gui = SimpleNamespace(**{**spec.__dict__, "run": SimpleNamespace(workers=2, headless=False)})
-    assert REGISTRY.create("rollout", "docker", gui, {}).rtf(oracle) == 0.3     # a GUI run has one worker
-    run(REGISTRY.create("rollout", "docker", spec, {"rtf": 0.2}), tmp_path)
-    assert calls[-1]["rtf"] == 0.2
-
-
-def test_docker_passes_the_wall_limit_params_and_names_them(calls, tmp_path):
-    run(REGISTRY.create("rollout", "docker", spec, {"wall_safety": 3.0, "setup_s": 60}), tmp_path)
-    assert (calls[-1]["wall_safety"], calls[-1]["setup_s"]) == (3.0, 60)
-    run(REGISTRY.create("rollout", "docker", spec, {}), tmp_path)
-    assert "wall_safety" not in calls[-1] and "setup_s" not in calls[-1]       # absent: the task's values (rollout.run)
-    assert "wall_safety" in D.PARAMS and "setup_s" in D.PARAMS
+    assert "| termination | tries |\n|---|---|\n| timeout_s | 2 |\n| while | 1 |" in text
+    assert "| failed phase (first try) | count |\n|---|---|\n| grasp | 2 |" in text
+    assert "Rollout limits: budget_s 45.0, phase_timeouts_s {'approach': 20.0}, wall_s 600.0, ready_s 180.0" in text
+    old = {"1_r0": {"seed": 1, "passed": True, "tries": [{"passed": True, "record": {"passed": True}}]}}
+    assert results.metrics(old)["terminations"] == {"success": 1}              # a try stored without the key

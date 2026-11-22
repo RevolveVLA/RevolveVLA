@@ -1,11 +1,13 @@
-"""The rollout walk of one eval set: every config x `rollouts`, config-major, `workers` at a time (datagen's `pool.ordered`:
-rollouts run in parallel, results are committed in order on the calling thread, so the results are the same for any worker
-count). Each item is a chain of tries in `<out>/<set>/<seed>_r<i>/` (retries in its `retry_<j>/`), judged one by one.
+"""The rollout walk of one eval set: every config x `rollouts`, `workers` configs at a time (datagen's `pool.ordered`:
+configs run in parallel, results are committed in order on the calling thread, so the results are the same for any worker
+count). A config's rollouts run one after the other (the rollout plugin keeps one sim per config and resets it between
+them, then `release`s it). Each rollout is a chain of tries in `<out>/<set>/<seed>_r<i>/` (retries in its `retry_<j>/`),
+judged one by one.
 
 `RetryPolicy` is the only second-attempt mechanism (the seam a later recovery component replaces): after a try the judge
-fails whose phase verdict names a restorable failed phase with a saved start state, the policy runs again from that state.
-A try without a verdict (a stack error, not the policy's failure) is run once more. A try whose dir already holds a
-verdict (rollout.json) is kept, so a killed run resumes inside an item."""
+fails, the policy runs again from scratch (the plugin resets the sim: a new episode, no state is restored). A try without
+a verdict (a stack error, not the policy's failure) is run once more. A try whose dir already holds a verdict
+(rollout.json) is kept, so a killed run resumes inside an item."""
 from __future__ import annotations
 
 import json
@@ -22,7 +24,6 @@ from .interfaces import Built, EvalItem, Judge, Policy, ResolvedCkpt, Rollout, V
 from .spec import RunnerSpec
 from .termination import termination
 
-RESTORABLE = ("approach", "grasp", "open", "release")      # phases whose start state a retry can restore
 STACK_ATTEMPTS = 2
 
 
@@ -33,17 +34,11 @@ class Stopped(EvalError):
 @dataclass(frozen=True)
 class RetryPolicy:
     retries: int
-    restorable: Sequence[str] = RESTORABLE
 
-    def restore(self, tries: int, record: Mapping, passed: bool, rollout_dir: Path,
-                origin: Path | None = None) -> tuple[Path, str] | None:
-        """(dir, phase) to retry from after `tries` tries, the last one at `rollout_dir`; None = stop here. A retry
-        saves no start state of the phase it was restored at, so that start comes from the first try's dir `origin`."""
-        phase = record.get("failed_phase")
-        if passed or tries > self.retries or phase not in self.restorable:
-            return None
-        has = lambda d: d is not None and (d / "phase_states" / f"{phase}_start.npz").is_file()
-        return next(((d, phase) for d in (rollout_dir, origin) if has(d)), None)
+    def again(self, tries: int, record: Mapping, passed: bool) -> bool:
+        """Run once more after `tries` tries, the last with `record`: a failed episode (not a stack error) while
+        retries are left."""
+        return not passed and not record.get("error") and tries <= self.retries
 
 
 class Progress:
@@ -81,29 +76,37 @@ class Walk:
     def run(self, name: str, built: Built, rollouts: int, done: Mapping[str, Mapping],
             commit: Callable[[str, dict], None]):
         """Every item of `built` x `rollouts` not in `done` (entries by key); `commit(key, entry)` in order."""
-        todo = [(it, i) for it in built.items for i in range(rollouts) if key(it, i) not in done]
+        todo = [(it, [i for i in range(rollouts) if key(it, i) not in done]) for it in built.items]
+        todo = [(it, idx) for it, idx in todo if idx]
         progress = Progress(name, [key(it, i) for it in built.items for i in range(rollouts)], self.log)
         for k, e in done.items():
             progress.state[k], progress.first[k] = "pass" if e["passed"] else "fail", e["tries"][0]["passed"]
-        pool.ordered(todo, lambda x: self._item(name, *x, progress), lambda x, e: commit(key(*x), e), self.workers,
-                     self._abort)
+        pool.ordered(todo, lambda x: self._config(name, *x, progress),
+                     lambda x, es: [commit(key(x[0], i), e) for i, e in zip(x[1], es)], self.workers, self._abort)
 
     def _abort(self):
         self.stopping.set()                 # running workers start no retry / second attempt
+        self.rollout.stop()
         if self.hook:
             self.hook()
 
+    def _config(self, name: str, item: EvalItem, indices: Sequence[int], progress: Progress) -> list[dict]:
+        """The entries of the config's pending rollouts, in order."""
+        try:
+            return [self._item(name, item, i, progress) for i in indices]
+        finally:
+            self.rollout.release(item)
+
     def _item(self, name: str, item: EvalItem, i: int, progress: Progress) -> dict:
-        k, here, tries, restore = key(item, i), self.out / name / key(item, i), [], None
-        first = here
+        k, here, tries = key(item, i), self.out / name / key(item, i), []
         progress.update(k, "running")
         while True:
-            record, verdict = self._try(item, here, restore)
-            tries.append({"dir": str(here), "restored_at": restore and restore[1], "passed": verdict.passed,
-                          "detail": dict(verdict.detail), "termination": termination(record), "record": record})
+            record, verdict = self._try(item, here)
+            tries.append({"dir": str(here), "passed": verdict.passed, "detail": dict(verdict.detail),
+                          "termination": termination(record), "record": record})
             if tries[0] is tries[-1]:
                 progress.update(k, "running", first=verdict.passed)
-            if (restore := self.retry.restore(len(tries), record, verdict.passed, here, first)) is None:
+            if not self.retry.again(len(tries), record, verdict.passed):
                 break
             here = self.out / name / k / f"retry_{len(tries)}"
         state = "pass" if verdict.passed else "error" if record.get("error") else "fail"
@@ -113,13 +116,13 @@ class Walk:
                             else f"ERROR {t['record']['error']}") for j, t in enumerate(tries)))
         return {"seed": item.config.seed, "passed": verdict.passed, "tries": tries}
 
-    def _try(self, item: EvalItem, here: Path, restore) -> tuple[dict, Verdict]:
-        record = self._kept(here, restore)
+    def _try(self, item: EvalItem, here: Path) -> tuple[dict, Verdict]:
+        record = self._kept(here)
         for attempt in range(1, STACK_ATTEMPTS + 1) if record is None else ():
             if self.stopping.is_set():
                 raise Stopped("aborted")
-            record = self.rollout.run(item, here, seed=item.config.seed, restore=restore, runner=self.runner,
-                                        policy=self.policy, ckpt=self.ckpt, gui=self.gui)
+            record = self.rollout.run(item, here, seed=item.config.seed, runner=self.runner, policy=self.policy,
+                                      ckpt=self.ckpt, gui=self.gui)
             if not record.get("error"):
                 break
             self.log(f"{here.name}: stack error ({record['error']}), attempt {attempt} of {STACK_ATTEMPTS}")
@@ -128,10 +131,10 @@ class Walk:
         return record, self.judge.score(record, here, self.task)
 
     @staticmethod
-    def _kept(here: Path, restore) -> dict | None:
-        """The record of a finished try in `here` (a verdict, and for a retry the restore), else None."""
+    def _kept(here: Path) -> dict | None:
+        """The record of a finished try in `here` (one with a verdict), else None."""
         try:
             record = json.loads((here / "rollout.json").read_text())
         except (OSError, ValueError):
             return None
-        return record if record.get("phases") is not None and (restore is None or record.get("restore")) else None
+        return record if record.get("phases") is not None else None

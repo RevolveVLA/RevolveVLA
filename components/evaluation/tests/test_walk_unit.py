@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
 import pytest
 import yaml
 from datagen.core.interfaces import Config
@@ -42,35 +41,17 @@ def results_of(tmp_path, out="run"):
 
 
 # ------------------------------------------------------------------ retry policy
-def state(tmp_path, phase):
-    (tmp_path / "phase_states").mkdir(exist_ok=True)
-    np.savez(tmp_path / "phase_states" / f"{phase}_start.npz", q=np.zeros(1))
-
-
-@pytest.mark.parametrize("tries, rec, passed, saved, want", [
-    (1, {"failed_phase": "grasp"}, False, "grasp", "grasp"),            # restorable + state
-    (1, {"failed_phase": "grasp"}, False, None, None),                  # no saved state
-    (1, {"failed_phase": "global"}, False, "global", None),             # not restorable
-    (1, {"failed_phase": None, "error": "boom"}, False, None, None),    # stack error: no phase
-    (1, {"failed_phase": None}, False, None, None),                     # judge failed, every phase passed
-    (1, {"failed_phase": "grasp"}, True, "grasp", None),                # the judge passed
-    (3, {"failed_phase": "grasp"}, False, "grasp", None),               # retries used up (retries 2)
-    (2, {"failed_phase": "open"}, False, "open", "open"),
+@pytest.mark.parametrize("tries, rec, passed, want", [
+    (1, {"failed_phase": "grasp"}, False, True),                       # a failed episode: run again from the start
+    (1, {"failed_phase": "global"}, False, True),                      # whatever phase failed
+    (1, {"failed_phase": None, "error": "boom"}, False, False),        # stack error: not the policy's failure
+    (1, {"failed_phase": "grasp"}, True, False),                       # the judge passed
+    (2, {"failed_phase": "open"}, False, True),
+    (3, {"failed_phase": "grasp"}, False, False),                      # retries used up (retries 2)
 ])
-def test_retry_policy(tmp_path, tries, rec, passed, saved, want):
-    if saved:
-        state(tmp_path, saved)
-    got = RetryPolicy(2).restore(tries, rec, passed, tmp_path)
-    assert got == ((tmp_path, want) if want else None)
-
-
-def test_retry_policy_falls_back_to_the_first_trys_state(tmp_path):
-    first, retry = tmp_path / "first", tmp_path / "retry_1"
-    first.mkdir(), retry.mkdir(), state(first, "open")
-    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry, first) == (first, "open")
-    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry) is None
-    state(retry, "open")
-    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry, first) == (retry, "open")
+def test_retry_policy(tries, rec, passed, want):
+    assert RetryPolicy(2).again(tries, rec, passed) is want
+    assert RetryPolicy(0).again(1, {"failed_phase": "grasp"}, False) is False
 
 
 # ------------------------------------------------------------------ the walk on stubs
@@ -79,19 +60,22 @@ class Stub:
     name, needs_ckpt = "stub", False
 
     def __init__(self, plan=None, delay=0.0):
-        self.plan, self.delay, self.calls, self.n, self.restores = plan or {}, delay, [], {}, []
+        self.plan, self.delay, self.calls, self.n, self.released, self.stopped = plan or {}, delay, [], {}, [], 0
 
-    def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):
+    def run(self, item, out, *, seed, runner, policy, ckpt, gui=False):
         self.n[seed] = self.n.get(seed, 0) + 1
-        self.calls.append((seed, out.name, restore and restore[1]))
+        self.calls.append((seed, out.name))
         time.sleep(self.delay.get(seed, 0) if isinstance(self.delay, dict) else self.delay)
         out.mkdir(parents=True, exist_ok=True)
-        rec = {"passed": True, "phases": {"grasp": "pass"}, "failed_phase": None, "error": None, "restore": restore and {}}
+        rec = {"passed": True, "phases": {"grasp": "passed"}, "failed_phase": None, "error": None}
         rec.update(self.plan.get((seed, self.n[seed]), {}))
-        if rec["failed_phase"] and restore is None:         # as the sim: a restored run saves no start of its restore phase
-            state(out, rec["failed_phase"])
-        self.restores.append(restore and restore[0].name)
         return rec
+
+    def release(self, item):
+        self.released.append(item.config.seed)
+
+    def stop(self):
+        self.stopped += 1
 
     def score(self, record, rollout_dir, task):
         return Verdict(record["passed"])
@@ -115,12 +99,12 @@ def run(w, b, rollouts=1, done=None):
 FAIL = {"passed": False, "failed_phase": "grasp"}
 
 
-def test_a_retry_runs_from_the_failed_phase_into_retry_dir(tmp_path):
+def test_a_retry_runs_again_from_the_start_into_the_retry_dir(tmp_path):
     stub = Stub({(1, 1): FAIL})
     got = run(walk(tmp_path, stub), built(0, 1))
-    assert stub.calls == [(0, "0_r0", None), (1, "1_r0", None), (1, "retry_1", "grasp")]
+    assert stub.calls == [(0, "0_r0"), (1, "1_r0"), (1, "retry_1")]
     t = got["1_r0"]["tries"]
-    assert [x["restored_at"] for x in t] == [None, "grasp"] and [x["passed"] for x in t] == [False, True]
+    assert [x["passed"] for x in t] == [False, True] and "restored_at" not in t[0]
     assert got["1_r0"]["passed"] and t[1]["dir"] == str(tmp_path / "s" / "1_r0" / "retry_1")
     assert len(got["0_r0"]["tries"]) == 1
 
@@ -129,14 +113,33 @@ def test_retries_stop_at_the_maximum(tmp_path):
     stub = Stub({(1, n): FAIL for n in (1, 2, 3)})
     got = run(walk(tmp_path, stub, retries=2), built(1))
     assert [c[1] for c in stub.calls] == ["1_r0", "retry_1", "retry_2"] and not got["1_r0"]["passed"]
-    assert stub.restores == [None, "1_r0", "1_r0"]                       # every retry restores the first try's start state
     assert run(walk(tmp_path / "b", Stub({(1, 1): FAIL}), retries=0), built(1))["1_r0"]["tries"][0]["passed"] is False
 
 
-def test_no_retry_for_a_global_failure_or_a_judge_only_failure(tmp_path):
+def test_a_config_runs_its_rollouts_in_order_then_is_released_once(tmp_path):
+    stub = Stub()
+    got = run(walk(tmp_path, stub), built(0, 1), rollouts=3)
+    assert stub.calls == [(s, f"{s}_r{i}") for s in (0, 1) for i in range(3)] and stub.released == [0, 1]
+    assert list(got) == [f"{s}_r{i}" for s in (0, 1) for i in range(3)]
+    stub.calls.clear()
+    again = run(walk(tmp_path, stub), built(0, 1), rollouts=3, done={k: got[k] for k in ("0_r0", "0_r1", "1_r0")})
+    assert stub.calls == [(0, "0_r2"), (1, "1_r1"), (1, "1_r2")] and list(again) == ["0_r2", "1_r1", "1_r2"]
+
+
+def test_the_sim_is_released_when_a_config_dies(tmp_path):
+    class Boom(Stub):
+        def run(self, item, out, **kw):
+            raise RuntimeError("boom")
+    stub = Boom()
+    with pytest.raises(RuntimeError):
+        run(walk(tmp_path, stub), built(0))
+    assert stub.released == [0]
+
+
+def test_a_failed_try_is_retried_whatever_its_phase(tmp_path):
     stub = Stub({(0, 1): {"passed": False, "failed_phase": "global"}, (1, 1): {"passed": False}})
     got = run(walk(tmp_path, stub), built(0, 1))
-    assert len(stub.calls) == 2 and not got["0_r0"]["passed"] and not got["1_r0"]["passed"]
+    assert [len(got[k]["tries"]) for k in ("0_r0", "1_r0")] == [2, 2] and got["0_r0"]["passed"]
 
 
 def test_a_stack_error_is_run_once_more_then_recorded(tmp_path):
@@ -152,12 +155,9 @@ def test_a_finished_try_on_disk_is_kept(tmp_path):
     stub = Stub({(1, 1): FAIL})
     w = walk(tmp_path, stub)
     first = run(w, built(0, 1))
-    for d in ("0_r0", "1_r0", "1_r0/retry_1"):                       # what rollout.run leaves
+    for d, ok in (("0_r0", True), ("1_r0", False), ("1_r0/retry_1", True)):                # what the rollout plugin leaves
         (tmp_path / "s" / d / "rollout.json").write_text(json.dumps(
-            {"passed": d != "1_r0", "phases": {"grasp": "pass"}, "failed_phase": None if d != "1_r0" else "grasp",
-             "restore": {} if "retry" in d else None}))
-    (tmp_path / "s" / "1_r0" / "retry_1" / "rollout.json").write_text(json.dumps(
-        {"passed": True, "phases": {}, "failed_phase": None, "restore": {"phase": "grasp"}}))
+            {"passed": ok, "phases": {"grasp": "passed"}, "failed_phase": None if ok else "grasp"}))
     stub.calls.clear()
     again = run(w, built(0, 1))
     assert stub.calls == [] and again["1_r0"]["passed"] and len(again["1_r0"]["tries"]) == 2 and first.keys() == again.keys()
@@ -183,7 +183,7 @@ def test_progress_lines_are_what_eval_progress_reads(tmp_path):
     assert any("1_r0: try 0: FAIL grasp, try 1: PASS" in m for m in lines)
 
 
-def test_an_abort_calls_the_hook_and_starts_no_second_attempt(tmp_path):
+def test_an_abort_stops_the_rollout_calls_the_hook_and_starts_no_second_attempt(tmp_path):
     err = {"passed": False, "phases": None, "error": "killed"}
     stub, hooked = Stub({(1, 1): err}, delay={0: 0.05, 1: 0.4}), []
 
@@ -192,7 +192,7 @@ def test_an_abort_calls_the_hook_and_starts_no_second_attempt(tmp_path):
     w = walk(tmp_path, stub, workers=2, abort=lambda: hooked.append(1))
     with pytest.raises(KeyboardInterrupt):
         w.run("s", built(0, 1), 1, {}, boom)
-    assert hooked == [1] and sorted(c[:2] for c in stub.calls) == [(0, "0_r0"), (1, "1_r0")]     # no second attempt of the killed one
+    assert hooked == [1] and stub.stopped == 1 and sorted(stub.calls) == [(0, "0_r0"), (1, "1_r0")]     # no second attempt of the killed one
 
 
 # ------------------------------------------------------------------ results + pipeline
@@ -210,10 +210,9 @@ def test_results_and_report_content(tmp_path):
     r = results_of(tmp_path)["sets"]["heldout"]
     assert r["metrics"] == {"rollouts": 6, "first_try_passed": 2, "first_try_success": 2 / 6, "passed_with_retries": 6,
                             "success_with_retries": 1.0, "first_try_failures": {"grasp": 4}, "errors": 0,
-                            "terminations": {"budget": 4, "success": 6}}
-    assert [t["termination"] for t in r["rollouts"]["101_r1"]["tries"]] == ["budget", "success"]
-    assert [t["restored_at"] for t in r["rollouts"]["101_r1"]["tries"]] == [None, "grasp"]
-    assert r["rollouts"]["100_r0"]["tries"][0]["record"]["phases"]["grasp"] == "pass"
+                            "terminations": {"timeout_s": 4, "success": 6}}
+    assert [t["termination"] for t in r["rollouts"]["101_r1"]["tries"]] == ["timeout_s", "success"]
+    assert r["rollouts"]["100_r0"]["tries"][0]["record"]["phases"]["grasp"] == "passed"
     assert [c["seed"] for c in r["configs"]] == [100, 101, 102]
     md = (tmp_path / "run" / "report.md").read_text()
     assert "| 6 | 2 (33%) | 6 (100%) | 0 |" in md and "| grasp | 4 |" in md and "| 101 |  |  | 0/2 | 2/2 |" in md

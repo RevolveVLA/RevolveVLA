@@ -1,9 +1,9 @@
 """`<out>/results.json` (the run's state: spec hash, resolved ckpt, per set the configs, check results and rollouts with
 their tries, plus the metrics derived from them) and `<out>/report.md`.
 
-A rollout entry is `{seed, passed, tries: [{dir, restored_at, passed, detail, termination, record}]}`: `passed` = the last
-try's judge verdict, a try's `record` = the rollout plugin's record (phase verdict), `detail` = the judge's, `termination`
-= why the sim run ended (core/termination.py). A set's `rollout_policy` = the limits that applied. The file is
+A rollout entry is `{seed, passed, tries: [{dir, passed, detail, termination, record}]}`: `passed` = the last try's
+judge verdict, a try's `record` = the rollout plugin's record (the evaluator's verdict: phases, failed_phase, reason), `detail` =
+the judge's, `termination` = why the episode ended (core/termination.py). A set's `rollout_policy` = the limits that applied. The file is
 written atomically after every committed rollout; a different spec hash refuses an existing file."""
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from .errors import EvalError
 from .termination import REASONS, termination
 
-NO_PHASE = "success_rule"           # the phases passed but the judge failed (C1 / C2 on the state log)
+NO_PHASE = "no_phase"               # failed with no failed phase on record (e.g. a reset)
 ERROR = "stack_error"
 
 
@@ -114,7 +114,7 @@ class Results:
                 lines += [f"| {c} | {'PASS' if r['ok'] else 'FAIL'}{' ' + r['reason'] if r.get('reason') else ''} |"
                           for c, r in checks.items()] + [""]
             if m["first_try_failures"]:
-                lines += ["| first-try failure | count |", "|---|---|"]
+                lines += ["| failed phase (first try) | count |", "|---|---|"]
                 lines += [f"| {p} | {k} |" for p, k in sorted(m["first_try_failures"].items())] + [""]
             if m.get("terminations"):
                 lines += ["| termination | tries |", "|---|---|"]

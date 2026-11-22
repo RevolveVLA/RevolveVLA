@@ -94,6 +94,9 @@ class FakeClient:
         self._running, self.s.client_state["next"] = self.s.client_state["next"], self.s.client_state["next"] + 1
         return self._running
 
+    def has_result(self, n: int) -> bool:
+        return True                                 # an episode of the fake ends at once
+
     def wait_result(self, n: int, timeout_s: float = 0) -> dict:
         self.s.fault("wait_result")
         s = self.s

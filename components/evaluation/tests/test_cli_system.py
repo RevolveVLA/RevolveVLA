@@ -1,8 +1,7 @@
 """System test: `./revolve evaluate` as a subprocess on the host venv (CPU, no docker, no GPU, no network).
 
 The plugins are the real ones where they run on CPU: the `heldout` / `train` sets (fake randomiser: no instance files; the real scene_instance in the last test), the `local` / `hf`
-checkpoint sources + relabel, the `smolvla` policy, the `fake` rollout (as `fake_eval_log`: + the state log c1/c2 read) and the judges
-c0 / c1 / c2. `hf` runs against a stub huggingface_hub (fake_hf/): no download. Each test gets a root dir (`specs/` copied in, the
+checkpoint sources + relabel, the `smolvla` policy, the `fake` rollout (as `fake_eval_log`: + a call log) and the judge c0. `hf` runs against a stub huggingface_hub (fake_hf/): no download. Each test gets a root dir (`specs/` copied in, the
 training spec, a checkpoint under runs/); paths in the specs are absolute, so the repo's runs/ is never written."""
 import json
 import os
@@ -33,14 +32,12 @@ HELDOUT = {"count": 3, "pool": {"initial": [100, 109], "replacement": [110, 119]
            "min_distance": {"value": 0.1}}
 SPEC = {
     "ckpt": {"source": "local", "path": "runs/ckpts/c"}, "policy": {"plugin": "smolvla"},
-    "rollout": {"plugin": "fake_eval_log", "fail_seeds": [101], "push_seeds": [102], "closed_seeds": [0]},
+    "rollout": {"plugin": "fake_eval_log", "fail_seeds": [101]},
     "judge": {"criterion": "c0"}, "rollouts": 1, "retries": 1,
     "sets": {"heldout": HELDOUT, "train": {"from": "train", "count": 2}},
 }
-# per judge: the final verdict of each config. 100: opens held; 101: a phase fails, the restored retry passes; 102: the door is
-# pushed open (c1 yes, c2 no); train 0: the phases pass but the door stays shut (only c0 yes); train 1: opens held
-EXPECTED = {"c0": {100: 1, 101: 1, 102: 1, 0: 1, 1: 1}, "c1": {100: 1, 101: 1, 102: 1, 0: 0, 1: 1},
-            "c2": {100: 1, 101: 1, 102: 0, 0: 0, 1: 1}}
+# the final verdict of each config: 101: a phase fails, the retry (a new episode from the start) passes
+EXPECTED = {100: 1, 101: 1, 102: 1, 0: 1, 1: 1}
 
 
 @pytest.fixture
@@ -102,26 +99,20 @@ def verdicts(r):
     return {e["seed"]: int(e["passed"]) for s in r["sets"].values() for e in s["rollouts"].values()}
 
 
-# ------------------------------------------------------------------ the pipeline end to end, per judge
-@pytest.mark.parametrize("criterion", ["c0", pytest.param("c1", marks=pytest.mark.legacy), pytest.param("c2", marks=pytest.mark.legacy)])
-def test_all_stages_with_each_judge(root, criterion):
+# ------------------------------------------------------------------ the pipeline end to end
+def test_all_stages(root):
     training_manifest(root)
-    rc, out, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": criterion}))
+    rc, out, err = evaluate(root, "all")
     assert rc == 0, err
     assert "sample heldout: 3 configs" in out and "check heldout seeds_disjoint: PASS" in out and "check train" not in out
     r = results(root)
-    assert verdicts(r) == EXPECTED[criterion]
+    assert verdicts(r) == EXPECTED
     held = r["sets"]["heldout"]["rollouts"]
     assert sorted(held) == ["100_r0", "101_r0", "102_r0"] and sorted(r["sets"]["train"]["rollouts"]) == ["0_r0", "1_r0"]
-    tries = held["101_r0"]["tries"]                                           # a retry from the failed phase, judged by its phase verdict
-    assert [t["passed"] for t in tries] == [False, True] and tries[1]["restored_at"] == "release"
-    assert tries[1]["detail"] == {"criterion": "c0" if criterion == "c0" else "c0_from_restore"} and tries[1]["dir"].endswith("101_r0/retry_1")
-    detail = held["102_r0"]["tries"][0]["detail"]
-    assert detail["criterion"] == criterion
-    if criterion != "c0":                                                     # the log decides: pushed open = opened, not held
-        assert detail["door_max_deg"] == 65.0 and detail["held_fraction"] == 0.0 and detail["opened"] is True
-        assert r["sets"]["train"]["rollouts"]["0_r0"]["tries"][0]["detail"]["door_max_deg"] == 40.0
-        assert (root / "runs" / "eval" / "sys" / "heldout" / "100_r0" / "state_log.npz").is_file()
+    tries = held["101_r0"]["tries"]                                           # a retry: a new episode from the start
+    assert [t["passed"] for t in tries] == [False, True] and "restored_at" not in tries[1]
+    assert tries[1]["detail"] == {"criterion": "c0"} and tries[1]["dir"].endswith("101_r0/retry_1")
+    assert tries[0]["record"]["failed_phase"] == "open" and tries[0]["termination"] == "timeout_s"
     report = (root / "runs" / "eval" / "sys" / "report.md").read_text()
     assert "| 100 |" in report and "## " in report and "heldout" in report and "train" in report
 
@@ -154,32 +145,34 @@ def test_a_set_filter_runs_only_that_set(root):
 
 def test_every_try_records_why_it_ended_and_the_limits_that_applied(root):
     training_manifest(root)
-    ends = {100: "no_action", 101: "abort", 102: "wall_limit"}                # train seeds 0, 1: success (the fake's default)
-    rollout = SPEC["rollout"] | {"end_reasons": ends, "rtf": 0.3, "budget_s": 20, "wall_safety": 3.0}
-    rc, out, err = evaluate(root, "all", spec=spec_of(root, rollout=rollout, judge={"criterion": "c0"}))
+    ends = {100: "while", 101: "budget_s", 102: "wall_limit"}                 # train seeds 0, 1: success (the fake's default)
+    rollout = SPEC["rollout"] | {"end_reasons": ends, "wall_s": 90}
+    rc, out, err = evaluate(root, "all", spec=spec_of(root, rollout=rollout))
     assert rc == 0, err
     r = results(root)
     held, train = r["sets"]["heldout"], r["sets"]["train"]
-    assert [t["termination"] for t in held["rollouts"]["101_r0"]["tries"]] == ["abort", "abort"]
-    assert [len(e["tries"]) for e in held["rollouts"].values()] == [1, 2, 1]
+    assert [t["termination"] for t in held["rollouts"]["101_r0"]["tries"]] == ["budget_s", "budget_s"]
+    assert [len(e["tries"]) for e in held["rollouts"].values()] == [2, 2, 1]
     assert held["rollouts"]["102_r0"]["tries"][0]["termination"] == "wall_limit" and held["metrics"]["errors"] == 1
-    assert held["metrics"]["terminations"] == {"no_action": 1, "abort": 2, "wall_limit": 1}
+    assert held["metrics"]["terminations"] == {"while": 2, "budget_s": 2, "wall_limit": 1}
     assert train["metrics"]["terminations"] == {"success": 2}
-    assert held["rollout_policy"] == train["rollout_policy"] == {
-        "budget_s": 20, "wait_s": 30.0, "after_success_s": 2.0, "wall_safety": 3.0, "setup_s": 240.0, "rtf": 0.3,
-        "wall_limit_s": round((30 + 20 + 2) / 0.3 * 3.0, 1)}
+    task = yaml.safe_load((REPO / "specs/tasks/open_fridge_door/task.yaml").read_text())
+    want = {"budget_s": task["budget_s"], "phase_timeouts_s": {p["name"]: p["timeout_s"] for p in task["phases"]},
+            "wall_s": 90, "ready_s": 180.0}
+    assert held["rollout_policy"] == train["rollout_policy"] == want
     report = (root / "runs" / "eval" / "sys" / "report.md").read_text()
-    assert "| termination | tries |\n|---|---|\n| no_action | 1 |\n| abort | 2 |\n| wall_limit | 1 |" in report
-    assert "| success | 2 |" in report and "Rollout limits: budget_s 20, wait_s 30.0" in report and "wall_safety 3.0" in report
+    assert "| termination | tries |\n|---|---|\n| budget_s | 2 |\n| while | 2 |\n| wall_limit | 1 |" in report
+    assert "| success | 2 |" in report
+    assert f"Rollout limits: budget_s {task['budget_s']}, phase_timeouts_s" in report and "wall_s 90" in report
 
 
 def test_dry_run_prints_the_plan_and_touches_nothing(root):
     rc, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, ckpt={"source": "hf", "repo": "org/name"}))
     assert rc == 0 and "[dry-run] set heldout (heldout): 3 held-out configs, sobol sampler, pool [100, 109] + [110, 119]" in out
     assert "ckpt: hf {'repo': 'org/name'} (nothing resolved)" in out and "judge c0" in out and "workers: by free GPU memory" in out
-    assert "rollout limits: budget_s" in out and "rtf measured at run time" in out    # main's task has no `rollout:`: the yaml's limits (PRD 06)
-    _, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "fake_eval_log", "rtf": 0.3, "budget_s": 20}))
-    assert "rollout limits: budget_s 20, " in out and "rtf 0.3, wall limit" in out
+    assert "rollout limits: budget_s 45.0, phase_timeouts_s {'approach': 20.0, 'grasp': 5.0, 'open': 15.0}, wall_s 600.0, ready_s 180.0" in out
+    _, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "fake_eval_log", "wall_s": 90}))
+    assert "wall_s 90, ready_s 180.0" in out
     assert not (root / "runs" / "eval").exists() and not (root / "runs" / "ckpt_cache").exists() and calls(root) == []
 
 
@@ -258,7 +251,7 @@ def test_a_bad_spec_exits_2_naming_the_key(root):
     assert evaluate(root, "all", spec=spec_of(root) | {"train": str(root / "missing.yaml")})[0] == 2
     rc, _, err = evaluate(root, "all", spec=spec_of(root, sets={"h": {"count": 1, "pool": {"initial": [1, 2]}}}))
     assert rc == 2 and "sets.h.pool" in err
-    rc, _, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": "c2"}))           # no state log on the new simulator
+    rc, _, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": "c2"}))           
     assert rc == 2 and "judge.criterion: c2 is not available on the new simulator" in err
 
 
@@ -268,6 +261,15 @@ def test_a_changed_spec_refuses_the_existing_out_and_run_does_not_matter(root):
     rc, _, err = evaluate(root, "all", spec=spec_of(root, rollouts=2))
     assert rc == 1 and "another spec" in err
     assert evaluate(root, "all", spec=spec_of(root, run={"workers": 2}))[0] == 0
+
+
+def test_a_served_checkpoint_is_blocked_on_the_sim_rollout(root):
+    training_manifest(root)
+    rc, _, err = evaluate(root, "rollout", spec=spec_of(root, rollout={"plugin": "sim"}))      # policy smolvla
+    assert rc == 2 and "policy 'smolvla' is not available on the new simulator" in err and "Traceback" not in err
+    assert not (root / "runs" / "eval" / "sys" / "results.json").exists()
+    rc, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "sim"}))
+    assert rc == 0 and "rollout sim" in out                                                       # sample / check / dry-run still work
 
 
 def test_a_missing_ckpt_or_plugin_is_one_line_exit_1(root):

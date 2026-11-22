@@ -5,7 +5,7 @@ policy: {plugin: oracle}
 out: runs/eval/drawer_so101xl_v2
 sets:
   train: {from: train, count: 3}
-rollout: {plugin: sim}
+rollout: {plugin: sim, record: no-images}      # the oracle needs no cameras (a policy does: record images, the default)
 rollouts: 1
 retries: 0
 run: {workers: 1, headless: true}

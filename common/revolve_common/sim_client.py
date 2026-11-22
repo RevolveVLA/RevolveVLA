@@ -74,6 +74,10 @@ class SimClient:
         with self._lock:
             return self.states[-1] if self.states else None
 
+    def has_result(self, n: int) -> bool:
+        with self._lock:
+            return n in self.results
+
     def resets(self) -> int:
         s = self.state()
         return s["resets"] if s else 0

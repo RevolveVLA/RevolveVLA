@@ -85,25 +85,34 @@ class Policy(ABC):
     needs_ckpt: bool = True         # False: the policy brings its own actions (the oracle replays the expert's)
     client_only: bool = False       # True: no policy server container, the client side produces the actions
 
+    def client_args(self, item: EvalItem) -> list[str]:
+        """The command line arguments of the policy client (rollout_client.py) for the scene `item`."""
+        return []
+
 
 class Rollout(ABC):
     @abstractmethod
-    def run(self, item: EvalItem, out: Path, *, seed: int, restore: tuple[Path, str] | None = None,
-            runner: RunnerSpec, policy: Policy, ckpt: ResolvedCkpt | None, gui: bool = False) -> dict:
-        """One policy run from the scene instance `item.scene` into `out` (from the saved state `restore` = (rollout dir, phase) when
-        given); the rollout record (a JSON dict: passed, phases, failed_phase, ... as rollout.run returns it)."""
+    def run(self, item: EvalItem, out: Path, *, seed: int, runner: RunnerSpec, policy: Policy,
+            ckpt: ResolvedCkpt | None, gui: bool = False) -> dict:
+        """One episode of the policy from the scene instance `item.scene` into `out` (a retry is a new episode from the
+        start: no state is restored); the rollout record (a JSON dict: passed, phases, failed_phase, reason, error, ...)."""
+
+    def validate(self, policy: Policy) -> None:
+        """Raise a SpecError when this rollout cannot run `policy` (checked before anything runs)."""
+
+    def release(self, item: EvalItem) -> None:
+        """The rollouts of the config `item` are over: free what `run` kept for it (the sim of its scene instance)."""
+
+    def stop(self) -> None:
+        """The run is being aborted: start nothing more."""
 
     def default_workers(self, policy: Policy) -> int:
         """Rollouts to run at a time when the spec sets no `run.workers`."""
         return 1
-
-    def rtf(self, policy: Policy) -> float | None:
-        """The real-time factor the plugin assumes for its wall limit (None: it has none)."""
-        return None
 
 
 class Judge(ABC):
     @abstractmethod
     def score(self, record: Mapping[str, Any], rollout_dir: Path, task: Task | None) -> Verdict:
         """The success verdict of one rollout: its record, its dir and the training spec's task (None when its
-        task.yaml is not found). A record with `restore` is a retry."""
+        task.yaml is not found)."""

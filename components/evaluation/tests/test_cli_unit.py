@@ -23,7 +23,7 @@ SPEC = {
     "judge": {"criterion": "fake_eval", "fail_seeds": [4]},
     "sets": {"heldout": {"plugin": "fake_eval", "count": 3, "pool": {"initial": [100, 109]}},
              "train": {"plugin": "fake_eval", "from": "train", "count": 2}},
-    "rollouts": 2, "retries": 1,
+    "rollouts": 2, "retries": 0,
 }
 
 
@@ -51,7 +51,7 @@ def test_dry_run_prints_the_plan_and_touches_nothing(tmp_path, capsys):
     assert "[dry-run] set heldout (fake_eval): 3 held-out configs, random sampler, pool [100, 109]" in out
     assert "set train (fake_eval): 2 configs from training split 'train'" in out
     assert "ckpt: fake_eval {'tag': 'v1'} (nothing resolved)" in out
-    assert "2 rollouts per config, retries 1: 10 first tries, up to 20 runs" in out and "workers: by free GPU memory" in out
+    assert "2 rollouts per config, retries 0: 10 first tries, up to 10 runs" in out and "workers: by free GPU memory" in out
     assert not (tmp_path / "run").exists() and calls(tmp_path) == []
 
 
@@ -90,7 +90,7 @@ def test_a_killed_run_resumes_where_it_stopped(tmp_path, monkeypatch):
         evaluate(tmp_path, "rollout")
     monkeypatch.setattr(fake_eval.FakeRollout, "run", run)
     assert evaluate(tmp_path, "rollout") == 0
-    assert len(calls(tmp_path)) == 10                                             # 3 + the 7 missing, none twice
+    assert len(calls(tmp_path)) == 11             # 3 + the 8 missing: a config's rollouts commit together (101_r0 is redone)
 
 
 def test_stages_and_set_filter(tmp_path):
@@ -178,3 +178,15 @@ def test_runner_longer_than_the_ckpt_chunk_is_refused(tmp_path, capsys):
     assert json.loads((tmp_path / "run" / "results.json").read_text())["runner"]["ckpt_chunk_size"] == 50
     assert evaluate(tmp_path, "rollout", spec=SPEC | {"runner": {"n_action_steps": 50}, "out": "run2"}) != 0
     assert "n_action_steps 50 needs 51 actions per chunk" in capsys.readouterr().err
+
+
+def test_stop_jobs_removes_the_runs_containers_through_common(tmp_path, monkeypatch, capsys):
+    import revolve_common.sim_session as SS
+    from evaluation.core.sims import sim_prefix
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump(SPEC, sort_keys=False))
+    spec = cli.load(str(tmp_path / "spec.yaml"), tmp_path)
+    seen = []
+    monkeypatch.setattr(SS, "stop_sims", lambda prefix: seen.append(prefix) or 2)
+    cli.stop_jobs(spec)
+    assert seen == [sim_prefix(spec)] and sim_prefix(spec).startswith("ev-") and "removed 2 container(s)" in capsys.readouterr().err
+    assert "datagen.containers" not in sys.modules

@@ -1,7 +1,7 @@
 [project]
 name = "revolve_common"
 version = "0.1.0"
-description = "RevolveVLA shared code: spec schemas + loader, metric registry, job contract and HTTP entrypoint wrapper"
+description = "RevolveVLA shared code: spec schemas + metric registry + loader, job contract and HTTP entrypoint wrapper"
 requires-python = ">=3.10"
 dependencies = [
   "pydantic>=2.7,<3",

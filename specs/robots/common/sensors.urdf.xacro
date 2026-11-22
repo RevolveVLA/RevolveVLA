@@ -1,0 +1,43 @@
+<?xml version="1.0"?>
+<!-- gz sensors shared by the robots. camera: a gz camera sensor (pose in the link frame, gz camera convention:
+     looking along +x), image on /<name>/image. contact: a contact sensor on a link (gz Contact system:
+     /world/<w>/model/<m>/link/<link>/sensor/contact/contact); collisions = the link's collision names in the gz
+     model (after sdformat's fixed-joint lumping), default <link>_collision. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="camera" params="name link pose hfov near far rate:=30 width:=480 height:=480">
+    <gazebo reference="${link}">
+      <sensor name="${name}" type="camera">
+        <pose>${pose}</pose>
+        <always_on>true</always_on>
+        <update_rate>${rate}</update_rate>
+        <topic>${name}/image</topic>
+        <camera>
+          <horizontal_fov>${hfov}</horizontal_fov>
+          <image><width>${width}</width><height>${height}</height><format>R8G8B8</format></image>
+          <clip><near>${near}</near><far>${far}</far></clip>
+        </camera>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:macro name="contact" params="link collisions:=''">
+    <gazebo reference="${link}">
+      <sensor name="contact" type="contact">
+        <always_on>true</always_on>
+        <update_rate>100</update_rate>
+        <contact>
+          <xacro:if value="${collisions == ''}"><collision>${link}_collision</collision></xacro:if>
+          <xacro:unless value="${collisions == ''}">
+            <xacro:macro name="collision_names" params="names">
+              <xacro:if value="${names}">
+                <collision>${names[0]}</collision>
+                <xacro:collision_names names="${names[1:]}"/>
+              </xacro:if>
+            </xacro:macro>
+            <xacro:collision_names names="${collisions.split()}"/>
+          </xacro:unless>
+        </contact>
+      </sensor>
+    </gazebo>
+  </xacro:macro>
+</robot>

@@ -1,0 +1,27 @@
+diff --git a/mujoco/src/SDFFeatures.cc b/mujoco/src/SDFFeatures.cc
+index 43a2d4b..076c596 100644
+--- a/mujoco/src/SDFFeatures.cc
++++ b/mujoco/src/SDFFeatures.cc
+@@ -410,7 +410,22 @@ struct ModelKinematicStructure
+       return nullptr;
+     }
+     geom->type = mjGEOM_MESH;
++    // One mesh asset per geom: a second asset named after the same mesh file
++    // fails the compile (gazebosim/gz-physics#1162). The spec is searched
++    // directly, as mjs_findElement misses assets added since the last compile.
++    auto meshExists = [_spec](const std::string &_name)
++    {
++      for (mjsElement *el = mjs_firstElement(_spec, mjOBJ_MESH); el;
++           el = mjs_nextElement(_spec, el))
++      {
++        if (*mjs_getName(el) == _name)
++          return true;
++      }
++      return false;
++    };
+     auto meshName = mesh->Name();
++    for (int n = 1; meshExists(meshName); ++n)
++      meshName = mesh->Name() + "_" + std::to_string(n);
+     mjs_setString(geom->meshname, meshName.c_str());
+ 
+     auto *muMesh = mjs_addMesh(_spec, nullptr);

@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<!-- Mobile SO-101 XL: the shared omni base with its default chassis (top 0.60 m above the floor, as mobile_panda's) +
+     the SO-101 arm of mobile_so101 (../common/so101.urdf.xacro) at scale 2 (lengths x2, masses x8, inertias x32; a
+     reach about the Panda's), so101_base_link 0.15 m ahead of the base centre on the chassis top (10 cm inside the
+     front edge). The shoulder_lift axis is then 0.83 m above the floor, level with the kitchen drawer bar.
+     Joint damping and effort limits are not scaled by the macro: set here for the scaled arm (damping x s^4.5 = 22.6,
+     the damping ratio at inertia x s^5; effort x s^4 = 16, the gravity torque). ros2_control as mobile_so101.
+     Args: initial_positions (the 5 arm joints [rad], default the `ready` pose), jaw_initial [rad] (default 0, a 32 mm
+     gap), controllers (the absolute path of the gz_ros2_control parameters file, controllers.yaml here: the launch
+     passes it). -->
+<robot name="mobile_so101_xl" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:arg name="initial_positions" default="0.0 -1.57 1.57 0.0 0.0"/>
+  <xacro:arg name="jaw_initial" default="0.0"/>
+  <xacro:arg name="controllers" default=""/>
+
+  <xacro:include filename="../common/omni_base.urdf.xacro"/>
+  <xacro:include filename="../common/so101.urdf.xacro"/>
+  <xacro:include filename="../common/sensors.urdf.xacro"/>
+
+  <xacro:omni_base/>
+  <xacro:so101 parent="base_footprint" xyz="0.15 0 0.60" scale="2" arm_damping="34.0 34.0 22.6 13.6 6.8"
+               jaw_damping="1.0" effort="160.0"/>
+
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+    <xacro:omni_base_ros2_control_joints/>
+    <xacro:so101_ros2_control_joints initial_positions="$(arg initial_positions)" jaw_initial="$(arg jaw_initial)"/>
+  </ros2_control>
+
+  <!-- Cameras (D22: the old mobile_so101_xl poses: mobile_so101's, the wrist camera's position x2) and contact
+       sensors, as mobile_so101 -->
+  <xacro:so101_sensors scale="2"/>
+  <xacro:camera name="overhead_left_cam" link="base_footprint" pose="0.10 0.50 1.80 0 1.117011 -1.570796" hfov="1.68"
+                near="0.05" far="15.0"/>
+  <xacro:camera name="overhead_right_cam" link="base_footprint" pose="0.10 -0.50 1.80 0 1.117011 1.570796" hfov="1.68"
+                near="0.05" far="15.0"/>
+  <xacro:contact link="base_footprint" collisions="base_footprint_fixed_joint_lump__base_link_collision"/>
+
+  <gazebo>
+    <plugin filename="gz_ros2_control-system" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(arg controllers)</parameters>
+    </plugin>
+    <!-- ground-truth model pose (world frame) -->
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_nested_model_pose>false</publish_nested_model_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <use_pose_vector_msg>true</use_pose_vector_msg>
+      <update_frequency>100</update_frequency>
+    </plugin>
+  </gazebo>
+</robot>

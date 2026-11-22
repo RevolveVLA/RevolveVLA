@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!-- MoveIt SRDF part of the SO-101 arm (so101.urdf.xacro, any scale): the `arm` group (the 5-DoF chain
+     so101_base_link -> gripper_link), the `gripper` group (the moving jaw), their named states (the robots' robot.yaml
+     poses; gripper open / close = the joint limits), the end effector and the arm's disabled collision pairs. The
+     pairs are scale-independent (every length scales alike): moveit_setup_assistant's collisions_updater (default
+     and never-in-collision pairs, 10000 samples) on mobile_so101 and mobile_so101_xl gave the same arm pairs. The
+     pairs between the arm and a robot's base go in that robot's SRDF. Two more pairs are disabled by hand: in the
+     `folded` rest pose (the scene start) the collision boxes of wrist_link and gripper_link overlap shoulder_link's
+     (MoveIt would refuse to plan from it); the simulator does not collide a model's own links either. so101_tcp is a
+     plain fixed link of the URDF: use it as the pose link. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="so101_srdf">
+    <group name="arm">
+      <chain base_link="so101_base_link" tip_link="gripper_link"/>
+    </group>
+    <group name="gripper">
+      <joint name="gripper"/>
+    </group>
+    <group_state name="ready" group="arm">
+      <joint name="shoulder_pan" value="0"/>
+      <joint name="shoulder_lift" value="-1.57"/>
+      <joint name="elbow_flex" value="1.57"/>
+      <joint name="wrist_flex" value="0"/>
+      <joint name="wrist_roll" value="0"/>
+    </group_state>
+    <group_state name="folded" group="arm">
+      <joint name="shoulder_pan" value="0"/>
+      <joint name="shoulder_lift" value="-1.70"/>
+      <joint name="elbow_flex" value="1.60"/>
+      <joint name="wrist_flex" value="1.30"/>
+      <joint name="wrist_roll" value="0"/>
+    </group_state>
+    <group_state name="open" group="gripper">
+      <joint name="gripper" value="1.74533"/>
+    </group_state>
+    <group_state name="close" group="gripper">
+      <joint name="gripper" value="-0.174533"/>
+    </group_state>
+    <end_effector name="gripper" parent_link="gripper_link" group="gripper" parent_group="arm"/>
+    <disable_collisions link1="gripper_link" link2="lower_arm_link" reason="Never"/>
+    <disable_collisions link1="gripper_link" link2="moving_jaw_so101_v1_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_link" link2="wrist_link" reason="Adjacent"/>
+    <disable_collisions link1="lower_arm_link" link2="moving_jaw_so101_v1_link" reason="Never"/>
+    <disable_collisions link1="lower_arm_link" link2="upper_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="lower_arm_link" link2="wrist_link" reason="Adjacent"/>
+    <disable_collisions link1="moving_jaw_so101_v1_link" link2="wrist_link" reason="Never"/>
+    <disable_collisions link1="shoulder_link" link2="upper_arm_link" reason="Adjacent"/>
+    <disable_collisions link1="gripper_link" link2="shoulder_link" reason="User"/>
+    <disable_collisions link1="shoulder_link" link2="wrist_link" reason="User"/>
+  </xacro:macro>
+</robot>

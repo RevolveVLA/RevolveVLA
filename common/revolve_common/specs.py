@@ -1,628 +1,535 @@
-"""Spec schemas (pydantic v2) and the loader.
+"""Spec schemas (pydantic v2), the metric registry (names + parameters) and the loader.
 
-specs/ layout: experiments/<exp>.yaml -> robots/<robot>/robot.yaml + tasks/<task>/task.yaml (robot-free, with
-optional per-robot settings) -> scenes/<scene>/scene.yaml. Unknown keys are errors everywhere except the
-blocks ported unchanged from the old plugin.yaml files (planner, card, the robot's planner/camera fields),
-which are typed loosely.
+specs/ layout (every name = its folder name):
+  scenes/<s>/scene.yaml     one fixed scene: the models (model:// names in the asset search path) and the robot start
+  robots/<r>/robot.yaml     the robot: description (xacro), controllers, named poses, frame and link-group aliases
+  tasks/<t>/task.yaml       the task on a scene: prompt, targets, ordered phases, budget, sanity overrides
+  tasks/sanity.yaml         the sanity checks every task gets (a keyed map of checks, nothing else)
+
+A condition is one metric with its parameters, one comparison and an optional hold time:
+  {metric: distance, from: robot::tcp, to: handle, le: 0.015}
+  {metric: contacts, from: robot::fingers, to: handle, eq: 2, for_s: 0.5}     # true for the last 0.5 s
+Values are SI: m, rad, s, m/s. Entities (the metric parameters that name things):
+  robot                       the whole robot
+  robot::<alias>              a robot.yaml frame (a link) or group (links); checked when a task meets a robot
+  <model>                     a whole scene model
+  <model>::<link|joint>       a link or joint of a scene model (from its SDF)
+  <model>::<link>::<collision>  one collision of that link (e.g. a handle)
+  <target>                    a task target alias (targets: {handle: fridge::top_door::top_door_handle})
+  any, any_except_targets     contacts `to` only: every body except the robot itself and the ground (and the targets)
+Unknown keys are errors everywhere.
 """
 from __future__ import annotations
 
-import math
-import os
+import re
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated, Any, Literal, Union
+from typing import Any, ClassVar, Literal
 
 import yaml
-from pydantic import (BaseModel, ConfigDict, Field, StrictFloat, StrictInt, computed_field, field_validator,
-                      model_validator)
-
-from . import metrics, policy_io
-
-OPS = ("lt", "le", "gt", "ge", "eq")
-
-
-class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-# ------------------------------------------------------------------ task
-class Condition(Strict):
-    """One metric compared with one threshold. hold_s: must hold at every sample of the last hold_s
-    of the phase. window_s: the window the producer aggregates the metric over (it ends at the
-    phase end). offline: the threshold the offline (expert replay) verdict uses instead. only: the
-    condition applies to offline verdicts only, or to plan-driven runs only (not policy rollouts)."""
-    metric: str
-    lt: float | None = None
-    le: float | None = None
-    gt: float | None = None
-    ge: float | None = None
-    eq: float | bool | None = None
-    joint: str | None = None
-    hold_s: float | None = Field(default=None, ge=0)
-    window_s: float | None = Field(default=None, gt=0)
-    offline: float | None = None
-    only: Literal["offline", "plan"] | None = None
-
-    @model_validator(mode="after")
-    def _one_op(self):
-        set_ops = [o for o in OPS if getattr(self, o) is not None]
-        if len(set_ops) != 1:
-            raise ValueError(f"metric {self.metric}: exactly one of {OPS} is needed, got {set_ops or 'none'}")
-        if self.metric not in metrics.REGISTRY:
-            raise ValueError(f"metric: unknown metric {self.metric!r} (known: {sorted(metrics.REGISTRY)})")
-        need = metrics.REGISTRY[self.metric].params
-        if "joint" in need and not self.joint:
-            raise ValueError(f"metric {self.metric}: needs joint")
-        return self
-
-    @property
-    def op(self) -> str:
-        return next(o for o in OPS if getattr(self, o) is not None)
-
-    @property
-    def threshold(self):
-        return getattr(self, self.op)
-
-
-class AllOf(Strict):
-    all: list[Condition] = []
-
-
-def _as_all(v):
-    return v if v is None or (isinstance(v, dict) and "all" in v) else {"all": [v]}
-
-
-class Phase(Strict):
-    name: str
-    end: Literal["gripper_close", "arm_motion", "gripper_open", "stream_end"]
-    pass_: AllOf = Field(alias="pass")
-    save_state: bool = True
-    timeout_s: float | None = Field(default=None, gt=0)
-
-    _norm = field_validator("pass_", mode="before")(_as_all)
-
-
-class Hold(Strict):
-    """validator.py HOLD: the gripped part's key, the part held open, its unit."""
-    grip_part: str
-    part: str
-    unit: Literal["deg", "cm"]
-
-
-class TaskObject(Strict):
-    name: str
-    gz_model: str
-    world_pose: list[float] = Field(min_length=4, max_length=4)
-    joint: str
-    handle: str
-    joint_topic: str
-    goal: float                         # old goal_angle: rad (revolute) or m (prismatic)
-    hold: Hold
-    grasp_half_width_axes: list[int] = Field(min_length=1)   # half of min(handle size[a]) (validator.py)
-
-
-class PolicyBoundaries(Strict):
-    grip_closed_max_m: float = Field(gt=0)
-    grasp_settle_s: float = Field(gt=0)
-    joint_moved_eps: float = Field(gt=0)       # in object.hold.unit
-
-
-class Boundaries(Strict):
-    change_tol: float = Field(gt=0)
-    policy: PolicyBoundaries
-
-
-class Sanity(Strict):
-    timed: list[Condition] = []                # fail the phase that holds the first violation
-    untimed: list[Condition] = []              # fail the episode as "global" (no regeneration)
-
-
-class Replay(Strict):
-    standoff_m: float
-    settle_s: float
-    approach_s: float
-    spawn_clearance_min_m: float
-    retreat_m: float
-    retreat_s: float
-    hold_check: str
-    pull_slowdown: float
-    pull_min_s: float
-
-
-class Rollout(Strict):
-    budget_s: float = Field(gt=0)
-    wait_s: float = Field(ge=0)
-    after_success_s: float | None = None
-    real_time_factor: float = Field(gt=0)
-    wall_safety: float = Field(2.0, gt=0)      # wall limit = sim time / measured RTF x wall_safety (+ setup_s for the job)
-    setup_s: float = Field(240.0, ge=0)        # container start, models, world load, client up
-
-
-class Success(Strict):
-    """Eval success of a policy rollout, judged from its state log (success.py): the object joint at or above
-    joint_deg for hold_s, with the handle held for at least held_fraction of the travel from 0 to joint_deg. Held:
-    gripper closed, both fingers on the handle within contact_s, each finger open half_width_m +- width_tol_m, the
-    handle bar's centre (at height bar_z_m, the grasp pose turned with the joint) within bar_max_m of the TCP across
-    the bar."""
-    joint_deg: float = Field(gt=0)
-    hold_s: float = Field(gt=0)
-    held_fraction: float = Field(gt=0, le=1)
-    contact_s: float = Field(gt=0)
-    half_width_m: float = Field(gt=0)
-    width_tol_m: float = Field(gt=0)
-    bar_max_m: float = Field(gt=0)
-    bar_z_m: float
-
-
-class Live(Strict):
-    contact_wait_s: float = Field(ge=0)
-    restore_pos_max_m: float = Field(gt=0)
-    restore_rot_max_deg: float = Field(gt=0)
-
-
-# ---- start design: where a robot's base starts for a task and what may vary (task.yaml `starts:`, one block per robot)
-# Numbers keep their yaml type (30 stays 30, not 30.0): the planner takes the block as ROUND_STARTS JSON text.
-Num = StrictInt | StrictFloat
-Pair = Annotated[list[Num], Field(min_length=2, max_length=2)]       # [low, high]
-
-
-def _ordered(name, pair, positive=False):
-    if not all(math.isfinite(x) for x in pair) or pair[0] > pair[1] or (positive and pair[0] <= 0):
-        raise ValueError(f"{name}: {pair} is not low <= high" + (" with low > 0" if positive else ""))
-
-
-class BoxStarts(Strict):
-    """method box: clustered starts, `clusters` x `per_cluster` attempts in a box_m square around `centre` (object
-    frame [m]) and a +-yaw_half_deg window about facing the object, each attempt jittered by offset_m / offset_deg."""
-    method: Literal["box"]
-    centre: Pair
-    clusters: StrictInt = Field(ge=1)
-    per_cluster: StrictInt = Field(ge=1)
-    box_m: Num = Field(gt=0, le=0.40)
-    yaw_half_deg: Num = Field(gt=0, le=30)
-    offset_m: Num = Field(ge=0.01, le=0.03)
-    offset_deg: Num = Field(ge=1, le=3)
-    nominal_arm: Literal["ready"] = "ready"
-
-    @model_validator(mode="after")
-    def _fits(self):
-        if not all(math.isfinite(x) for x in self.centre):
-            raise ValueError(f"centre: {self.centre} is not finite")
-        if self.box_m < 2 * self.offset_m or self.yaw_half_deg < self.offset_deg:
-            raise ValueError(f"no start fits: box_m {self.box_m} < 2 offset_m {self.offset_m} or "
-                             f"yaw_half_deg {self.yaw_half_deg} < offset_deg {self.offset_deg}")
-        return self
-
-    def block(self) -> dict:
-        """The planner's ROUND_STARTS block (start_design.parse_starts)."""
-        return self.model_dump(exclude={"method", "centre", "variants"}, exclude_none=True)
-
-    def base_limits(self) -> dict:
-        """How far a start may be from the box centre / from facing the object so that every jittered attempt stays
-        inside the box and the window: +- {"x_m": h, "y_m": h, "yaw_deg": w}."""
-        h = round(self.box_m / 2 - self.offset_m, 9)
-        return {"x_m": h, "y_m": h, "yaw_deg": round(self.yaw_half_deg - self.offset_deg, 9)}
-
-
-class ReachStarts(Strict):
-    """method reach: per seed one grasp point along the bar (grasp_m, task frame), the reach distance d_m and a base
-    turn of +-yaw_half_deg about the arm's first joint; the attempts of a seed jitter d and the turn."""
-    method: Literal["reach"]
-    grasp_m: Pair
-    d_m: Pair
-    yaw_half_deg: Num = Field(ge=0, le=30)
-    bearing_deg: Num | None = Field(None, ge=-90, le=90)     # default: the robot's reach.bearing_rad
-    jitter_m: Num = Field(ge=0, le=0.03)
-    jitter_deg: Num = Field(ge=0, le=3)
-
-    @model_validator(mode="after")
-    def _ranges(self):
-        _ordered("grasp_m", self.grasp_m)
-        _ordered("d_m", self.d_m, positive=True)
-        return self
-
-    def block(self) -> dict:
-        return {"mode": self.method, **self.model_dump(exclude={"method", "variants"}, exclude_none=True)}
-
-
-class DriveStarts(ReachStarts):
-    """method drive: a reach start plus a far start the robot drives in from with its arm folded: back_m behind the
-    reach base, side_m sideways, the heading +-heading_half_deg from facing the object."""
-    method: Literal["drive"]
-    back_m: Pair
-    side_m: Pair
-    heading_half_deg: Num = Field(ge=0, le=45)
-    slowdown: Num = Field(ge=1, le=10)                       # the replay runs the drive-in at slowdown x its time
-    sequence: Literal["simultaneous", "drive_then_arm"] | None = None
-
-    @model_validator(mode="after")
-    def _drive_ranges(self):
-        _ordered("back_m", self.back_m, positive=True)
-        _ordered("side_m", self.side_m)
-        return self
-
-
-def _by_method(*types):
-    return Annotated[Union[types], Field(discriminator="method")]
-
-
-StartDesign = BoxStarts | ReachStarts | DriveStarts
-_Variants = dict[str, _by_method(BoxStarts, ReachStarts, DriveStarts)]
-
-
-class BoxEntry(BoxStarts):
-    variants: _Variants = {}       # named alternatives (an experiment's datagen.variant), each replacing the block
-
-
-class ReachEntry(ReachStarts):
-    variants: _Variants = {}
-
-
-class DriveEntry(DriveStarts):
-    variants: _Variants = {}
-
-
-class Grasp(Strict):
-    """planner.grasp: how the TCP takes the handle, along `axis` of the object model frame. `points` are the defined
-    grasps (ids 0..n-1, the planner's grasp set); `range` is the optional continuous interval along the axis a spec
-    may draw a grasp from instead. depth (the TCP behind the handle centre, towards the door) and roll_deg are fixed
-    unless depth_range / roll_range_deg allow a draw too."""
-    axis: Literal["x", "y", "z"]
-    points: list[Num] = Field(min_length=1)
-    range: Pair | None = None
-    depth: Num
-    roll_deg: Num
-    depth_range: Pair | None = None
-    roll_range_deg: Pair | None = None
-
-    @model_validator(mode="after")
-    def _ordered_and_holding(self):
-        for name, pair, fixed in (("range", self.range, None), ("depth_range", self.depth_range, self.depth),
-                                  ("roll_range_deg", self.roll_range_deg, self.roll_deg)):
-            if pair is None:
-                continue
-            _ordered(f"grasp.{name}", pair)
-            if fixed is not None and not pair[0] <= fixed <= pair[1]:
-                raise ValueError(f"grasp.{name} {pair} does not hold the fixed value {fixed}")
-        return self
-
-
-class TaskRobot(Strict):
-    """A task's settings for one robot (task.yaml `robots: {<robot>: ...}`): merged over the task's own
-    planner block (key by key) and replay block when the task is resolved for that robot."""
-    planner: dict[str, Any] = {}
-    replay: dict[str, float | str] = {}
-
-
-class Task(Strict):
-    name: str
-    scene: str
-    prompt: str
-    card: dict[str, str] = {}
-    object: TaskObject
-    planner: dict[str, Any]
-    replay: Replay
-    budget_s: float = Field(gt=0)
-    boundaries: Boundaries
-    phases: list[Phase] = Field(min_length=1)
-    sanity: Sanity
-    rollout: Rollout
-    live: Live
-    success: Success | None = None          # eval success of policy rollouts (absent: only the phase verdict)
-    robots: dict[str, TaskRobot] = {}       # per-robot settings (reach-dependent numbers), optional
-    # per robot: where its base starts and what may vary; a robot without a block (or null) has no start design:
-    # AutoMoMa's whole-body IK picks the base
-    starts: dict[str, _by_method(BoxEntry, ReachEntry, DriveEntry) | None] = {}
-
-    @model_validator(mode="after")
-    def _phases(self):
-        names = [p.name for p in self.phases]
-        if len(set(names)) != len(names):
-            raise ValueError(f"phases: duplicate names {names}")
-        for p in self.phases:
-            for c in p.pass_.all:
-                if c.joint is not None and c.joint != self.object.joint:
-                    raise ValueError(f"phases.{p.name}: joint {c.joint!r} is not the task joint {self.object.joint!r}")
-        return self
-
-    @model_validator(mode="after")
-    def _grasp(self):
-        Grasp.model_validate(self.planner.get("grasp"))
-        return self
-
-    @property
-    def grasp(self) -> Grasp:
-        """planner.grasp, checked (as the robot's override merges it when the task is resolved for the robot)."""
-        return Grasp.model_validate(self.planner["grasp"])
-
-    def phase(self, name):
-        return next(p for p in self.phases if p.name == name)
-
-    def starts_for(self, robot, variant=None) -> StartDesign | None:
-        """The start design of `robot` (None: none), or of its named variant (an error when it has none)."""
-        entry = self.starts.get(robot)
-        if variant is None:
-            return entry
-        if entry is None or variant not in entry.variants:
-            raise SpecError(f"datagen variant {variant!r}: task {self.name} has no starts.{robot}.variants.{variant}")
-        return entry.variants[variant]
-
-    def for_robot(self, robot):
-        """This task with its `robots.<robot>` settings merged in (the task as that robot runs it)."""
-        o = self.robots.get(robot)
-        if o is None:
-            return self
-        return self.model_copy(update=dict(planner={**self.planner, **o.planner},
-                                           replay=self.replay.model_copy(update=o.replay)))
-
-
-# ------------------------------------------------------------------ robot, scene
-class Joints(Strict):
-    base: list[str] = Field(min_length=3, max_length=3)   # the shared base chain: x, y [m] (world), yaw [rad]
-    arm: list[str] = Field(min_length=1)
-    gripper: list[str] = Field(min_length=1)               # actuated gripper joints, raw values in the state
-
-    @computed_field
-    @property
-    def state(self) -> list[str]:
-        """Order of the state log's robot_joint_* columns / observation.state: base, arm, gripper joints."""
-        return [*self.base, *self.arm, *self.gripper]
-
-    @computed_field
-    @property
-    def action(self) -> list[str]:
-        """Order of the whole-body action: base, arm, `gripper` = the opening per contact link [m]."""
-        return [*self.base, *self.arm, "gripper"]
-
-    @computed_field
-    @property
-    def policy_state(self) -> list[str]:
-        """observation.state (the contract): the base twist in the robot frame, arm, gripper joints (policy_io)."""
-        return [*policy_io.BASE_TWIST, *self.arm, *self.gripper]
-
-    @computed_field
-    @property
-    def policy_action(self) -> list[str]:
-        """action (the contract): the commanded base twist in the robot frame, arm targets, gripper opening."""
-        return [*policy_io.BASE_TWIST, *self.arm, "gripper"]
-
-
-class Camera(Strict):
-    name: str
-    link: str
-    pose: list[float] = Field(min_length=6, max_length=6)
-    rate: float
-    width: int
-    height: int
-    hfov: float
-    clip: list[float] = Field(min_length=2, max_length=2)
-
-
-class Links(Strict):
-    root: str                        # the arm's first link, fixed on the chassis (base_link) at `mount`
-    hand: str                        # TCP = hand origin + tcp.hand_offset_z * hand z, hand orientation
-    on_chassis: list[str]            # links mounted on the chassis (no clearance check against it)
-
-
-class Tcp(Strict):
-    link: str                        # the TCP frame in the model and the planner robot
-    hand_offset_z: float
-
-
-class Mount(Strict):
-    xyz: list[float] = Field(min_length=3, max_length=3)   # links.root in base_link [m]
-
-
-class Chassis(Strict):
-    size_xy: list[float] = Field(min_length=2, max_length=2)   # box [m], from z 0.005 up to the mount
-    mass: float = Field(gt=0)
-
-
-class Base(Strict):
-    """The base joints' control (P + damping feed-forward, clamped) and SDF values; v_max / w_max: the
-    planning limits (peak of a min-jerk drive); limits: +- joint ranges [m, m, rad]."""
-    kp: list[float] = Field(min_length=3, max_length=3)
-    damping: list[float] = Field(min_length=3, max_length=3)    # SDF <damping> [N s/m, N m s/rad]
-    f_max: list[float] = Field(min_length=3, max_length=3)
-    v_max: float = Field(gt=0)
-    w_max: float = Field(gt=0)
-    limits: list[float] = Field(min_length=3, max_length=3)
-
-
-class Arm(Strict):
-    ready: list[float]               # the IK-preference configuration [rad]
-    # the fully folded rest pose [rad] (in the joint limits, clear of the chassis): a `drive` start's arm
-    folded: list[float] | None = None
-    kp: list[float]
-    damping: list[float]             # SDF <damping> [N m s/rad], fed forward by the controller
-    tau_max: list[float]
-    # rotor inertia stand-in [kg m^2] added to each arm joint's child link (the gz MuJoCo plugin drops
-    # <armature>); unset: the implementation's own
-    armature: list[float] | None = None
-
-
-class GripperSpec(Strict):
-    contact_links: list[str] = Field(min_length=2, max_length=2)   # their handle contacts = finger_contacts
-    hand_links: list[str]            # the links that may touch the grasped object
-    open_m: float                    # opening per contact link [m] (gap / 2)
-    closed_m: float
-    force_n: float = Field(gt=0)     # max squeeze [N]
-    # gripper joint position gain and SDF <damping>; unset: the implementation's own values
-    kp: float | None = Field(None, gt=0)
-    damping: float | None = Field(None, gt=0)
-    armature: float | None = Field(None, ge=0)   # as arm.armature, for the gripper joint's link
-
-
-class Reach(Strict):
-    d_m: float = Field(gt=0)         # base_for_reach default distance from the robot's reach origin
-    bearing_rad: float = 0.0
-
-
-class Robot(Strict):
-    name: str                        # spec name (specs/robots/<name>/)
-    # simulator code folder robots/<implementation>/ (default: the spec name): robots that share one
-    # implementation and differ only in their spec data
-    implementation: str | None = None
-    # uniform size factor the implementation applies to the description and to its own built-in geometry
-    # (lengths x s, masses x s^3, inertias x s^5); the values in this file are absolute (not scaled)
-    scale: float = Field(1.0, gt=0)
-    model: str                       # gz model name (joint scope prefix "<model>::")
-    description: str                 # the robot's model source (dir or URDF), repo-relative
-    joints: Joints
-    links: Links
-    tcp: Tcp
-    mount: Mount
-    chassis: Chassis
-    base: Base
-    arm: Arm
-    gripper: GripperSpec
-    reach: Reach
-    contract: str                    # Rosetta contract, relative to the robot spec dir
-    camera_model: str
-    gz_sdf: str
-    cameras: list[Camera] = Field(min_length=1)
-    planner: dict[str, Any]          # ported cuRobo fields (spheres, weights, limits)
-
-    @model_validator(mode="after")
-    def _sizes(self):
-        if self.implementation is None:
-            self.implementation = self.name
-        n = len(self.joints.arm)
-        for k in ("ready", "folded", "kp", "damping", "tau_max", "armature"):
-            if getattr(self.arm, k) is not None and len(getattr(self.arm, k)) != n:
-                raise ValueError(f"arm.{k}: {len(getattr(self.arm, k))} values for {n} arm joints")
-        return self
-
-
-class Scene(Strict):
-    name: str
-    world: str
-    assets: list[str]
-    skip: list[str] = []
-    detailed: list[str] = []
-    floor: dict[str, Any]
-
-
-# ------------------------------------------------------------------ experiment
-class SeedRange(Strict):
-    lo: int = Field(ge=0)
-    hi: int = Field(ge=0)
-
-    @model_validator(mode="before")
-    @classmethod
-    def _pair(cls, v):
-        if isinstance(v, (list, tuple)):
-            if len(v) != 2:
-                raise ValueError("a seed range is [first, last] (inclusive)")
-            return {"lo": v[0], "hi": v[1]}
-        return v
-
-    @model_validator(mode="after")
-    def _order(self):
-        if self.hi < self.lo:
-            raise ValueError(f"seed range [{self.lo}, {self.hi}]: last < first")
-        return self
-
-    def seeds(self):
-        return list(range(self.lo, self.hi + 1))
-
-
-class Seeds(Strict):
-    train: SeedRange
-    probe: SeedRange
-    heldout: SeedRange
-
-    @model_validator(mode="after")
-    def _disjoint(self):
-        sets = {k: set(getattr(self, k).seeds()) for k in ("train", "probe", "heldout")}
-        for a, b in (("train", "probe"), ("train", "heldout"), ("probe", "heldout")):
-            common = sets[a] & sets[b]
-            if common:
-                raise ValueError(f"seeds.{a} and seeds.{b} overlap: {sorted(common)[:10]}")
-        return self
-
-
-class Datagen(Strict):
-    episodes_per_seed: int = Field(ge=1)
-    workers: int = Field(ge=1)
-    # optional: a named variant of the task's start design (task.yaml starts.<robot>.variants),
-    # passed to every job as $REVOLVE_DATAGEN_VARIANT; default: the task's own blocks
-    variant: str | None = None
-
-
-class Recovery(Strict):
-    episodes_per_failure: int = Field(ge=1)
-    phases: list[str] = Field(min_length=1)
-
-
-class Training(Strict):
-    policy: str
-    base: str
-    mode: Literal["finetune_last", "from_base", "finetune_recovery_only"] = "finetune_last"
-    steps: int = Field(ge=1)
-    batch_size: int = Field(ge=1)
-    save_every: int | None = Field(default=None, ge=1)    # also save every N steps -> turn_<k>/ckpt_<step>/
-    backend: Literal["local", "gpu_machine", "modal"]
-    backends: dict[str, dict[str, Any]] = {}
-
-    @model_validator(mode="after")
-    def _backend(self):
-        if self.backend != "local" and self.backend not in self.backends:
-            raise ValueError(f"training.backends: no settings for backend {self.backend!r}")
-        return self
-
-
-class Eval(Strict):
-    rollouts_per_seed: int = Field(ge=1)
-    retries: int = Field(ge=0)
-
-
-class Experiment(Strict):
-    name: str
-    robot: str
-    task: str
-    max_turns: int = Field(ge=1)
-    seeds: Seeds
-    datagen: Datagen
-    recovery: Recovery
-    training: Training
-    eval: Eval
-    stall_timeout_s: float = Field(gt=0)
-
-
-class Resolved(BaseModel):
-    experiment: Experiment | None = None
-    task: Task
-    robot: Robot
-    scene: Scene
-
-
-# ------------------------------------------------------------------ loader
-ROBOT_ENV = "REVOLVE_ROBOT"          # the robot of task-level loads (the CLI sets it from the experiment)
-VARIANT_ENV = "REVOLVE_DATAGEN_VARIANT"   # an experiment's datagen.variant (unset: none)
-KINDS = {"experiments": Experiment, "tasks": Task, "robots": Robot, "scenes": Scene}
-FILES = {"tasks": "task.yaml", "robots": "robot.yaml", "scenes": "scene.yaml"}
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+
+OPS = ("lt", "le", "eq", "ge", "gt")
+AXES = ("x", "-x", "y", "-y", "z", "-z")
+SANITY_FILE = "sanity.yaml"
+GLOBAL_PHASE = "global"          # where an untimed sanity failure is attributed (not a phase name)
+
+# ------------------------------------------------------------------ metric registry
+# Entity kinds a parameter accepts. A robot frame is one link; a group is several links (robot::<group>, robot,
+# a whole model); `any` covers any / any_except_targets.
+JOINT, LINK, COLLISION, FRAME, GROUP, ANY = "joint", "link", "collision", "frame", "group", "any"
+POINT = frozenset({LINK, COLLISION, FRAME})       # one body: a pose (a collision: its geometry, for distance)
+BODIES = POINT | {GROUP}
+ANY_NAMES = ("any", "any_except_targets")
+
+
+@dataclass(frozen=True)
+class Param:
+    type: Literal["entity", "axes", "patterns"]
+    kinds: frozenset = frozenset()   # entity: the entity kinds it takes
+    default: Any = None              # None: required
+
+
+@dataclass(frozen=True)
+class Metric:
+    unit: str
+    doc: str
+    params: dict[str, Param] = field(default_factory=dict)
+
+
+def _e(kinds, default=None):
+    return Param("entity", frozenset(kinds), default)
+
+
+METRICS: dict[str, Metric] = {
+    "joint": Metric("rad | m", "position of a scene joint", {"of": _e({JOINT})}),
+    "distance": Metric("m", "distance between two bodies: a frame/link by its origin, a collision by its geometry "
+                       "(0 inside it)", {"from": _e(POINT), "to": _e(POINT)}),
+    "angle": Metric("rad", "angle (0..pi) between axis axes[0] of `from` and axis axes[1] of `to` (signed axes "
+                    "x, -x, y, -y, z, -z of each frame; a collision's frame is its pose)",
+                    {"from": _e(POINT), "to": _e(POINT), "axes": Param("axes")}),
+    "contacts": Metric("links", "number of links of `from` in contact with `to`",
+                       {"from": _e(BODIES), "to": _e(BODIES | {ANY})}),
+    "gripper_opening": Metric("m", "distance between the origins of the two links of a robot group",
+                              {"of": _e({GROUP})}),
+    "slip": Metric("m", "drift of `from` relative to `to` (position in `to`'s frame) since the phase start",
+                   {"from": _e(POINT), "to": _e(POINT)}),
+    "peak_body_speed": Metric("m/s", "highest link speed of `of` (default: the robot)", {"of": _e(BODIES, "robot")}),
+    "penetration": Metric("m", "deepest contact involving `of` (default: the robot)", {"of": _e(BODIES, "robot")}),
+    "non_finite_commands": Metric("commands", "commands with a NaN or Inf value sent to the robot"),
+    "gz_log_problem_lines": Metric("lines", "gz error lines, except those matching an `ignore` regex",
+                                   {"ignore": Param("patterns", default=())}),
+}
 
 
 class SpecError(ValueError):
     pass
 
 
-def robot_env():
-    """{REVOLVE_ROBOT: its value} (and {REVOLVE_DATAGEN_VARIANT: its value}) when set: what a launcher passes on to
-    a job's container."""
-    return {k: os.environ[k] for k in (ROBOT_ENV, VARIANT_ENV) if os.environ.get(k)}
+class Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+# ------------------------------------------------------------------ conditions
+class Condition(Strict):
+    """Parsed from {metric, <params>, <op>: value, for_s?}. for_s: the comparison held for the last for_s seconds."""
+    metric: str
+    params: dict[str, Any] = {}
+    op: Literal["lt", "le", "eq", "ge", "gt"]
+    value: float
+    for_s: float | None = Field(default=None, gt=0)
+
+    EXTRA_KEYS: ClassVar[tuple[str, ...]] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _from_yaml(cls, v):
+        if not isinstance(v, dict):
+            raise ValueError(f"a condition is a mapping {{metric: ..., <op>: value}}, got {v!r}")
+        v = dict(v)
+        name = v.pop("metric", None)
+        if name not in METRICS:
+            raise ValueError(f"metric: unknown metric {name!r} (known: {', '.join(METRICS)})")
+        m = METRICS[name]
+        ops = [o for o in OPS if o in v]
+        if len(ops) != 1:
+            unknown = sorted(set(v) - {*m.params, *OPS, "for_s", *cls.EXTRA_KEYS})
+            raise ValueError(f"metric {name}: exactly one of {', '.join(OPS)} is needed, got {ops or 'none'}"
+                             + (f" (unknown key(s) {unknown})" if unknown else ""))
+        value = v.pop(ops[0])
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"metric {name}: {ops[0]} needs a number, got {value!r}")
+        out = {"metric": name, "op": ops[0], "value": value}
+        for k in ("for_s", *cls.EXTRA_KEYS):
+            if k in v:
+                out[k] = v.pop(k)
+        params = {}
+        for k, p in m.params.items():
+            if k in v:
+                params[k] = _param(name, k, p, v.pop(k))
+            elif p.default is None:
+                raise ValueError(f"metric {name}: missing parameter {k!r} ({_describe(p)})")
+            else:
+                params[k] = p.default
+        if v:
+            allowed = [*m.params, *OPS, "for_s", *cls.EXTRA_KEYS]
+            raise ValueError(f"metric {name}: unknown key(s) {sorted(v)} (allowed: {', '.join(allowed)})")
+        out["params"] = params
+        return out
+
+    def entities(self):
+        """{param: entity string} of the entity parameters."""
+        return {k: self.params[k] for k, p in METRICS[self.metric].params.items() if p.type == "entity"}
+
+
+class SanityCheck(Condition):
+    """A sanity check: a condition, timed (default: fails the phase active at the first violation) or untimed
+    (`timed: false`: fails the episode as phase `global`)."""
+    timed: bool = True
+
+    EXTRA_KEYS: ClassVar[tuple[str, ...]] = ("timed",)
+
+
+def _describe(p):
+    return {"entity": "an entity", "axes": f"[from axis, to axis], each one of {', '.join(AXES)}",
+            "patterns": "a list of regexes"}[p.type]
+
+
+def _param(metric, key, p, v):
+    if p.type == "entity":
+        if not isinstance(v, str):
+            raise ValueError(f"metric {metric}: {key} must be an entity name, got {v!r}")
+        parse_entity(v)
+        return v
+    if p.type == "axes":
+        if not (isinstance(v, list) and len(v) == 2 and all(a in AXES for a in v)):
+            raise ValueError(f"metric {metric}: {key} must be {_describe(p)}, got {v!r}")
+        return tuple(v)
+    if not (isinstance(v, list) and all(isinstance(s, str) for s in v)):
+        raise ValueError(f"metric {metric}: {key} must be {_describe(p)}, got {v!r}")
+    for s in v:
+        try:
+            re.compile(s)
+        except re.error as e:
+            raise ValueError(f"metric {metric}: {key}: bad regex {s!r}: {e}") from None
+    return tuple(v)
+
+
+# ------------------------------------------------------------------ entities
+NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
+RESERVED = ("robot", *ANY_NAMES)
+
+
+@dataclass(frozen=True)
+class Entity:
+    text: str
+    model: str | None = None         # a scene model, or None for robot / any
+    name: str | None = None          # robot alias, or a model's link/joint
+    collision: str | None = None
+    robot: bool = False
+    any: bool = False
+
+
+def parse_entity(text):
+    """Syntax only: -> Entity (a bare name is a target alias or a whole model; resolved by check_entity)."""
+    if text in ANY_NAMES:
+        return Entity(text, any=True)
+    parts = text.split("::")
+    if not all(NAME.match(p) for p in parts) or len(parts) > 3:
+        raise ValueError(f"entity {text!r}: not one of robot, robot::<alias>, <model>, <model>::<link|joint>, "
+                         f"<model>::<link>::<collision>, a target alias, {', '.join(ANY_NAMES)}")
+    if parts[0] == "robot":
+        if len(parts) == 3:
+            raise ValueError(f"entity {text!r}: robot entities are robot or robot::<alias>")
+        return Entity(text, robot=True, name=parts[1] if len(parts) == 2 else None)
+    return Entity(text, model=parts[0], name=parts[1] if len(parts) > 1 else None,
+                  collision=parts[2] if len(parts) == 3 else None)
+
+
+@dataclass
+class ModelInfo:
+    """A scene model's names, from its SDF (None: assets not checked)."""
+    sdf: Path | None = None
+    links: dict[str, set[str]] = field(default_factory=dict)       # link -> its collision names
+    joints: dict[str, tuple[str, float | None, float | None]] = field(default_factory=dict)  # type, lower, upper
+
+
+def check_entity(text, kinds, models, targets, robot=None):
+    """Errors (strings) for entity `text` in a parameter taking `kinds`. models: {entity: ModelInfo} of the scene
+    (empty ModelInfo: assets not checked, link/joint names not checked); targets: the task's; robot: a Robot to
+    check robot::<alias> against (None: later, see check_robot_refs)."""
+    e = parse_entity(text)
+    if not e.robot and not e.any and e.name is None and e.model in targets:
+        e = parse_entity(targets[e.model])
+    if e.any:
+        return [] if ANY in kinds else [f"{text}: {', '.join(ANY_NAMES)} only work as contacts `to`"]
+    if e.robot:
+        if e.name is None:
+            return [] if GROUP in kinds else [f"{text}: the whole robot is a link group; {_kinds(kinds)} needed"]
+        if robot is None:
+            return []
+        kind = FRAME if e.name in robot.frames else GROUP if e.name in robot.groups else None
+        if kind is None:
+            return [f"{text}: robot {robot.name} has no frame or group {e.name!r} (frames: "
+                    f"{', '.join(robot.frames) or 'none'}; groups: {', '.join(robot.groups) or 'none'})"]
+        return [] if kind in kinds else [f"{text}: robot {kind} {e.name!r}, but {_kinds(kinds)} needed"]
+    if e.model not in models:
+        what = "a target alias or scene model" if e.name is None else "a scene model"
+        return [f"{text}: {e.model!r} is not {what} (models: {', '.join(models)}"
+                + (f"; targets: {', '.join(targets)})" if targets else ")")]
+    info = models[e.model]
+    if e.name is None:
+        return [] if GROUP in kinds else [f"{text}: a whole model is a link group; {_kinds(kinds)} needed"]
+    if info.sdf is None:                 # assets not checked: syntax + model only
+        kind = COLLISION if e.collision else None
+        return [] if kind is None or kind in kinds else [f"{text}: a collision, but {_kinds(kinds)} needed"]
+    if e.collision is not None:
+        if e.name not in info.links:
+            return [f"{text}: model {e.model} has no link {e.name!r} (links: {', '.join(info.links)})"]
+        if e.collision not in info.links[e.name]:
+            return [f"{text}: link {e.model}::{e.name} has no collision {e.collision!r} "
+                    f"(collisions: {', '.join(sorted(info.links[e.name]))})"]
+        return [] if COLLISION in kinds else [f"{text}: a collision, but {_kinds(kinds)} needed"]
+    found = [k for k, names in ((LINK, info.links), (JOINT, info.joints)) if e.name in names]
+    if not found:
+        return [f"{text}: model {e.model} ({info.sdf}) has no link or joint {e.name!r} (links: "
+                f"{', '.join(info.links)}; joints: {', '.join(info.joints)})"]
+    return [] if set(found) & kinds else [f"{text}: a {found[0]}, but {_kinds(kinds)} needed"]
+
+
+def _kinds(kinds):
+    return "a " + " or ".join(sorted(kinds - {ANY}) + (list(ANY_NAMES) if ANY in kinds else []))
+
+
+# ------------------------------------------------------------------ scene
+def _name(v):
+    if not NAME.match(v) or v in RESERVED:
+        raise ValueError(f"{v!r}: names are letters, digits, _ . - and not one of {', '.join(RESERVED)}")
+    return v
+
+
+class SceneModel(Strict):
+    model: str                                   # model:// name (the folder in the asset search path)
+    pose: list[float] = Field(default=[0.0, 0.0, 0.0, 0.0], min_length=4, max_length=4)   # x, y, z [m], yaw [rad]
+    joints: dict[str, float] = {}                # initial joint positions [rad | m]
+
+    @field_validator("model")
+    @classmethod
+    def _uri(cls, v):
+        v = v.removeprefix("model://")
+        if not NAME.match(v):
+            raise ValueError(f"model {v!r}: a model:// name (a folder in the asset search path)")
+        return v
+
+
+class RobotStart(Strict):
+    base: list[float] = Field(min_length=3, max_length=3)   # x, y [m], yaw [rad] in the world
+    arm: str | list[float]                                  # a robot.yaml pose name, or joint positions [rad]
+
+
+class Scene(Strict):
+    name: str
+    assets: list[str] = Field(min_length=1)      # search path for model:// names, repo-relative; first match wins
+    models: dict[str, SceneModel] = Field(min_length=1)
+    robot_start: RobotStart
+
+    @field_validator("models")
+    @classmethod
+    def _names(cls, v):
+        for k in v:
+            _name(k)
+        return v
+
+
+def find_model(scene, name, repo):
+    """The SDF of model://name: the first search dir with <name>/model.config (its <sdf>) or <name>/model.sdf."""
+    for d in scene.assets:
+        base = (Path(repo) / d / name)
+        cfg = base / "model.config"
+        if cfg.is_file():
+            try:
+                sdf = ET.parse(cfg).getroot().findtext("sdf")
+            except ET.ParseError as e:
+                raise SpecError(f"{cfg}: {e}") from None
+            if sdf and (base / sdf.strip()).is_file():
+                return base / sdf.strip()
+        if (base / "model.sdf").is_file():
+            return base / "model.sdf"
+    return None
+
+
+def read_model(sdf):
+    """ModelInfo of an SDF file: the top-level model's links (with their collisions) and joints."""
+    try:
+        root = ET.parse(sdf).getroot()
+    except ET.ParseError as e:
+        raise SpecError(f"{sdf}: {e}") from None
+    model = root.find("model") if root.tag == "sdf" else root
+    if model is None or model.tag != "model":
+        raise SpecError(f"{sdf}: no <model>")
+    info = ModelInfo(sdf=Path(sdf))
+    for link in model.findall("link"):
+        info.links[link.get("name")] = {c.get("name") for c in link.findall("collision")}
+    for j in model.findall("joint"):
+        lo, hi = (j.findtext(f"axis/limit/{k}") for k in ("lower", "upper"))
+        info.joints[j.get("name")] = (j.get("type"), float(lo) if lo else None, float(hi) if hi else None)
+    return info
+
+
+def scene_models(scene, repo, assets=True):
+    """({entity: ModelInfo}, errors): resolves every model:// name and checks the initial joint positions.
+    assets=False: no file access (empty ModelInfo each)."""
+    models, errors = {}, []
+    for ent, m in scene.models.items():
+        if not assets:
+            models[ent] = ModelInfo()
+            continue
+        sdf = find_model(scene, m.model, repo)
+        if sdf is None:
+            errors.append(f"models.{ent}.model: model://{m.model} is in none of {scene.assets} (under {repo})")
+            models[ent] = ModelInfo()
+            continue
+        info = models[ent] = read_model(sdf)
+        for j, q in m.joints.items():
+            if j not in info.joints:
+                errors.append(f"models.{ent}.joints.{j}: {sdf} has no joint {j!r} "
+                              f"(joints: {', '.join(info.joints) or 'none'})")
+                continue
+            typ, lo, hi = info.joints[j]
+            if typ == "fixed":
+                errors.append(f"models.{ent}.joints.{j}: a fixed joint")
+            elif (lo is not None and q < lo) or (hi is not None and q > hi):
+                errors.append(f"models.{ent}.joints.{j}: {q} is outside the joint limits [{lo}, {hi}]")
+    return models, errors
+
+
+# ------------------------------------------------------------------ robot
+class Robot(Strict):
+    name: str
+    description: str                 # the robot's xacro (URDF), relative to the robot's folder
+    controllers: str                 # ros2_control controllers yaml, relative to the robot's folder
+    poses: dict[str, list[float]] = Field(min_length=1)   # named arm poses [rad], arm joint order
+    frames: dict[str, str] = {}      # alias -> link (robot::<alias>, e.g. tcp, hand, base)
+    groups: dict[str, list[str]] = {}   # alias -> links (e.g. fingers)
+
+    @model_validator(mode="after")
+    def _check(self):
+        sizes = {len(p) for p in self.poses.values()}
+        if len(sizes) != 1 or 0 in sizes:
+            raise ValueError(f"poses: every pose needs the same, nonzero number of joints, got "
+                             f"{ {k: len(p) for k, p in self.poses.items()} }")
+        for k in (*self.frames, *self.groups):
+            _name(k)
+        both = set(self.frames) & set(self.groups)
+        if both:
+            raise ValueError(f"{sorted(both)}: both a frame and a group")
+        for k, links in self.groups.items():
+            if not links:
+                raise ValueError(f"groups.{k}: no links")
+        return self
+
+    @property
+    def arm_dof(self):
+        return len(next(iter(self.poses.values())))
+
+
+def check_robot_files(robot, folder):
+    """Errors: the description and controllers files exist; if xacro is importable, the aliased links exist."""
+    errors = []
+    for k in ("description", "controllers"):
+        if not (Path(folder) / getattr(robot, k)).is_file():
+            errors.append(f"{k}: no file {Path(folder) / getattr(robot, k)}")
+    if errors:
+        return errors
+    try:
+        import xacro
+    except ImportError:              # no xacro (e.g. the host venv): the simulator image checks the links
+        return errors
+    try:
+        urdf = xacro.process_file(str(Path(folder) / robot.description)).toxml()
+        links = {lk.get("name") for lk in ET.fromstring(urdf).findall("link")}
+    except Exception as e:           # xacro raises many types
+        return [f"description: xacro failed: {e}"]
+    for k, link in robot.frames.items():
+        if link not in links:
+            errors.append(f"frames.{k}: no link {link!r} in the description")
+    for k, ls in robot.groups.items():
+        errors += [f"groups.{k}: no link {lk!r} in the description" for lk in ls if lk not in links]
+    return errors
+
+
+# ------------------------------------------------------------------ task
+class Phase(Strict):
+    """Ordered: all `done` conditions true -> the next phase; a `while` condition false, or timeout_s passed in this
+    phase -> the task fails in this phase."""
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    name: str
+    done: list[Condition] = Field(min_length=1)
+    while_: list[Condition] = Field(default=[], alias="while")
+    timeout_s: float | None = Field(default=None, gt=0)
+
+
+class Task(Strict):
+    name: str
+    scene: str
+    prompt: str                      # the language instruction
+    targets: dict[str, str] = {}     # alias -> a scene entity (<model>::<link|joint>[::<collision>])
+    phases: list[Phase] = Field(min_length=1)
+    budget_s: float = Field(gt=0)    # the whole episode
+    sanity: dict[str, SanityCheck | None] = {}   # overrides/additions to tasks/sanity.yaml by key; null removes
+
+    @model_validator(mode="after")
+    def _check(self):
+        names = [p.name for p in self.phases]
+        if len(set(names)) != len(names):
+            raise ValueError(f"phases: duplicate names {names}")
+        if GLOBAL_PHASE in names:
+            raise ValueError(f"phases: {GLOBAL_PHASE!r} is reserved (untimed sanity failures)")
+        for k, v in self.targets.items():
+            _name(k)
+            e = parse_entity(v)
+            if e.robot or e.any or e.name is None:
+                raise ValueError(f"targets.{k}: {v!r} is not a scene entity <model>::<link|joint>[::<collision>]")
+        return self
+
+    def conditions(self):
+        """[(location, condition)] of every phase condition."""
+        return [(f"phases.{p.name}.{k}[{i}]", c) for p in self.phases
+                for k, cs in (("done", p.done), ("while", p.while_)) for i, c in enumerate(cs)]
+
+
+def merge_sanity(base, overrides):
+    """base (tasks/sanity.yaml) <- a task's overrides: a check replaces or adds by key, null removes the key."""
+    out = dict(base)
+    for k, v in overrides.items():
+        if v is None:
+            if k not in out:
+                raise SpecError(f"sanity.{k}: null removes a base check, but tasks/{SANITY_FILE} has no {k!r} "
+                                f"(checks: {', '.join(base)})")
+            del out[k]
+        else:
+            out[k] = v
+    return out
+
+
+def check_task(task, models, sanity, robot=None):
+    """Errors: every entity of the task's conditions and merged sanity checks against the scene's models (and the
+    robot, when given)."""
+    errors = []
+    for k, v in task.targets.items():
+        errors += [f"targets.{k}: {m}" for m in check_entity(v, POINT | {GROUP, JOINT}, models, {})]
+    for k in task.targets:
+        if k in models:
+            errors.append(f"targets.{k}: also a scene model name")
+    checks = [*task.conditions(), *((f"sanity.{k}", c) for k, c in sanity.items())]
+    for loc, c in checks:
+        for p, text in c.entities().items():
+            kinds = METRICS[c.metric].params[p].kinds
+            errors += [f"{loc}.{p}: {m}" for m in check_entity(text, kinds, models, task.targets, robot)]
+    return errors
+
+
+def check_robot_refs(task, scene, models, sanity, robot):
+    """Errors when the task + scene run with this robot: robot::<alias> entities, the robot_start arm pose."""
+    errors = check_task(task, models, sanity, robot)    # the task passed without a robot: only robot errors left
+    arm = scene.robot_start.arm
+    if isinstance(arm, str) and arm not in robot.poses:
+        errors.append(f"scene {scene.name}: robot_start.arm {arm!r} is not a pose of robot {robot.name} "
+                      f"(poses: {', '.join(robot.poses)})")
+    if isinstance(arm, list) and len(arm) != robot.arm_dof:
+        errors.append(f"scene {scene.name}: robot_start.arm has {len(arm)} joints, robot {robot.name} {robot.arm_dof}")
+    return errors
+
+
+# ------------------------------------------------------------------ loader
+REPO_SPECS = Path(__file__).resolve().parents[2] / "specs"    # this repo's specs/ (scene instances resolve against it)
+KINDS = {"tasks": Task, "robots": Robot, "scenes": Scene}
+FILES = {"tasks": "task.yaml", "robots": "robot.yaml", "scenes": "scene.yaml"}
+
+
+@dataclass
+class Resolved:
+    """A task ready to run: the task, its scene (+ model names), the merged sanity checks, the robot (if given)."""
+    task: Task
+    scene: Scene
+    models: dict[str, ModelInfo]
+    sanity: dict[str, SanityCheck]
+    robot: Robot | None = None
 
 
 def read_yaml(path):
-    data = yaml.safe_load(Path(path).read_text())
+    try:
+        data = yaml.safe_load(Path(path).read_text())
+    except (OSError, yaml.YAMLError) as e:
+        raise SpecError(f"{path}: {e}") from None
     if not isinstance(data, dict):
         raise SpecError(f"{path}: not a YAML mapping")
     return data
 
 
 def find_root(path):
-    """The specs/ dir that holds path (the nearest parent with an experiments/ or tasks/ child)."""
+    """The specs/ dir that holds path."""
     p = Path(path).resolve()
     for d in [p, *p.parents]:
         if d.is_dir() and d.name == "specs":
@@ -630,23 +537,20 @@ def find_root(path):
     raise SpecError(f"{path}: not under a specs/ directory")
 
 
-def kind_of(path, root):
-    rel = Path(path).resolve().relative_to(root)
-    if rel.parts and rel.parts[0] in KINDS:
-        return rel.parts[0]
-    raise SpecError(f"{path}: not under specs/{{{','.join(KINDS)}}}/")
+def _fail(path, what, lines):
+    raise SpecError("\n".join([f"{path}: {what} invalid", *(f"  {x}" for x in lines)]))
 
 
 def parse(model, path):
-    from pydantic import ValidationError
     try:
         return model.model_validate(read_yaml(path))
     except ValidationError as e:
-        lines = [f"{path}: {model.__name__} spec invalid"]
+        lines = []
         for err in e.errors():
             loc = ".".join(str(x) for x in err["loc"])
-            lines.append(f"  {loc}: {err['msg']}")
-        raise SpecError("\n".join(lines)) from None
+            lines.append(f"{loc}: {err['msg'].removeprefix('Value error, ')}" if loc else
+                         err["msg"].removeprefix("Value error, "))
+        _fail(path, f"{model.__name__} spec", lines)
 
 
 def spec_path(root, kind, name):
@@ -656,66 +560,85 @@ def spec_path(root, kind, name):
     return p
 
 
-def resolve_task(task, root, robot_name):
-    """(the task as robot_name runs it, the robot, the scene); the robot's contract must carry the robot's
-    policy state and action (policy_io: base twist + joints) in its observation.state / action sources."""
-    for key, names in (("robots", task.robots), ("starts", task.starts)):
-        for r in names:
-            if not (Path(root) / "robots" / r / FILES["robots"]).is_file():
-                raise SpecError(f"task {task.name}: {key}.{r}: no robot {r!r}")
-    robot = parse(Robot, spec_path(root, "robots", robot_name))
-    entry = task.starts.get(robot_name)
-    for d in ([] if entry is None else [entry, *entry.variants.values()]):
-        if d.method == "drive" and robot.arm.folded is None:
-            raise SpecError(f"task {task.name}: starts.{robot_name} drives in, but robot {robot_name} "
-                            "has no arm.folded")
-    scene = parse(Scene, spec_path(root, "scenes", task.scene))
-    contract = Path(root) / "robots" / robot.name / robot.contract
-    if not contract.is_file():
-        raise SpecError(f"robot {robot.name}: contract {contract} missing")
-    try:
-        lay = policy_io.contract_layout(read_yaml(contract))
-    except (ValueError, KeyError, TypeError) as e:
-        raise SpecError(f"robot {robot.name}: contract {contract}: {e}") from None
-    for key, want in (("observation.state", robot.joints.policy_state), ("action", robot.joints.policy_action)):
-        got = policy_io.names(lay[key]) if key in lay else None
-        if got != want:
-            raise SpecError(f"robot {robot.name}: contract {key} {got} != the robot's policy {key} {want}")
-    return task.for_robot(robot.name), robot, scene
+def load_sanity(root):
+    """tasks/sanity.yaml: {key: SanityCheck}; any key that is not a check is rejected."""
+    path = Path(root) / "tasks" / SANITY_FILE
+    data, out, lines = read_yaml(path), {}, []
+    for k, v in data.items():
+        if not isinstance(v, dict) or "metric" not in v:
+            lines.append(f"{k}: not a check ({{metric: ..., <op>: value}}); {SANITY_FILE} holds only checks")
+            continue
+        try:
+            out[k] = SanityCheck.model_validate(v)
+        except ValidationError as e:
+            lines += [f"{k}: {err['msg'].removeprefix('Value error, ')}" for err in e.errors()]
+    if lines:
+        _fail(path, "sanity base", lines)
+    return out
 
 
-def load(path, robot=None):
-    """Load and validate any spec file; experiments and tasks are resolved to their robot and scene.
-    The robot: an experiment's `robot:`; for a task (robot-free) the `robot` argument, else $REVOLVE_ROBOT.
-    -> Resolved (experiment/task) or the parsed Robot/Scene."""
-    path = Path(path)
-    root = find_root(path)
-    kind = kind_of(path, root)
+def _load(path, root, kind, assets, instance=False):
     spec = parse(KINDS[kind], path)
-    if kind == "experiments":
-        task = parse(Task, spec_path(root, "tasks", spec.task))
-        bad = [p for p in spec.recovery.phases if p not in [x.name for x in task.phases]]
-        if bad:
-            raise SpecError(f"{path}: recovery.phases {bad} are not phases of task {task.name}")
-        if spec.name != path.stem:
-            raise SpecError(f"{path}: name {spec.name!r} != the file name {path.stem!r}")
-        if robot is not None and robot != spec.robot:
-            raise SpecError(f"{path}: robot {spec.robot!r}, not {robot!r}")
-        task, rb, scene = resolve_task(task, root, spec.robot)
-        return Resolved(experiment=spec, task=task, robot=rb, scene=scene)
-    if spec.name != path.parent.name:
-        raise SpecError(f"{path}: name {spec.name!r} != its folder {path.parent.name!r}")
-    if kind == "tasks":
-        robot = robot or os.environ.get(ROBOT_ENV)
-        if not robot:
-            raise SpecError(f"{path}: a task is robot-free: name the robot (an experiment's `robot:`, ${ROBOT_ENV})")
-        task, rb, scene = resolve_task(spec, root, robot)
-        return Resolved(task=task, robot=rb, scene=scene)
-    return spec
+    if not instance and spec.name != Path(path).parent.name:
+        raise SpecError(f"{path}: name {spec.name!r} != its folder {Path(path).parent.name!r}")
+    if kind == "robots":
+        errs = check_robot_files(spec, Path(path).parent)
+        if errs:
+            _fail(path, "robot", errs)
+        return spec, None
+    scene_file = path if kind == "scenes" else spec_path(root, "scenes", spec.scene)
+    scene = spec if kind == "scenes" else parse(Scene, scene_file)
+    models, errs = scene_models(scene, root.parent, assets)
+    if errs:
+        _fail(scene_file, "scene", errs)
+    if kind == "scenes":
+        return spec, None
+    sanity = merge_sanity(load_sanity(root), spec.sanity)
+    errs = check_task(spec, models, sanity)
+    if errs:
+        _fail(path, "task", errs)
+    return spec, Resolved(task=spec, scene=scene, models=models, sanity=sanity)
 
 
-def load_experiment(path) -> Resolved:
-    r = load(path)
-    if not isinstance(r, Resolved) or r.experiment is None:
-        raise SpecError(f"{path}: not an experiment spec")
+def load(path, assets=True, root=None):
+    """Load and validate one spec file -> Scene, Robot, Task, or {key: SanityCheck} for tasks/sanity.yaml.
+    A scene's model:// names and joints, and a task's entities, are checked against the model SDFs
+    (assets=False: names only, no asset files read). Raises SpecError with every problem found.
+    A scene.yaml outside any specs/ directory is a scene instance (e.g. one a randomizer wrote for a seed): a scene
+    like any other, named like the scene it was made from (not after its folder), its `assets` relative to the repo
+    of `root` (a specs/ directory; default the repo's own, REPO_SPECS)."""
+    path = Path(path)
+    try:
+        root = find_root(path)
+    except SpecError:
+        if path.name != FILES["scenes"]:
+            raise
+        return _load(path, Path(root or REPO_SPECS), "scenes", assets, instance=True)[0]
+    if path.resolve() == (root / "tasks" / SANITY_FILE).resolve():
+        return load_sanity(root)
+    rel = path.resolve().relative_to(root).parts
+    if len(rel) != 3 or rel[0] not in KINDS or rel[2] != FILES[rel[0]]:
+        raise SpecError(f"{path}: not specs/{{scenes,robots,tasks}}/<name>/<kind>.yaml or specs/tasks/{SANITY_FILE}")
+    return _load(path, root, rel[0], assets)[0]
+
+
+def resolve(root, task, robot=None, assets=True):
+    """Task `task` (name) with its scene, merged sanity checks and, if `robot` (name) is given, the robot, with
+    every robot::<alias> and the robot start checked against it -> Resolved."""
+    root = Path(root)
+    _, r = _load(spec_path(root, "tasks", task), root, "tasks", assets)
+    if robot is not None:
+        r.robot = _load(spec_path(root, "robots", robot), root, "robots", assets)[0]
+        errs = check_robot_refs(r.task, r.scene, r.models, r.sanity, r.robot)
+        if errs:
+            _fail(spec_path(root, "tasks", task), f"task with robot {robot}", errs)
     return r
+
+
+def all_specs(root):
+    """Every spec file under specs/: scenes, robots, tasks/sanity.yaml, tasks."""
+    root = Path(root)
+    out = [p for k in ("scenes", "robots") for p in sorted((root / k).glob(f"*/{FILES[k]}"))]
+    if (root / "tasks" / SANITY_FILE).is_file():
+        out.append(root / "tasks" / SANITY_FILE)
+    return out + sorted((root / "tasks").glob("*/task.yaml"))

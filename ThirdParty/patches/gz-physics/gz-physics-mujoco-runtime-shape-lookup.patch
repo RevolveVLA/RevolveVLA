@@ -1,0 +1,29 @@
+diff --git a/mujoco/src/EntityManagementFeatures.cc b/mujoco/src/EntityManagementFeatures.cc
+index 6d9eccd..433e37d 100644
+--- a/mujoco/src/EntityManagementFeatures.cc
++++ b/mujoco/src/EntityManagementFeatures.cc
+@@ -370,8 +370,22 @@ Identity EntityManagementFeatures::GetShape(
+   {
+     return this->GenerateInvalidId();
+   }
+-  const auto *child = mjs_asGeom(mjs_findElement(linkInfo->worldInfo->mjSpecObj,
+-      mjOBJ_GEOM, JoinNames(*bodyName, _shapeName).c_str()));
++  // Search the body's own geoms: once the spec has been compiled,
++  // mjs_findElement only consults the name map of the last compilation, so it
++  // misses the geoms of a model added at runtime until the next recompile
++  // (every collision of a spawned model then failed with "Dynamic collision
++  // construction is not supported").
++  const std::string geomName = JoinNames(*bodyName, _shapeName);
++  const mjsGeom *child = nullptr;
++  for (mjsElement *el = mjs_firstChild(linkInfo->body, mjOBJ_GEOM, 0); el;
++       el = mjs_nextChild(linkInfo->body, el, 0))
++  {
++    if (*mjs_getName(el) == geomName)
++    {
++      child = mjs_asGeom(el);
++      break;
++    }
++  }
+ 
+   if (!child)
+   {

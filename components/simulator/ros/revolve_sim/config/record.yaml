@@ -1,0 +1,30 @@
+# The episode bag's topics (rosbag2, mcap, sim time): the frozen recording contract that datagen, recovery and the
+# dataset converter rely on. sim.launch.py fills {world} (the scene name) and {robot}, and repeats an entry for each
+# {camera} sensor of the robot, each {contact_link} (a robot link with a contact sensor), each {scene_model}, each
+# articulated scene {model}, each joint trajectory controller {jtc} and each omni base controller {omni} of the robot's
+# controllers.yaml. Change it only together with the consumers (components/datagen/DATAGEN-v2.md).
+topics:
+  - /clock
+  - /robot_description                  # transient local: the URDF, once per bag
+  - /tf                                 # robot_state_publisher (100 Hz) + the omni odometry odom -> base_footprint
+  - /tf_static                          # transient local: once per bag
+  - /joint_states                       # joint_state_broadcaster
+  - /{jtc}/controller_state             # control_msgs/JointTrajectoryControllerState: reference = the arm / gripper action
+  - /{jtc}/joint_trajectory             # streamed commands (FollowJointTrajectory goals are not topics)
+  - /{omni}/cmd_vel                     # geometry_msgs/TwistStamped: the base action
+  - /{omni}/odom                        # nav_msgs/Odometry (wheel odometry)
+  - /model/{robot}/pose                 # ground truth (tf2_msgs/TFMessage): the robot in the world
+  - /model/{scene_model}/pose           # ground truth: each scene model in the world, its links in the model
+  - /world/{world}/model/{model}/joint_state       # the scene's articulations (sensor_msgs/JointState)
+  - /world/{world}/model/{robot}/link/{contact_link}/sensor/contact/contact   # only while in contact
+  - /{camera}/camera_info
+  - /evaluator/state                    # std_msgs/String JSON, 10 Hz
+  - /evaluator/result                   # std_msgs/String JSON, once, at the episode's end
+# `revolve sim --record images` (default) only: the cameras, JPEG (ros_gz_image publishes through image_transport, so
+# compressed_image_transport serves <image>/compressed; it encodes only while subscribed)
+images:
+  - /{camera}/image/compressed
+# rosbag2 QoS overrides (--qos-profile-overrides-path): the recorder subscribes anew for each episode (so it gets the
+# transient-local /tf_static and /robot_description); the result is taken live only, not the previous episode's
+qos_overrides:
+  /evaluator/result: {history: keep_last, depth: 1, reliability: reliable, durability: volatile}

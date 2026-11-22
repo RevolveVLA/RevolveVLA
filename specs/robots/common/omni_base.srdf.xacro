@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<!-- MoveIt SRDF part of the shared omni base (omni_base.urdf.xacro): the rollers' default collisions disabled (they
+     sit under the chassis, out of an arm's reach, and touch only the floor, which is not in the planning scene).
+     omni_base_srdf: n = rows x rollers_per_row of the base (default 2 x 6). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="omni_base_srdf" params="n:=12">
+    <xacro:macro name="rollers" params="wheels k:=0 n:=12">
+      <disable_default_collisions link="${wheels[0]}_roller_${k}"/>
+      <xacro:if value="${k + 1 &lt; n}">
+        <xacro:rollers wheels="${wheels}" k="${k + 1}" n="${n}"/>
+      </xacro:if>
+      <xacro:if value="${k + 1 == n and len(wheels) &gt; 1}">
+        <xacro:rollers wheels="${wheels[1:]}" k="0" n="${n}"/>
+      </xacro:if>
+    </xacro:macro>
+    <xacro:rollers wheels="${['front_left', 'rear_left', 'rear_right', 'front_right']}" n="${n}"/>
+  </xacro:macro>
+</robot>

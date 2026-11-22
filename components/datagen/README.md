@@ -1,4 +1,7 @@
 # datagen
+> **Being replaced.** The simulator was rewritten; this datagen no longer runs. Datagen v2 is specified in
+> [DATAGEN-v2.md](DATAGEN-v2.md) (the simulator contract, recording, IO, caveats, rebase guidance).
+
 AutoMoMa + cuRobo expert demonstrations: per seed a plan run, then the planned attempts replay-checked and
 recorded in the simulator until the seed has its accepted episodes. Ported from
 the earlier pipeline's AutoMoMa planner (unchanged algorithm) and its stages (plan -> check -> record,

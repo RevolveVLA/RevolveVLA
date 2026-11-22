@@ -1,22 +1,29 @@
 #!/usr/bin/env python3
 """RevolveVLA command line.
 
+  ./revolve assets [--out DIR] [--offline]   one-time: fetch the scene assets into assets/ (where licences allow) and
+                                     convert them to SDF models in assets/generated*/ (assets_pipeline/README.md)
   ./revolve build [component] [--clean]   dependency image + third-party build into ThirdParty/*/install
   ./revolve test <component> [-- pytest args]   run a component's tests (common, simulator, datagen, recovery, dataset,
                                      training, evaluation, manager = unit + integration, integration)
-  ./revolve run <experiment>         start an experiment loop (name under specs/experiments/ or a yaml path) in
-                                     the manager container, detached; log runs/<exp>/manager.log
-  ./revolve resume <experiment> [--accept-spec-change]   restart the manager on runs/<exp>/state.json (re-attaches
-                                     running steps); --accept-spec-change: continue after the yaml was edited (done
-                                     steps are kept as they are; the change is logged in state.json spec_changes)
-  ./revolve status <experiment>      seed x phase table per turn + the running step's live progress
-  ./revolve stop <experiment>        kill the manager, cancel the running step and what it started
+  ./revolve sim --scene S --robot R [--task T [--no-autostart] [--record images|no-images] [--out DIR]] [--gui]
+                [--name N] [--domain-id D]   run the simulator (the world from scene S, a name or a scene.yaml file,
+                                     robot R at the scene's robot_start; components/simulator/README.md) in the
+                                     simulator image, on the GPU;
+                                     --task: the evaluator, episode results and bags (with or without the camera
+                                     images) in DIR (default runs/sim/<time>_<task>/); --gui: also the gz GUI on the
+                                     host's X display; ROS 2 on its own ROS_DOMAIN_ID (printed; default from the
+                                     container name)
   ./revolve datagen <spec.yaml> [sample|generate|record|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
   ./revolve datagen --list-randomisers --task T --robot R [--variant V]   what a task + robot can vary (dims, ranges)
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
-  ./revolve validate <spec.yaml>     load and validate a spec (experiment/task -> robot + scene)
+  ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
+                                     robot and task under specs/, and tasks/sanity.yaml; a scene.yaml outside specs/
+                                     is a scene instance), against the model SDFs in
+                                     the scene's asset search path; --robot: also check the tasks with robot R;
+                                     --no-assets: names and syntax only (no asset files read)
 
 Python: the repo's .venv (git-ignored; see common/README.md), with the host's PYTHONPATH (ROS) dropped.
 """
@@ -24,6 +31,7 @@ import argparse
 import os
 import subprocess
 import sys
+import zlib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
@@ -46,32 +54,121 @@ def not_implemented(what):
 
 def cmd_validate(a):
     from revolve_common import specs
+    root = REPO / "specs"
+    paths = [Path(p) for p in a.spec] or specs.all_specs(root)
     rc = 0
-    jobs = []
-    for p in a.spec:       # a robot-free task without $REVOLVE_ROBOT: validated for every robot
-        task = Path(p).resolve().parent.parent.name == "tasks" and not os.environ.get(specs.ROBOT_ENV)
-        robots = sorted(d.name for d in (specs.find_root(p) / "robots").iterdir() if d.is_dir()) if task else [None]
-        jobs += [(p, rb) for rb in robots]
-    for p, rb in jobs:
+    for p in paths:
+        p = p.resolve()
+        p = p.relative_to(REPO) if p.is_relative_to(REPO) else p
         try:
-            r = specs.load(p, robot=rb)
+            r = specs.load(p, assets=not a.no_assets)
+            if isinstance(r, specs.Task):
+                res = specs.resolve(specs.find_root(p), r.name, robot=a.robot, assets=not a.no_assets)
+                phases = ", ".join(f"{ph.name} ({len(ph.done)} done, {len(ph.while_)} while)" for ph in r.phases)
+                with_robot = f", robot {a.robot}" if a.robot else ""
+                print(f"OK {p}: task {r.name} on scene {r.scene}{with_robot}; phases {phases}; "
+                      f"sanity {', '.join(res.sanity)}")
+            elif isinstance(r, specs.Scene):
+                print(f"OK {p}: scene {r.name}, models {', '.join(r.models)}")
+            elif isinstance(r, specs.Robot):
+                print(f"OK {p}: robot {r.name}, poses {', '.join(r.poses)}")
+            else:
+                print(f"OK {p}: sanity base, checks {', '.join(r)}")
         except specs.SpecError as e:
             print(e, file=sys.stderr)
             rc = 1
-            continue
-        if isinstance(r, specs.Resolved):
-            t = r.task
-            head = f"experiment {r.experiment.name} -> " if r.experiment else ""
-            phases = ", ".join(f"{ph.name} ({len(ph.pass_.all)})" for ph in t.phases)
-            print(f"OK {p}: {head}task {t.name} -> robot {r.robot.name}, scene {r.scene.name}; phases {phases}")
-            if r.experiment:
-                s = r.experiment.seeds
-                print(f"   seeds train {len(s.train.seeds())}, probe {len(s.probe.seeds())}, "
-                      f"heldout {len(s.heldout.seeds())} (disjoint); max_turns {r.experiment.max_turns}, "
-                      f"training {r.experiment.training.mode} on {r.experiment.training.backend}")
-        else:
-            print(f"OK {p}: {type(r).__name__.lower()} {r.name}")
     return rc
+
+
+SIM_IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
+
+
+def container_domains():
+    """The ROS_DOMAIN_IDs of the running containers (0 when unset: the ROS 2 default)."""
+    ids = subprocess.run(["docker", "ps", "-q"], capture_output=True, text=True).stdout.split()
+    if not ids:
+        return set()
+    envs = subprocess.run(["docker", "inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}---", *ids],
+                          capture_output=True, text=True).stdout.split("---")
+    used = set()
+    for env in envs[:len(ids)]:
+        d = [ln.split("=", 1)[1] for ln in env.splitlines() if ln.startswith("ROS_DOMAIN_ID=")]
+        used.add(int(d[0]) if d and d[0].isdigit() else 0)
+    return used
+
+
+def sim_domain(name, requested=None):
+    """The sim's ROS_DOMAIN_ID: --domain-id, else one derived from the container name (1..101, never the default
+    0), moved on past the domains of the other running containers (they share the host network)."""
+    used = container_domains()
+    if requested is not None:
+        if requested in used:
+            print(f"revolve sim: warning: another container uses ROS_DOMAIN_ID={requested}", file=sys.stderr)
+        return requested
+    d = 1 + zlib.crc32(name.encode()) % 101
+    while d in used:
+        d = d % 101 + 1
+    return d
+
+
+def sim_docker_args(name, gui=False, domain=0, out=None, mounts=()):
+    """docker run args for a simulator container: the repo read-only at /repo (runs/ writable: episode results, bags;
+    out: a host directory mounted writable at the same path, so the paths in the episode results are host paths;
+    mounts: host files mounted read-only at the same path),
+    the Kura + ros_gz installs at their build paths, the GPU (rendering), the host network (ROS 2 from the host on
+    the sim's ROS_DOMAIN_ID, domain; gz-transport in its own partition, the container name: other ROS 2 and gz
+    instances on the host network neither see nor join this sim); --gui: the host's X."""
+    for d in ("gz_kura", "ros_gz_ws"):
+        if not (REPO / "ThirdParty" / d / "install" / "setup.bash").is_file():
+            sys.exit("revolve sim: not built: ./revolve build simulator")
+    (REPO / "runs").mkdir(exist_ok=True)
+    args = ["docker", "run", "--rm", "--init", "--name", name, "--gpus", "all", "--network", "host", "--ipc", "host",
+            "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp", "-e", "REVOLVE_REPO=/repo",
+            "-e", "PYTHONPATH=/repo/common", "-e", f"GZ_PARTITION={name}", "-e", f"ROS_DOMAIN_ID={domain}",
+            "-e", "FASTDDS_BUILTIN_TRANSPORTS=UDPv4",
+            "-v", f"{REPO}:/repo:ro", "-v", f"{REPO}/runs:/repo/runs",
+            "-v", f"{REPO}/ThirdParty/gz_kura/install:/opt/gz_ws/install:ro",
+            "-v", f"{REPO}/ThirdParty/ros_gz_ws/install:/opt/ros_gz_ws/install:ro"]
+    if out:
+        args += ["-v", f"{out}:{out}"]
+    for m in mounts:
+        args += ["-v", f"{m}:{m}:ro"]
+    if gui:
+        display, xauth = os.environ.get("DISPLAY"), os.environ.get("XAUTHORITY")
+        if not display or not xauth or not Path(xauth).is_file():
+            sys.exit("revolve sim --gui needs DISPLAY and XAUTHORITY (the host's X / Xwayland session)")
+        args += ["-e", f"DISPLAY={display}", "-e", "XAUTHORITY=/tmp/.Xauthority",
+                 "-v", "/tmp/.X11-unix:/tmp/.X11-unix:ro", "-v", f"{xauth}:/tmp/.Xauthority:ro"]
+    return args
+
+
+def cmd_sim(a):
+    from revolve_common import gpu
+    gpu.launch_check()
+    out = None
+    if a.out:
+        if not a.task:
+            sys.exit("revolve sim: --out needs --task (it holds the episode results and bags)")
+        out = Path(a.out).resolve()
+        out.mkdir(parents=True, exist_ok=True)      # by the user, before docker would create it as root
+    scene, mounts = a.scene, []
+    if scene.endswith(".yaml"):     # a scene file (e.g. a randomizer's scene instance): its path in the container
+        p = Path(scene).resolve()
+        if not p.is_file():
+            sys.exit(f"revolve sim: no scene file {p}")
+        if p.is_relative_to(REPO):
+            scene = f"/repo/{p.relative_to(REPO)}"
+        else:
+            scene, mounts = str(p), [p]
+    launch = ["ros2", "launch", "revolve_sim", "sim.launch.py", f"scene:={scene}", f"robot:={a.robot}",
+              f"gui:={'true' if a.gui else 'false'}"] + ([f"task:={a.task}", f"record:={a.record}"] if a.task else []) + \
+        (["autostart:=false"] if a.no_autostart else []) + ([f"run_dir:={out}"] if out else [])
+    domain = sim_domain(a.name, a.domain_id)
+    print(f"revolve sim: ROS_DOMAIN_ID={domain} (from the host: export ROS_DOMAIN_ID={domain})", file=sys.stderr,
+          flush=True)
+    # bash: the image's BASH_ENV sets up ROS, the ros_gz workspace and Kura
+    return subprocess.call([*sim_docker_args(a.name, a.gui, domain, out, mounts), SIM_IMAGE, "bash", "-c", 'exec "$@"', "sim", *launch],
+                           cwd=REPO)
 
 
 BUILDS = {"simulator": REPO / "components" / "simulator" / "build.sh",
@@ -95,7 +192,8 @@ def cmd_build(a):
 
 
 def cmd_test(a):
-    tests = {"common": REPO / "common" / "tests", "simulator": REPO / "components" / "simulator" / "tests",
+    tests = {"common": REPO / "common" / "tests",
+             "simulator": REPO / "components" / "simulator" / "ros" / "revolve_sim" / "test",
              "datagen": REPO / "components" / "datagen" / "tests",
              "recovery": REPO / "components" / "recovery" / "tests",
              "dataset": REPO / "components" / "dataset" / "tests",
@@ -105,6 +203,9 @@ def cmd_test(a):
              "integration": REPO / "tests" / "integration"}
     if a.component not in tests:
         return not_implemented(f"test {a.component}")
+    if not all(Path(d).is_dir() for d in (tests[a.component] if isinstance(tests[a.component], list)
+                                          else [tests[a.component]])):
+        return not_implemented(f"test {a.component} (no tests)")
     extra = a.pytest_args[1:] if a.pytest_args[:1] == ["--"] else a.pytest_args
     dirs = tests[a.component] if isinstance(tests[a.component], list) else [tests[a.component]]
     return subprocess.call([sys.executable, "-m", "pytest", "-q", *map(str, dirs), *extra], cwd=REPO)
@@ -131,35 +232,46 @@ def main():
     ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("assets")  # dispatched below, before parsing: its options go to make_assets.sh
     b = sub.add_parser("build")
     b.add_argument("component", nargs="?")
     b.add_argument("build_args", nargs=argparse.REMAINDER, help="passed to the build script (e.g. --clean)")
     t = sub.add_parser("test")
     t.add_argument("component", choices=COMPONENTS)
     t.add_argument("pytest_args", nargs=argparse.REMAINDER)
-    for name in ("run", "resume", "status", "stop"):
-        sub.add_parser(name).add_argument("experiment")
-    sub.choices["resume"].add_argument("--accept-spec-change", action="store_true",
-                                       help="the yaml changed since the run started: continue with the new one")
+    s = sub.add_parser("sim")
+    s.add_argument("--scene", required=True, help="specs/scenes/<scene>, or a scene.yaml file (e.g. a scene "
+                   "instance: the scene with another robot_start, named like it, its assets relative to the repo)")
+    s.add_argument("--robot", required=True, help="specs/robots/<robot>")
+    s.add_argument("--task", help="specs/tasks/<task> (checked against the scene and robot)")
+    s.add_argument("--no-autostart", action="store_true", help="with --task: start episodes only on the "
+                   "/evaluator/start service (default: the first one starts when the evaluator has every input)")
+    s.add_argument("--record", choices=("images", "no-images"), default="images", help="with --task: record each "
+                   "episode with the camera images (JPEG; default) or without them")
+    s.add_argument("--out", metavar="DIR", help="with --task: write the episode results and bags into DIR (a host "
+                   "directory, created if missing; default runs/sim/<time>_<task>/)")
+    s.add_argument("--gui", action="store_true", help="also start the gz GUI client")
+    s.add_argument("--name", default="revolve-sim", help="the container name (default revolve-sim)")
+    s.add_argument("--domain-id", type=int, choices=range(0, 233), metavar="D", help="the sim's ROS_DOMAIN_ID "
+                   "(default: from the container name, 1..101, skipping the other running containers' domains)")
     sub.add_parser("datagen").add_argument("datagen_args", nargs=argparse.REMAINDER,
                                            help="<spec.yaml> [step] [--split S] [--dry-run] [--workers N] [--gui] | --list-randomisers --task T --robot R")
     sub.add_parser("evaluate").add_argument("evaluate_args", nargs=argparse.REMAINDER,
                                             help="<spec.yaml> [stage] [--set S] [--dry-run] [--workers N] [--gui]")
     v = sub.add_parser("validate")
-    v.add_argument("spec", nargs="+")
+    v.add_argument("spec", nargs="*")
+    v.add_argument("--robot", help="also check the tasks with this robot (specs/robots/<robot>)")
+    v.add_argument("--no-assets", action="store_true", help="names and syntax only: no asset files read")
+    if sys.argv[1:2] == ["assets"]:
+        return subprocess.call(["bash", str(REPO / "assets_pipeline" / "make_assets.sh"), *sys.argv[2:]], cwd=REPO)
     a = ap.parse_args()
     if a.cmd == "validate":
         return cmd_validate(a)
+    if a.cmd == "sim":
+        return cmd_sim(a)
     if a.cmd == "test":
         return cmd_test(a)
-    if a.cmd == "build":
-        return cmd_build(a)
-    sys.path[:0] = [str(REPO / "components" / "manager" / "src")]
-    from manager import cli
-    if a.cmd in ("run", "resume"):
-        return cli.start(a.experiment, resume=a.cmd == "resume",
-                         accept_spec_change=getattr(a, "accept_spec_change", False))
-    return getattr(cli, a.cmd)(a.experiment)
+    return cmd_build(a)
 
 
 if __name__ == "__main__":

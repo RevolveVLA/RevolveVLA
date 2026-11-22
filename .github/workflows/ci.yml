@@ -19,5 +19,5 @@ jobs:
           pip install --no-deps ./common
       - name: Ruff (syntax errors and undefined names)
         run: ruff check --select E9,F63,F7,F82 --exclude ThirdParty . revolve
-      - name: Validate the experiment specs
-        run: ./revolve validate specs/experiments/*.yaml
+      - name: Validate the specs (names and syntax; the assets are not in git)
+        run: ./revolve validate --no-assets

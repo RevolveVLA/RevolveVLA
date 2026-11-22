@@ -1,161 +1,28 @@
-# Open the top drawer of the PartNet-Mobility cabinet 46452, `kitchen_counter` in the PartNet
-# kitchen (against the west wall, front facing east). Ported from the earlier pipeline's task config +
-# validator and its simulator thresholds (checks, live_gates,
-# closed_loop) and phases.py.
+# Open the top drawer of the PartNet-Mobility cabinet 46452 (kitchen_counter, against the west wall, front facing
+# east). The drawer's slide middle_slide_top: 0 closed, opens positive (out of the cabinet) to 0.35 m.
 name: open_drawer
 scene: kitchen_partnet
 prompt: open the top drawer of the cabinet
-card:
-  object: the top drawer of PartNet-Mobility cabinet 46452
-  open: the drawer stayed 15 cm or more open
-
-object:
-  name: kitchen_counter
-  gz_model: assets/generated_partnet/kitchen_counter
-  world_pose: [-2.625, 0.29, 0.0, 0.0]   # cabinet model frame in the world (validated against the scene)
-  # gz joint, prismatic along +x in the model frame (out of the cabinet), 0 closed, 0..0.35 m
-  joint: middle_slide_top
-  handle: drawer2_top_handle_bar    # 13 x 624 x 14 mm bar box on link drawer2_top
-  joint_topic: /drawer/joint_states
-  goal: 0.25                        # m: the replay holds >= 15 cm; the travel limit is 0.35 m
-  hold: {grip_part: bar, part: drawer, unit: cm}     # validator.py HOLD
-  grasp_half_width_axes: [1, 2]     # half the bar's 14 mm height: min(size[1], size[2]) / 2 (hand rolled 90 deg)
-
-planner:
-  grasp:
-    # TCP positions along the bar (model y; its centre is at -0.004); the TCP stays in -0.246..0.238. `points` are the
-    # defined grasps (ids 0..4, datagen grasp.id), `range` the continuous option (datagen grasp.along_m). Optional:
-    # depth_range / roll_range_deg (datagen grasp.depth_m / grasp.roll_deg).
-    axis: y
-    points: [-0.204, -0.104, -0.004, 0.096, 0.196]
-    range: [-0.20, 0.20]
-    depth: 0.0
-    roll_deg: -90.0
-  # One row of spheres 2.1 cm in front of the drawer front, between the door and the bar
-  door_spheres: {radius: 0.025, x: 0.375, y: [-0.27, 0.27], z: [0.76, 0.76], step: 0.06}
-  base_yaw_window: [0.0, 6.283185307179586]
-  base_retract: [1.0, 0.0, 3.141592653589793]
-
-# Where each robot's base starts and what may vary (datagen: start_design.py; a robot without a block has no start
-# design: its attempts take AutoMoMa's whole-body IK, base free, retract = planner.base_retract). Per robot spec name:
-#   method box    clustered starts: `clusters` x `per_cluster` attempts in a box_m square around `centre` (object frame,
-#                 in front of the handle) and a +-yaw_half_deg window about facing the object, each attempt jittered by
-#                 offset_m / offset_deg. Datagen's robot_base randomiser varies the start within box / 2 - offset.
-#   method reach  per seed one grasp point along the bar (grasp_m), the reach d_m of Robot.base_for_reach and a base
-#                 turn of +-yaw_half_deg about the arm's first joint; attempts after the first jitter d and the turn.
-#   method drive  a reach block plus a far start the robot drives in from with its arm folded (robot.yaml arm.folded):
-#                 back_m behind the reach base, side_m sideways, the heading +-heading_half_deg from facing the object;
-#                 the drive-in replays at slowdown x its planned time steps. sequence drive_then_arm: drive with the arm
-#                 folded, then unfold with the base still, then the whole-body pull.
-# `variants` are named alternatives (an experiment's datagen.variant) that replace the block.
-starts:
-  mobile_panda:
-    method: box
-    # A D1 plan smoke (seed 60, 50 attempts) found no start IK for drawer bases under x 0.85 m (the counter)
-    centre: [0.98, 0.0]
-    clusters: 10
-    per_cluster: 10
-    box_m: 0.40
-    yaw_half_deg: 30
-    offset_m: 0.03
-    offset_deg: 3
-    nominal_arm: ready
-  # mobile_so101 (5-DoF arm): no block. A start IK with the base locked at a drawn start has no solution off its plane.
-  mobile_so101_xl:
-    method: drive
-    grasp_m: [-0.10, 0.10]
-    d_m: [0.68, 0.76]
-    yaw_half_deg: 8.0
-    jitter_m: 0.01
-    jitter_deg: 1.0
-    back_m: [1.0, 1.6]
-    side_m: [-0.3, 0.3]
-    heading_half_deg: 20.0
-    slowdown: 2.0
-
-# Replay of a plan in gz: spawn standoff_m back along the hand axis, settle, base in, grasp, pull, hold,
-# release, base back out retreat_m. Pull duration = max(pull_min_s, pull_slowdown x the plan's hint).
-replay:
-  standoff_m: 0.12
-  settle_s: 1.0
-  approach_s: 2.5
-  spawn_clearance_min_m: 0.0        # below: spawn_in_collision, rejected before gz
-  retreat_m: 0.15
-  retreat_s: 2.0
-  hold_check: drawer_open           # gz EpisodeSystem check over the hold
-  pull_slowdown: 3.0
-  pull_min_s: 8.0
-# sim time by which the replay's last check must have ended (as open_fridge_door)
-budget_s: 30.0
-
-# Phase boundaries (phases.py), causal on the commanded actions. Plan runs: a target "changes" when it
-# moves by more than change_tol. Policy runs (PolicyBoundaries, hold_check windows): grasp starts when the
-# gripper target closes to <= grip_closed_max_m, open starts grasp_settle_s later or when the joint moved
-# joint_moved_eps (object.hold.unit) from its grasp-start value, release when the target opens again.
-boundaries:
-  change_tol: 1.0e-9
-  policy: {grip_closed_max_m: 0.0035, grasp_settle_s: 1.0, joint_moved_eps: 0.5}
-
-# Ordered; each phase saves its start state. Thresholds: the live phase gates; `offline:` = the expert
-# replay verdict's (stricter) value where it differs. hold_s: at every sample of the last hold_s.
+targets:
+  # the 13 x 624 x 14 mm bar (a collision on link drawer2_top); its frame = the cabinet's at the closed drawer:
+  # x out of the cabinet front, y along the bar
+  handle: kitchen_counter::drawer2_top::drawer2_top_handle_bar
+budget_s: 45.0                      # the whole episode [s]: the phase timeouts add up to 40 s
 phases:
-  - name: approach                  # t 0 -> the gripper close command
-    end: gripper_close
-    pass:
-      all:
-        - {metric: tcp_position_error_m, le: 0.015}
-        - {metric: tcp_rotation_error_deg, le: 7.5}
-        - {metric: spawn_clearance_m, ge: 0.0, only: offline}
-  - name: grasp                     # the close command -> the first base/arm motion after it (the pull)
-    end: arm_motion
-    pass:
-      all:
-        - {metric: grasp_width_error_m, le: 0.008, offline: 0.006}
-        - {metric: finger_contacts, eq: 2, window_s: 0.5}
-  - name: open                      # the pull start -> the gripper open command (pull + hold)
-    end: gripper_open
-    pass:
-      all:
-        - {metric: joint_cm, joint: middle_slide_top, ge: 15.0, hold_s: 1.0}
-        - {metric: handle_slip_m, le: 0.013, offline: 0.01}
-        - {metric: finger_contacts, eq: 2, window_s: 1.0}
-        - {metric: targets_static_s, ge: 1.0, only: plan}
-  - name: release                   # the open command -> the end of the stream: the sanity checks only
-    end: stream_end
-    pass: {all: []}
-
-# Every phase: a timed check fails the phase that holds its first violation; an untimed one fails the
-# episode as "global" (no regeneration).
-sanity:
-  timed:
-    - {metric: peak_body_speed_mps, lt: 5.0}
-    - {metric: penetration_m, lt: 0.01}
-    - {metric: other_robot_contacts, eq: 0}
-  untimed:
-    - {metric: non_finite_commands, eq: 0}
-    - {metric: gz_log_problem_lines, eq: 0}
-
-# Policy rollouts (closed loop). Every condition that ends one (evaluation reports the reason per try, `terminations`):
-#  - success: the live hold check passes at a gripper release; the run ends after_success_s of sim time later.
-#  - budget: budget_s of sim time after the FIRST action (the run ends, whatever the phases did).
-#  - no_action: wait_s of sim time pass without any action (the policy never started).
-#  - abort: the physics sanity limit (sanity: peak_body_speed_mps) or NaN.
-#  - wall limit: sim time (wait_s + budget_s + after_success_s) / measured real-time factor x wall_safety, from the
-#    unpause; the sim job gets setup_s more (container start, models, world load, client up). A hit is a stack
-#    error, not a policy failure.
-#  - stack errors (policy server or client does not come up, sim never gets the client): the try is re-run once.
-# A failed phase does NOT stop the sim: the live validator marks it, the run goes on to the budget (retries restore
-# the failed phase's start state afterwards). real_time_factor is the sim's speed cap, not the measured RTF.
-rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0, wall_safety: 2.0, setup_s: 240.0}
-
-# Live validator settings: contact stamps lag the sim; restore check of a saved phase state
-live: {contact_wait_s: 0.05, restore_pos_max_m: 0.001, restore_rot_max_deg: 0.1}
-
-# Per-robot settings (merged over the blocks above when the task runs on that robot). The mobile SO-101
-# grasps the bar from 0.63 m (base centre to the bar, model x 0.3895): the planner's base retract.
-robots:
-  mobile_so101:
-    planner: {base_retract: [1.02, 0.0, 3.141592653589793]}
-  # The 2x SO-101 grasps from 1.01 m (its reach 0.72 m + the shoulder_lift axis 0.29 m ahead of the centre).
-  mobile_so101_xl:
-    planner: {base_retract: [1.40, 0.0, 3.141592653589793]}
+  - name: approach                  # drive + reach: the TCP on the bar, the gripper pointing into the drawer
+    timeout_s: 20.0
+    done:
+      - {metric: distance, from: robot::tcp, to: handle, le: 0.015}
+      - {metric: angle, from: robot::tcp, to: handle, axes: [z, -x], le: 0.131}   # 7.5 deg
+      - {metric: angle, from: robot::tcp, to: handle, axes: [x, y], le: 0.131}    # fingers across the bar
+  - name: grasp                     # both fingers on the bar for 0.5 s
+    timeout_s: 5.0
+    done:
+      - {metric: contacts, from: robot::fingers, to: handle, eq: 2, for_s: 0.5}
+  - name: open                      # the drawer held 15 cm or more open for 1 s, without losing the grasp
+    timeout_s: 15.0
+    done:
+      - {metric: joint, of: kitchen_counter::middle_slide_top, ge: 0.15, for_s: 1.0}
+    while:
+      - {metric: contacts, from: robot::fingers, to: handle, eq: 2}
+      - {metric: slip, from: robot::tcp, to: handle, le: 0.013}

@@ -65,13 +65,22 @@ def test_retry_policy(tmp_path, tries, rec, passed, saved, want):
     assert got == ((tmp_path, want) if want else None)
 
 
+def test_retry_policy_falls_back_to_the_first_trys_state(tmp_path):
+    first, retry = tmp_path / "first", tmp_path / "retry_1"
+    first.mkdir(), retry.mkdir(), state(first, "open")
+    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry, first) == (first, "open")
+    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry) is None
+    state(retry, "open")
+    assert RetryPolicy(2).restore(2, {"failed_phase": "open"}, False, retry, first) == (retry, "open")
+
+
 # ------------------------------------------------------------------ the walk on stubs
 class Stub:
     """Rollout + policy + judge in one: `plan[(seed, n-th call for the seed)]` -> record fields; the calls are kept."""
     name, needs_ckpt = "stub", False
 
     def __init__(self, plan=None, delay=0.0):
-        self.plan, self.delay, self.calls, self.n = plan or {}, delay, [], {}
+        self.plan, self.delay, self.calls, self.n, self.restores = plan or {}, delay, [], {}, []
 
     def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):
         self.n[seed] = self.n.get(seed, 0) + 1
@@ -80,8 +89,9 @@ class Stub:
         out.mkdir(parents=True, exist_ok=True)
         rec = {"passed": True, "phases": {"grasp": "pass"}, "failed_phase": None, "error": None, "restore": restore and {}}
         rec.update(self.plan.get((seed, self.n[seed]), {}))
-        if rec["failed_phase"]:
+        if rec["failed_phase"] and restore is None:         # as the sim: a restored run saves no start of its restore phase
             state(out, rec["failed_phase"])
+        self.restores.append(restore and restore[0].name)
         return rec
 
     def score(self, record, rollout_dir, task):
@@ -120,6 +130,7 @@ def test_retries_stop_at_the_maximum(tmp_path):
     stub = Stub({(1, n): FAIL for n in (1, 2, 3)})
     got = run(walk(tmp_path, stub, retries=2), built(1))
     assert [c[1] for c in stub.calls] == ["1_r0", "retry_1", "retry_2"] and not got["1_r0"]["passed"]
+    assert stub.restores == [None, "1_r0", "1_r0"]                       # every retry restores the first try's start state
     assert run(walk(tmp_path / "b", Stub({(1, 1): FAIL}), retries=0), built(1))["1_r0"]["tries"][0]["passed"] is False
 
 

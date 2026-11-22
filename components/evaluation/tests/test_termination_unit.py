@@ -10,7 +10,7 @@ from evaluation.core.termination import REASONS, rollout_policy, termination
 from evaluation.plugins.rollouts import docker as D
 
 TASK = SimpleNamespace(budget_s=45.0, wait_s=30.0, after_success_s=2.0, wall_safety=2.0, setup_s=240.0)
-spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door"), run=SimpleNamespace(workers=None, headless=True))
+spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda"), run=SimpleNamespace(workers=None, headless=True))
 oracle = REGISTRY.create("policy", "oracle", spec, {})
 
 

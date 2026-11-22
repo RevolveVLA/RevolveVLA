@@ -1,4 +1,4 @@
-# PRD 11 GPU matrix row p1: pool replacement + realised min_distance 0.35
+# PRD 11 GPU matrix row p1: pool replacement + realised min_distance 0.25
 train: specs/datagen/fridge_base50.yaml
 training: {plugin: legacy_layouts, run: runs/fridge_base50}
 out: runs/eval/m_p1
@@ -8,7 +8,7 @@ sets:
     count: 2
     sampler: {strategy: sobol}
     pool: {initial: [520, 521], replacement: [522, 529]}
-    min_distance: {value: 0.35, realised: true}
+    min_distance: {value: 0.25, realised: true}
 rollouts: 1
 judge: {criterion: c2}
 run: {workers: 2}

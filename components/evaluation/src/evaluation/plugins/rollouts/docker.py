@@ -10,6 +10,8 @@ import importlib
 import sys
 from pathlib import Path
 
+from datagen.plugins.generate_module import use_robot
+
 from ...core.errors import EvalError
 from ...core.interfaces import Rollout
 from ...core.registry import REGISTRY
@@ -31,6 +33,7 @@ class DockerRollout(Rollout):
         if unknown := sorted(set(params) - set(PARAMS)):
             raise EvalError(f"rollout docker: unknown parameters {unknown} (known: {list(PARAMS)})")
         self.task, self.params = spec.train.task, dict(params)
+        use_robot(spec.train.robot)         # rollout.py loads the task: $REVOLVE_ROBOT (no generating set sets it)
         self.spec, self.workers = spec, None
 
     def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):

@@ -1,6 +1,7 @@
 """plugins/rollouts (docker over a monkeypatched rollout.run, fake) and plugins/policies (CPU, no docker), and the
 runner params rollout.py writes."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +18,7 @@ from evaluation.core.spec import RunnerSpec
 from evaluation.plugins.rollouts import docker as D
 
 COMP = Path(__file__).resolve().parents[1]
-spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door"))
+spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda"))
 smolvla, oracle = (REGISTRY.create("policy", n, spec, {}) for n in ("smolvla", "oracle"))
 
 
@@ -56,6 +57,13 @@ def test_docker_passes_the_rollout_run_kwargs(monkeypatch, item, tmp_path):
                       budget_s=6, rtf=0.2)
     r.run(item, tmp_path / "o2", seed=1, runner=RunnerSpec(), policy=oracle, ckpt=None)
     assert calls[1][1]["policy"] == "oracle" and calls[1][1]["ckpt"] is None and calls[1][1]["restore"] is None
+
+
+def test_docker_sets_the_robot_env_for_rollout_py(monkeypatch):
+    monkeypatch.delenv("REVOLVE_ROBOT", raising=False)
+    REGISTRY.create("rollout", "docker", spec, {})
+    assert os.environ["REVOLVE_ROBOT"] == "mobile_panda"            # rollout.py loads the robot-free task through it
+    monkeypatch.delenv("REVOLVE_ROBOT")
 
 
 def test_docker_rejects_unknown_params():

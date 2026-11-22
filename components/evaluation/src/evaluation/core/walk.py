@@ -35,12 +35,15 @@ class RetryPolicy:
     retries: int
     restorable: Sequence[str] = RESTORABLE
 
-    def restore(self, tries: int, record: Mapping, passed: bool, rollout_dir: Path) -> tuple[Path, str] | None:
-        """(dir, phase) to retry from after `tries` tries, the last one at `rollout_dir`; None = stop here."""
+    def restore(self, tries: int, record: Mapping, passed: bool, rollout_dir: Path,
+                origin: Path | None = None) -> tuple[Path, str] | None:
+        """(dir, phase) to retry from after `tries` tries, the last one at `rollout_dir`; None = stop here. A retry
+        saves no start state of the phase it was restored at, so that start comes from the first try's dir `origin`."""
         phase = record.get("failed_phase")
         if passed or tries > self.retries or phase not in self.restorable:
             return None
-        return (rollout_dir, phase) if (rollout_dir / "phase_states" / f"{phase}_start.npz").is_file() else None
+        has = lambda d: d is not None and (d / "phase_states" / f"{phase}_start.npz").is_file()
+        return next(((d, phase) for d in (rollout_dir, origin) if has(d)), None)
 
 
 class Progress:
@@ -92,6 +95,7 @@ class Walk:
 
     def _item(self, name: str, item: EvalItem, i: int, progress: Progress) -> dict:
         k, here, tries, restore = key(item, i), self.out / name / key(item, i), [], None
+        first = here
         progress.update(k, "running")
         while True:
             record, verdict = self._try(item, here, restore)
@@ -99,7 +103,7 @@ class Walk:
                           "detail": dict(verdict.detail), "termination": termination(record), "record": record})
             if tries[0] is tries[-1]:
                 progress.update(k, "running", first=verdict.passed)
-            if (restore := self.retry.restore(len(tries), record, verdict.passed, here)) is None:
+            if (restore := self.retry.restore(len(tries), record, verdict.passed, here, first)) is None:
                 break
             here = self.out / name / k / f"retry_{len(tries)}"
         state = "pass" if verdict.passed else "error" if record.get("error") else "fail"

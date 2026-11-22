@@ -8,11 +8,14 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from datagen.core.interfaces import Config, Result
 
 from .spec import RunnerSpec, SetSpec
+
+if TYPE_CHECKING:
+    from revolve_common.specs import Task
 
 
 @dataclass(frozen=True)
@@ -78,5 +81,6 @@ class Rollout(ABC):
 
 class Judge(ABC):
     @abstractmethod
-    def score(self, record: Mapping[str, Any]) -> Verdict:
-        """The success verdict of one rollout record."""
+    def score(self, record: Mapping[str, Any], rollout_dir: Path, task: Task | None) -> Verdict:
+        """The success verdict of one rollout: its record, its dir and the training spec's task (None when its
+        task.yaml is not found). A record with `restore` is a retry."""

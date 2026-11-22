@@ -70,5 +70,5 @@ class FakeJudge(Judge):
     def __init__(self, spec, params):
         self.fail = set(params.get("fail_seeds", []))
 
-    def score(self, record):
+    def score(self, record, rollout_dir, task):
         return Verdict(record["passed"] and int(Path(record["dir"]).name.split("_")[0]) not in self.fail)

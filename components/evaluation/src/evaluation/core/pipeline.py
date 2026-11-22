@@ -17,7 +17,9 @@ from typing import Callable, Mapping, Sequence
 
 from .errors import EvalError
 from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, ResolvedCkpt, Rollout
+from .sets import repo_root
 from .spec import EvalSpec
+from .task import load_task
 
 STAGES = ("sample", "check", "rollout", "report")
 
@@ -115,6 +117,7 @@ class Pipeline:
             raise PipelineError(f"policy {self.spec.policy.plugin!r} needs a `ckpt:`")
         ckpt = p.ckpt.resolve(self.out) if p.ckpt and p.policy.needs_ckpt else None
         self.results["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
+        task = load_task(self.spec.train.task, repo_root(self.spec, self.out))
         for n in names:
             done = self.results["sets"].setdefault(n, {}).setdefault("rollouts", {})
             for item in self._build(n).items:
@@ -124,7 +127,7 @@ class Pipeline:
                         continue
                     record = p.rollout.run(item, self.out / n / key, seed=item.config.seed, runner=self.spec.runner,
                                            policy=p.policy, ckpt=ckpt, gui=self.gui)
-                    v = p.judge.score(record)
+                    v = p.judge.score(record, self.out / n / key, task)
                     done[key] = {"seed": item.config.seed, "record": record, "passed": v.passed, "detail": dict(v.detail)}
                     self._save()
                     self.log(f"rollout {n} {key}: {'PASS' if v.passed else 'FAIL'}")

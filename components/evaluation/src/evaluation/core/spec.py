@@ -16,6 +16,10 @@ from datagen.core.spec import (DatagenSpec, Dim, MinDistance, PluginRef, PoolSpe
                                _fail, _int, _mapping, _num, _plugin, _sampler, _seed_range, _str, contains)
 from datagen.core.spec import load as load_train
 
+from .task import load_task
+
+NEEDS_SUCCESS = ("c1", "c2")                            # the judges that score a task's `success:` rule
+
 
 @dataclass(frozen=True)
 class CkptSpec:
@@ -82,9 +86,15 @@ def _ckpt(v, at) -> CkptSpec:
     return CkptSpec(_str(d["source"], f"{at}.source"), {k: x for k, x in d.items() if k != "source"})
 
 
-def _judge(v, at) -> PluginRef:
+def _judge(v, task, at) -> PluginRef:
+    """The default is c2 when the task has a `success:` rule, else c0; c1/c2 need the rule (task None = not found: unchecked)."""
+    if v is None:
+        return PluginRef("c2" if task and task.success else "c0")
     d = _mapping(v, at, required=("criterion",), free=True)
-    return PluginRef(_str(d["criterion"], f"{at}.criterion"), {k: x for k, x in d.items() if k != "criterion"})
+    criterion = _str(d["criterion"], f"{at}.criterion")
+    if criterion in NEEDS_SUCCESS and task and task.success is None:
+        _fail(f"{at}.criterion", f"{criterion} needs a `success:` block in task {task.name} (use c0)")
+    return PluginRef(criterion, {k: x for k, x in d.items() if k != "criterion"})
 
 
 def _runner(v, at) -> RunnerSpec:
@@ -193,7 +203,7 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
         train=train, out=_str(d["out"], f"{source}.out"), sets=sets,
         train_manifest=_str(d.get("train_manifest", f"{train.out}/manifest.json"), f"{source}.train_manifest"),
         ckpt=_ckpt(d["ckpt"], f"{source}.ckpt") if "ckpt" in d else None,
-        judge=_judge(d["judge"], f"{source}.judge") if "judge" in d else EvalSpec.judge,
+        judge=_judge(d.get("judge"), load_task(train.task, root or Path.cwd()), f"{source}.judge"),
         rollouts=_int(d.get("rollouts", 1), f"{source}.rollouts", 1), retries=_int(d.get("retries", 0), f"{source}.retries", 0),
         runner=_runner(d.get("runner", {}), f"{source}.runner"), run=_run(d.get("run", {}), f"{source}.run"), **fields)
 

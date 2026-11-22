@@ -2,12 +2,12 @@
 DIR/scene.yaml (the scene with the robot start moved, as a randomizer writes it), the sim from the CLI (`revolve sim
 --scene DIR/scene.yaml --task T --no-autostart --record images --out DIR --name N --domain-id D`, the conftest
 fixture; the robot must start at the instance's robot_start), the
-client (check_contract.py) in its own container from the sim image on the host network with ROS_DOMAIN_ID=D, using
-only the documented interface: two episodes with a reset between them, then the files in DIR: two result JSONs and
-two closed bags, every frozen topic (config/record.yaml) with messages, the cameras JPEG at ~30 Hz, /tf_static and
-/robot_description, controller_state at >= 30 Hz, and a 30 Hz action series (controller_state reference + cmd_vel)
-from each bag. DIR (runs/contract_<pid>/, ~100 MB of images per episode) is removed when the test passes; its sizes
-and rates go into the log folder's contract.json."""
+client (check_contract.py) in its own container from the sim image on the host network with ROS_DOMAIN_ID=D, using only
+the documented interface: two episodes with a reset between them, then the files in DIR: two result JSONs, two gz log
+copies and two closed bags, every frozen topic (config/record.yaml) with messages, the cameras JPEG at ~30 Hz,
+/tf_static and /robot_description, controller_state at >= 30 Hz, and a 30 Hz action series (controller_state reference +
+cmd_vel) from each bag. DIR (runs/contract_<pid>/, ~100 MB of images per episode) is removed when the test passes; its
+sizes and rates go into the log folder's contract.json."""
 import json
 import os
 import shutil
@@ -68,7 +68,7 @@ def test_contract(sim):
     eps = r["episodes"]
     assert len(eps) == 2 and eps[1]["result"]["episode"] == eps[0]["result"]["episode"] + 1
     assert sorted(r["files"]) == sorted(["scene.yaml", *(f"episode_{e['result']['episode']}{s}" for e in eps
-                                                        for s in (".json", "_bag"))])
+                                                        for s in (".json", "_bag", "_gz.log"))])
     assert r["start_err_m"] <= 0.01 and r["reset"]["start_err_m"] <= 0.01, r     # at the instance's robot_start
     for ep in eps:
         res = ep["result"]

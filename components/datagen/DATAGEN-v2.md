@@ -114,9 +114,9 @@ mock_manager.py --workers N ──┬── pair 1: revolve sim (container, ROS_
 | `--scene S` | A scene name (`specs/scenes/<S>/scene.yaml`) **or a path to a scene.yaml file**: a scene instance (section 8.1). A file inside the repo is used through the repo mount; a file outside the repo is mounted read-only at its own path. With `--task`, the scene's `name` must be the task's `scene`. |
 | `--robot R` | `specs/robots/<R>/` (section 10). |
 | `--task T` | `specs/tasks/<T>/task.yaml`: starts the evaluator and the recorder. Without it, there are no episodes. |
-| `--no-autostart` | With `--task`: episodes start only on `/evaluator/start`. **Datagen always passes it.** (Without it, the first episode starts by itself as soon as the evaluator has every input.) |
-| `--record images\|no-images` | With `--task`: the episode bags with the three cameras (JPEG) or without them. Default `images`. **Datagen uses `images`.** The simulator's own tests use `no-images` (size). |
-| `--out DIR` | With `--task`: episode results and bags go into DIR (a host directory, created if missing, mounted writable into the container **at the same absolute path**, so every path in a result is a valid host path). Default: `runs/sim/<time>_<task>/`. Episode numbers continue after the highest `episode_<n>.json` already in DIR, so a relaunch into the same DIR never overwrites anything. |
+| `--no-autostart` | With `--task` (refused without it, exit 1): episodes start only on `/evaluator/start`. **Datagen always passes it.** (Without it, the first episode starts by itself as soon as the evaluator has every input.) |
+| `--record images\|no-images` | With `--task` (refused without it, exit 1): the episode bags with the three cameras (JPEG) or without them. Default `images`. **Datagen uses `images`.** The simulator's own tests use `no-images` (size). |
+| `--out DIR` | With `--task` (refused without it, exit 1): episode results and bags go into DIR (a host directory, created if missing, mounted writable into the container **at the same absolute path**, so every path in a result is a valid host path). Default: `runs/sim/<time>_<task>/` (the time in UTC, the container's clock). Episode numbers continue after the highest n of any `episode_<n>` file already in DIR (a result, a gz log copy or a bag, also a bag that a killed run left without its result), so a relaunch into the same DIR never overwrites anything. |
 | `--name N` | The container name (default `revolve-sim`). Must be unique per running sim. It is also the sim's `GZ_PARTITION`. |
 | `--domain-id D` | The sim's `ROS_DOMAIN_ID` (0..232). Default: derived from the name (1..101), skipping the domains of other running containers. **Datagen passes it explicitly**, distinct per pair, and starts its generator with the same value. |
 | `--gui` | Also the gz GUI client on the host's X display (needs `DISPLAY` and `XAUTHORITY`). Costs real-time factor; never for datagen runs. |
@@ -159,7 +159,7 @@ generous timeout (we use 180 s), tear the sim down and relaunch.
 | Interface | Type | Semantics |
 |---|---|---|
 | `/evaluator/start` | `std_srvs/srv/Trigger` | Starts an episode at the current sim time. `success: true`, `message: "episode <n>"` (n = the episode number, also the file index). Refused with `success: false` when inputs are not ready (`"inputs not ready: ..."`) or an episode is running (`"episode <n> is running"`). |
-| `/evaluator/state` | `std_msgs/msg/String`, JSON, 10 Hz | `{"t": <sim time s>, "ready": bool, "resets": int, "episode": int or null, "phase": str or null, "values": {key: float or null}}`. `episode`/`phase` are null between episodes. `values` holds every condition's current value (also between episodes), keyed `<phase>.done[i]`, `<phase>.while[i]`, `sanity.<check>`. `resets` counts the world resets the evaluator has seen. |
+| `/evaluator/state` | `std_msgs/msg/String`, JSON, 10 Hz | `{"t": <sim time s>, "ready": bool, "resets": int, "episode": int or null, "phase": str or null, "values": {key: float or null}}`. `episode`/`phase` are null between episodes. `values` holds every condition's current value (also between episodes; null when it cannot be computed, e.g. a `slip` condition outside its phase or before the inputs are live), keyed `<phase>.done[i]`, `<phase>.while[i]`, `sanity.<check>`. `resets` counts the world resets the evaluator has seen. |
 | `/evaluator/result` | `std_msgs/msg/String`, JSON, **transient local** (depth 1) | Published once when an episode ends (the schema below). A late subscriber gets the last result. |
 
 The evaluator runs at 100 Hz on sim time. An episode ends when the last phase passes (`passed: true`) or when a phase
@@ -185,7 +185,7 @@ Result JSON (also written to `<out>/episode_<n>.json`):
                  "sanity.finite_cmds": 0.0, "sanity.gz_log": 0.0},
  "rate_hz": 98.95, "tick_ms": {"mean": 1.05, "max": 2.67},
  "contacts": [],
- "gz_log": "/tmp/.gz/sim/log/<time>/server_console.log",
+ "gz_log": "/abs/path/to/out/episode_0_gz.log",
  "result_file": "/abs/path/to/out/episode_0.json",
  "bag": "/abs/path/to/out/episode_0_bag"
 }
@@ -203,7 +203,7 @@ Result JSON (also written to `<out>/episode_<n>.json`):
 | `contacts` | Robot contacts at the end (not with the ground), for debugging a contact failure. |
 | `rate_hz`, `tick_ms` | Evaluator rate and cost (a health signal; expect ~99-100 Hz). |
 | `sim_time_start` | Sim time at the start. Sim time restarts at 1 s on every reset, so this is not unique across episodes. |
-| `result_file`, `bag` | Absolute paths (host paths with `--out`). `bag` is a rosbag2 directory; null with recording off. |
+| `result_file`, `bag`, `gz_log` | Absolute paths (host paths with `--out`). `bag` is a rosbag2 directory; null with recording off. `gz_log` is a copy of the episode's part of the gz server's console log, from its start to its end (the log itself is inside the container); empty if gz wrote nothing meanwhile, null if gz wrote no log. |
 
 **Completion rule:** `/evaluator/result` is published first (so that it is inside the bag); then the bag is closed
 (its `metadata.yaml` written); then `episode_<n>.json` is written. **Once `episode_<n>.json` exists, the episode's
@@ -353,6 +353,7 @@ With `--out DIR`, per episode n:
 ```
 DIR/
   episode_<n>.json            the result (section 4.3), written last
+  episode_<n>_gz.log          the episode's part of the gz server's console log (a copy)
   episode_<n>_bag/            rosbag2 directory, one recording per episode
     metadata.yaml
     0_episode_<n>_bag_<date-time>.mcap
@@ -460,7 +461,7 @@ Rules for a scene instance (enforced by the loader):
 * Its `name` stays the base scene's name (`kitchen_partnet`): it is the world name, and the task's `scene`.
 * `assets` stay as in the base scene (paths relative to the repo).
 * `robot_start.arm`: a pose name of the robot's `robot.yaml` (`ready`, `folded`) or a joint list.
-* It must pass `./revolve validate <path/to/scene.yaml>` (and the sim refuses an invalid one at launch).
+* It must pass `./revolve validate <path/to/scene.yaml> --robot <robot>` (with `--robot`, `robot_start.arm` is checked against that robot; `./revolve sim` runs the same checks and refuses an invalid instance before it starts docker, exit 1).
 * The start must be collision-free and leave the robot room to work: check it against the scene geometry
   (section 6) before writing it. A robot spawned in collision fails the episode on a sanity check.
 
@@ -480,7 +481,7 @@ out: runs/<exp>/datagen          # writes <out>/scene_<seed>/scene.yaml
 ```
 
 The scene instance can live in the same `scene_<seed>/` folder that the sim writes its episodes into (`--out`); the
-evaluator only looks at `episode_*.json` there. The simulator's contract test does exactly this.
+evaluator numbers its episodes from the `episode_<n>` files there and ignores everything else. The simulator's contract test does exactly this.
 
 ### 8.2 Datagen job input
 
@@ -507,6 +508,7 @@ runs/<exp>/datagen/
     scene.yaml                    the scene instance (randomizer)
     episode_<n>.json              results (simulator)
     episode_<n>_bag/              bags (simulator)
+    episode_<n>_gz.log            gz server log copies (simulator)
 ```
 
 ### 8.4 manifest.json

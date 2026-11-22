@@ -73,8 +73,8 @@ POLICIES = ("smolvla", "oracle")
 RUNNER_PARAMS = dict(actions_per_chunk=30, chunk_size_threshold=0.95, aggregate_fn_name="weighted_average")
 SERVE_READY_S = 300            # legacy: "RosettaPolicyServer started on" within 300 s
 RUNNER_JSON_S = 90             # rosetta_goal.py: cancel the goal + runner.json after the sim's summary.json
-SETUP_S = 240                  # container start, models, gz world load, client up (the sim waits up to 300 s)
-SAFETY, RTF_FLOOR = 2.0, 0.03  # wall limit = sim budget / measured RTF x SAFETY (+ SETUP_S)
+SETUP_S = 240                  # = task rollout.setup_s default: container start, models, world load, client up
+SAFETY, RTF_FLOOR = 2.0, 0.03  # = task rollout.wall_safety default; wall limit = sim budget / measured RTF x SAFETY
 _DOMAINS = itertools.count(int(os.environ.get("REVOLVE_ROS_DOMAIN0", "11")))
 _DOMAIN_LOCK = threading.Lock()
 
@@ -93,9 +93,9 @@ def sim_budget_s(task_rollout, budget_s=None, wait_s=None, after_success_s=None)
     return w + b + (a or 0.0)
 
 
-def wall_limit(sim_s, rtf):
-    """Wall clock [s] the gz run may take from its unpause: sim_s at the measured real-time factor, x SAFETY."""
-    return round(sim_s / max(float(rtf), RTF_FLOOR) * SAFETY, 1)
+def wall_limit(sim_s, rtf, safety=SAFETY):
+    """Wall clock [s] the gz run may take from its unpause: sim_s at the measured real-time factor, x safety."""
+    return round(sim_s / max(float(rtf), RTF_FLOOR) * safety, 1)
 
 
 def read(p):
@@ -150,12 +150,14 @@ def client_script(policy, out, start, prompt, contract, ckpt=None, server=None, 
 
 
 def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s=None, wait_s=None,
-        after_success_s=None, rtf=0.1, task=None, say=print, gui=False, video=False, runner_params=None) -> dict:
+        after_success_s=None, rtf=0.1, task=None, say=print, gui=False, video=False, runner_params=None,
+        wall_safety=None, setup_s=None) -> dict:
     """One rollout from `start` (a replay-accepted attempt dir, starts.py) into `out` (emptied first). restore:
     (a finished rollout dir, phase) = a retry from its phase_states/<phase>_start.npz. gui: the sim container also
     shows the gz GUI on the host's X display (simulator launch.py gui_kw; not part of the verdict). video: the
     sim also renders the scene camera into <out>/video.mp4 (cli.py rollout --video; not part of the verdict).
-    runner_params: overrides of RUNNER_PARAMS (client/runner_params.yaml). -> rollout.json's record."""
+    runner_params: overrides of RUNNER_PARAMS (client/runner_params.yaml). wall_safety / setup_s: the task's
+    `rollout:` values unless given. -> rollout.json's record."""
     if policy not in POLICIES:
         raise ValueError(f"policy {policy!r}: one of {POLICIES}")
     if policy == "smolvla" and not (Path(ckpt) / "config.json").is_file():
@@ -167,7 +169,9 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
     r = sim_spec.task(task or json.loads((start / "episode.json").read_text())["task"])
     contract = sim_spec.SPECS / "robots" / r.robot.name / r.robot.contract
     sim_s = sim_budget_s(r.task.rollout, budget_s, wait_s, after_success_s)
-    wall = wall_limit(sim_s, rtf)
+    safety = r.task.rollout.wall_safety if wall_safety is None else wall_safety
+    setup = r.task.rollout.setup_s if setup_s is None else setup_s
+    wall = wall_limit(sim_s, rtf, safety)
     shutil.rmtree(out, ignore_errors=True)
     (out / "client").mkdir(parents=True)
     tag = f"rollout-{uuid.uuid4().hex[:8]}"
@@ -177,7 +181,8 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
     rec = dict(seed=seed, dir=str(out.relative_to(REPO)) if out.is_relative_to(REPO) else str(out), policy=policy,
                ckpt=str(ckpt) if ckpt else None, start=str(start.relative_to(REPO)) if start.is_relative_to(REPO) else str(start),
                restore=None if restore is None else dict(source=str(restore[0]), phase=restore[1]), tag=tag,
-               ros_domain_id=domain, sim_budget_s=sim_s, rtf_assumed=rtf, wall_limit_s=wall, timing={}, error=None)
+               ros_domain_id=domain, sim_budget_s=sim_s, rtf_assumed=rtf, wall_limit_s=wall,
+               wall_safety=safety, setup_s=setup, timing={}, error=None)
     serve = sim = None
     net = dk.networks.create(f"{tag}-net", internal=True, labels={LABEL: tag})
     try:
@@ -193,7 +198,7 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
             rec["timing"]["serve_ready_s"] = round(time.time() - t0, 1)
             (out / "client" / "runner_params.yaml").write_text(runner_params_yaml(runner_params))
         script = client_script(policy, out, start, r.task.prompt, contract, Path(ckpt).resolve() if ckpt else None,
-                               f"{tag}-serve", wall + SETUP_S)
+                               f"{tag}-serve", wall + setup)
         client = dk.containers.run(data_launch.IMAGE, ["bash", "-c", script], **_client_kw(out, tag, net.name, domain))
         client.reload()
         peer = client.attrs["NetworkSettings"]["Networks"][net.name]["IPAddress"]
@@ -203,7 +208,7 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
             args += [k, v] if v is not None else []
         args += ["--gui"] if gui else []
         args += ["--video"] if video else []
-        sim = sim_launch.start(args, out / "jobs" / "sim", gpu=True, timeout=wall + SETUP_S, network=net.name,
+        sim = sim_launch.start(args, out / "jobs" / "sim", gpu=True, timeout=wall + setup, network=net.name,
                                image=SIM_ROS_IMAGE, name=f"{tag}-sim", labels={LABEL: tag},
                                env={"ROS_DOMAIN_ID": str(domain), "FASTDDS_BUILTIN_TRANSPORTS": "UDPv4",
                                     "ROS_STATIC_PEERS": peer}, gui=gui)
@@ -214,7 +219,7 @@ def run(start, out, *, seed, policy="smolvla", ckpt=None, restore=None, budget_s
         rec["timing"]["sim_job_s"] = res["wall_s"]
         rec["sim_exit"] = res["exit"]
         if res["exit"] is None:
-            rec["error"] = f"sim job over its wall limit {wall + SETUP_S:.0f} s"
+            rec["error"] = f"sim job over its wall limit {wall + setup:.0f} s"
         if policy == "smolvla":
             t1 = time.time()
             while not (out / "client" / "runner.json").exists() and time.time() - t1 < RUNNER_JSON_S:

@@ -3,7 +3,9 @@ phase_states/<phase>_start.npz) and returns the record, as scripted by its param
 
 Params: phases (default approach, grasp, open, release), fail_seeds (default none) fail at `failed_phase` (default: the
 last phase) unless restored from a saved phase state (a retry passes), `always_fail` (default false) makes retries fail
-too, `delay_s` (default 0) sleeps before returning."""
+too, `delay_s` (default 0) sleeps before returning, `end_reasons` {seed: reason} sets the record's termination (success,
+budget, no_action, abort, steps; or the stack errors wall_limit / stack_error: the record has an `error`; default: success
+when the rollout passed, else budget), `rtf` (default none) is the real-time factor it assumes."""
 from __future__ import annotations
 
 import json
@@ -24,6 +26,7 @@ class FakeRollout(Rollout):
         self.fail_seeds = set(params.get("fail_seeds", ()))
         self.failed_phase = params.get("failed_phase", self.phases[-1])
         self.always_fail, self.delay_s = params.get("always_fail", False), params.get("delay_s", 0)
+        self.end_reasons, self._rtf = {int(k): v for k, v in params.get("end_reasons", {}).items()}, params.get("rtf")
 
     def run(self, item, out, *, seed, restore=None, runner, policy, ckpt, gui=False):
         time.sleep(self.delay_s)
@@ -40,9 +43,14 @@ class FakeRollout(Rollout):
         (out / "phase_report.json").write_text(json.dumps(
             {"phases": {p: {"status": s} for p, s in status.items()},
              "result": {"failed_phase": failed, "regenerate": None, "failed_checks": [failed] if failed else []}}))
+        end = self.end_reasons.get(seed) or ("success" if failed is None else "budget")
+        error = {"wall_limit": "sim job over its wall limit 1 s", "stack_error": "RuntimeError: fake stack error"}.get(end)
         record = dict(seed=seed, dir=str(out), policy=policy.name, ckpt=ckpt.path if ckpt else None, start=str(item.start_dir),
                       restore=None if restore is None else dict(source=str(restore[0]), phase=restore[1]),
-                      phases=status, failed_phase=failed, regenerate=None, failed_checks=[failed] if failed else [],
-                      passed=failed is None, error=None)
+                      phases=None if error else status, failed_phase=failed, regenerate=None,
+                      failed_checks=[failed] if failed else [], passed=failed is None and not error, error=error, end_reason=None if error else end)
         (out / "rollout.json").write_text(json.dumps(record))
         return record
+
+    def rtf(self, policy):
+        return self._rtf

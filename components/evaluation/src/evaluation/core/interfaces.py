@@ -93,6 +93,10 @@ class Rollout(ABC):
         """Rollouts to run at a time when the spec sets no `run.workers`."""
         return 1
 
+    def rtf(self, policy: Policy) -> float | None:
+        """The real-time factor the plugin assumes for its wall limit (None: it has none)."""
+        return None
+
 
 class Judge(ABC):
     @abstractmethod

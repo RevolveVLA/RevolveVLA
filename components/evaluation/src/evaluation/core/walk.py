@@ -20,6 +20,7 @@ from datagen.core import pool
 from .errors import EvalError
 from .interfaces import Built, EvalItem, Judge, Policy, ResolvedCkpt, Rollout, Verdict
 from .spec import RunnerSpec
+from .termination import termination
 
 RESTORABLE = ("approach", "grasp", "open", "release")      # phases whose start state a retry can restore
 STACK_ATTEMPTS = 2
@@ -95,7 +96,7 @@ class Walk:
         while True:
             record, verdict = self._try(item, here, restore)
             tries.append({"dir": str(here), "restored_at": restore and restore[1], "passed": verdict.passed,
-                          "detail": dict(verdict.detail), "record": record})
+                          "detail": dict(verdict.detail), "termination": termination(record), "record": record})
             if tries[0] is tries[-1]:
                 progress.update(k, "running", first=verdict.passed)
             if (restore := self.retry.restore(len(tries), record, verdict.passed, here)) is None:

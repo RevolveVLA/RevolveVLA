@@ -271,3 +271,24 @@ def test_bad_success_rule(specs_copy):
     edit(p, lambda d: d["success"].pop("bar_z_m"))
     with pytest.raises(specs.SpecError, match="success.bar_z_m"):
         specs.load(p, robot="mobile_panda")
+
+
+# ---- rollout termination limits
+def test_rollout_wall_limit_keys_are_optional_with_the_old_constants(specs_copy):
+    p = specs_copy / "tasks" / "open_fridge_door" / "task.yaml"
+    ro = specs.load(p, robot="mobile_panda").task.rollout
+    assert (ro.wall_safety, ro.setup_s) == (2.0, 240.0)                       # the shipped task states them
+    edit(p, lambda d: [d["rollout"].pop(k) for k in ("wall_safety", "setup_s")])
+    ro = specs.load(p, robot="mobile_panda").task.rollout
+    assert (ro.wall_safety, ro.setup_s, ro.budget_s) == (2.0, 240.0, 45.0)    # absent: the defaults, nothing else changes
+    edit(p, lambda d: d["rollout"].update(wall_safety=3.0, setup_s=60))
+    ro = specs.load(p, robot="mobile_panda").task.rollout
+    assert (ro.wall_safety, ro.setup_s) == (3.0, 60.0)
+
+
+@pytest.mark.parametrize("key, value", [("wall_safety", 0), ("setup_s", -1)])
+def test_bad_rollout_wall_limit(specs_copy, key, value):
+    p = specs_copy / "tasks" / "open_fridge_door" / "task.yaml"
+    edit(p, lambda d: d["rollout"].update({key: value}))
+    with pytest.raises(specs.SpecError, match=f"rollout.{key}"):
+        specs.load(p, robot="mobile_panda")

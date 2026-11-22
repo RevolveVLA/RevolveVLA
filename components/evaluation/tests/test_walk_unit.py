@@ -199,7 +199,9 @@ def test_results_and_report_content(tmp_path):
     assert T.evaluate(tmp_path, spec=SPEC) == 0
     r = results_of(tmp_path)["sets"]["heldout"]
     assert r["metrics"] == {"rollouts": 6, "first_try_passed": 2, "first_try_success": 2 / 6, "passed_with_retries": 6,
-                            "success_with_retries": 1.0, "first_try_failures": {"grasp": 4}, "errors": 0}
+                            "success_with_retries": 1.0, "first_try_failures": {"grasp": 4}, "errors": 0,
+                            "terminations": {"budget": 4, "success": 6}}
+    assert [t["termination"] for t in r["rollouts"]["101_r1"]["tries"]] == ["budget", "success"]
     assert [t["restored_at"] for t in r["rollouts"]["101_r1"]["tries"]] == [None, "grasp"]
     assert r["rollouts"]["100_r0"]["tries"][0]["record"]["phases"]["grasp"] == "pass"
     assert [c["seed"] for c in r["configs"]] == [100, 101, 102]

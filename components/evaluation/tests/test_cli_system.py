@@ -154,10 +154,35 @@ def test_a_set_filter_runs_only_that_set(root):
     assert sorted(verdicts(r)) == [0, 1]
 
 
+def test_every_try_records_why_it_ended_and_the_limits_that_applied(root):
+    training_manifest(root)
+    ends = {100: "no_action", 101: "abort", 102: "wall_limit"}                # train seeds 0, 1: success (the fake's default)
+    rollout = SPEC["rollout"] | {"end_reasons": ends, "rtf": 0.3, "budget_s": 20, "wall_safety": 3.0}
+    rc, out, err = evaluate(root, "all", spec=spec_of(root, rollout=rollout, judge={"criterion": "c0"}))
+    assert rc == 0, err
+    r = results(root)
+    held, train = r["sets"]["heldout"], r["sets"]["train"]
+    assert [t["termination"] for t in held["rollouts"]["101_r0"]["tries"]] == ["abort", "abort"]
+    assert [len(e["tries"]) for e in held["rollouts"].values()] == [1, 2, 1]
+    assert held["rollouts"]["102_r0"]["tries"][0]["termination"] == "wall_limit" and held["metrics"]["errors"] == 1
+    assert held["metrics"]["terminations"] == {"no_action": 1, "abort": 2, "wall_limit": 1}
+    assert train["metrics"]["terminations"] == {"success": 2}
+    assert held["rollout_policy"] == train["rollout_policy"] == {
+        "budget_s": 20, "wait_s": 30.0, "after_success_s": 2.0, "wall_safety": 3.0, "setup_s": 240.0, "rtf": 0.3,
+        "wall_limit_s": round((30 + 20 + 2) / 0.3 * 3.0, 1)}
+    report = (root / "runs" / "eval" / "sys" / "report.md").read_text()
+    assert "| termination | tries |\n|---|---|\n| no_action | 1 |\n| abort | 2 |\n| wall_limit | 1 |" in report
+    assert "| success | 2 |" in report and "Rollout limits: budget_s 20, wait_s 30.0" in report and "wall_safety 3.0" in report
+
+
 def test_dry_run_prints_the_plan_and_touches_nothing(root):
     rc, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, ckpt={"source": "hf", "repo": "org/name"}))
     assert rc == 0 and "[dry-run] set heldout (heldout): 3 held-out configs, sobol sampler, pool [100, 109] + [110, 119]" in out
     assert "ckpt: hf {'repo': 'org/name'} (nothing resolved)" in out and "judge c2" in out and "workers: by free GPU memory" in out
+    assert ("rollout limits: budget_s 45.0, wait_s 30.0, after_success_s 2.0, wall_safety 2.0, setup_s 240.0, "
+            "rtf measured at run time") in out
+    _, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "fake_eval_log", "rtf": 0.3, "budget_s": 20}))
+    assert "rollout limits: budget_s 20, wait_s 30.0, after_success_s 2.0, wall_safety 2.0, setup_s 240.0, rtf 0.3, wall limit 346.7 s" in out
     assert not (root / "runs" / "eval").exists() and not (root / "runs" / "ckpt_cache").exists() and calls(root) == []
 
 

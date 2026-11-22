@@ -1,8 +1,9 @@
 """`<out>/results.json` (the run's state: spec hash, resolved ckpt, per set the configs, check results and rollouts with
 their tries, plus the metrics derived from them) and `<out>/report.md`.
 
-A rollout entry is `{seed, passed, tries: [{dir, restored_at, passed, detail, record}]}`: `passed` = the last try's
-judge verdict, a try's `record` = the rollout plugin's record (phase verdict), `detail` = the judge's. The file is
+A rollout entry is `{seed, passed, tries: [{dir, restored_at, passed, detail, termination, record}]}`: `passed` = the last
+try's judge verdict, a try's `record` = the rollout plugin's record (phase verdict), `detail` = the judge's, `termination`
+= why the sim run ended (core/termination.py). A set's `rollout_policy` = the limits that applied. The file is
 written atomically after every committed rollout; a different spec hash refuses an existing file."""
 from __future__ import annotations
 
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .errors import EvalError
+from .termination import REASONS, termination
 
 NO_PHASE = "success_rule"           # the phases passed but the judge failed (C1 / C2 on the state log)
 ERROR = "stack_error"
@@ -31,13 +33,16 @@ def failure(first_try: Mapping) -> str | None:
 
 
 def metrics(rollouts: Mapping[str, Mapping]) -> dict[str, Any]:
-    """first_try_success / success_with_retries (fractions of the rollouts), failures per first-try reason."""
+    """first_try_success / success_with_retries (fractions of the rollouts), failures per first-try reason, and how
+    every try ended (`terminations`: count per reason, over all tries)."""
     n, first = len(rollouts), [r["tries"][0] for r in rollouts.values()]
     k1, k = sum(t["passed"] for t in first), sum(r["passed"] for r in rollouts.values())
     return {"rollouts": n, "first_try_passed": k1, "first_try_success": k1 / n if n else None,
             "passed_with_retries": k, "success_with_retries": k / n if n else None,
             "first_try_failures": dict(Counter(f for t in first if (f := failure(t)))),
-            "errors": sum(bool(r["tries"][-1]["record"].get("error")) for r in rollouts.values())}
+            "errors": sum(bool(r["tries"][-1]["record"].get("error")) for r in rollouts.values()),
+            "terminations": dict(Counter(t.get("termination") or termination(t["record"])
+                                         for r in rollouts.values() for t in r["tries"]))}
 
 
 def pooled(sets: Mapping[str, Mapping], names) -> dict[str, Any]:
@@ -109,6 +114,11 @@ class Results:
             if m["first_try_failures"]:
                 lines += ["| first-try failure | count |", "|---|---|"]
                 lines += [f"| {p} | {k} |" for p, k in sorted(m["first_try_failures"].items())] + [""]
+            if m.get("terminations"):
+                lines += ["| termination | tries |", "|---|---|"]
+                lines += [f"| {r} | {m['terminations'][r]} |" for r in REASONS if r in m["terminations"]] + [""]
+            if pol := block.get("rollout_policy"):
+                lines += ["Rollout limits: " + ", ".join(f"{k} {v}" for k, v in pol.items()), ""]
             if rows := config_rows(block):
                 lines += ["| seed | cell | values | first try | passed |", "|---|---|---|---|---|"]
                 lines += [f"| {r['seed']} | {','.join(map(str, r['cell']))} | "

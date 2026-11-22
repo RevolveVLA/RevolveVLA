@@ -18,6 +18,7 @@ from .results import Results
 from .sets import repo_root
 from .spec import EvalSpec
 from .task import load_task
+from .termination import rollout_policy
 from .walk import RetryPolicy, Walk
 
 STAGES = ("sample", "check", "rollout", "report")
@@ -85,6 +86,11 @@ class Pipeline:
             f"up to {runs * (1 + s.retries)} runs")
         workers = self.workers if s.run.workers or self.gui else "by free GPU memory"
         say(f"workers: {workers}, {'headless' if s.run.headless else 'gui'}")
+        if task := load_task(s.train.task, repo_root(s, self.out)):
+            pol = rollout_policy(task.rollout, s.rollout.params, None)
+            say("rollout limits: " + ", ".join(f"{k} {v}" for k, v in pol.items() if k not in ("rtf", "wall_limit_s")) +
+                (f", rtf {pol['rtf']}, wall limit {pol['wall_limit_s']} s" if pol["rtf"] else
+                 ", rtf measured at run time (runs/eval_rtf.json), wall limit = sim time / rtf x wall_safety"))
 
     # ---------------------------------------------------------------- stages
     def _build(self, name: str) -> Built:
@@ -113,11 +119,13 @@ class Pipeline:
             raise PipelineError(f"policy {s.policy.plugin!r} needs a `ckpt:`")
         ckpt = p.ckpt.resolve(self.out) if p.ckpt and p.policy.needs_ckpt else None
         self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
-        walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt,
-                    load_task(s.train.task, repo_root(s, self.out)), self.out, self.rollout_workers(), self.gui, self.log,
-                    self.abort)
+        task = load_task(s.train.task, repo_root(s, self.out))
+        policy = task and rollout_policy(task.rollout, s.rollout.params, p.rollout.rtf(p.policy))
+        walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt, task, self.out,
+                    self.rollout_workers(), self.gui, self.log, self.abort)
         for n in names:
             built = self._build(n)
+            self.results.set(n)["rollout_policy"] = policy
             self.results.set(n)["configs"] = [dict(c.config.to_dict(), start=str(c.start_dir)) for c in built.items]
             walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e))
 

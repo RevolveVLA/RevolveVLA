@@ -148,8 +148,18 @@ sanity:
     - {metric: non_finite_commands, eq: 0}
     - {metric: gz_log_problem_lines, eq: 0}
 
-# Policy rollouts (closed loop): sim time from the first action, wait before it, run-on after a success
-rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0}
+# Policy rollouts (closed loop). Every condition that ends one (evaluation reports the reason per try, `terminations`):
+#  - success: the live hold check passes at a gripper release; the run ends after_success_s of sim time later.
+#  - budget: budget_s of sim time after the FIRST action (the run ends, whatever the phases did).
+#  - no_action: wait_s of sim time pass without any action (the policy never started).
+#  - abort: the physics sanity limit (sanity: peak_body_speed_mps) or NaN.
+#  - wall limit: sim time (wait_s + budget_s + after_success_s) / measured real-time factor x wall_safety, from the
+#    unpause; the sim job gets setup_s more (container start, models, world load, client up). A hit is a stack
+#    error, not a policy failure.
+#  - stack errors (policy server or client does not come up, sim never gets the client): the try is re-run once.
+# A failed phase does NOT stop the sim: the live validator marks it, the run goes on to the budget (retries restore
+# the failed phase's start state afterwards). real_time_factor is the sim's speed cap, not the measured RTF.
+rollout: {budget_s: 45.0, wait_s: 30.0, after_success_s: 2.0, real_time_factor: 1.0, wall_safety: 2.0, setup_s: 240.0}
 
 # Eval success of a policy rollout, from its state log (common/revolve_common/success.py): the door at or above
 # joint_deg for hold_s, opened with the handle held (gripper closed, both fingers on it, the bar between the

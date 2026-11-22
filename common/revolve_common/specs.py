@@ -134,6 +134,8 @@ class Rollout(Strict):
     wait_s: float = Field(ge=0)
     after_success_s: float | None = None
     real_time_factor: float = Field(gt=0)
+    wall_safety: float = Field(2.0, gt=0)      # wall limit = sim time / measured RTF x wall_safety (+ setup_s for the job)
+    setup_s: float = Field(240.0, ge=0)        # container start, models, world load, client up
 
 
 class Success(Strict):

@@ -230,8 +230,8 @@ def main():
     n.wait_for(lambda: n.result is not None, 30)
     tracing.clear()
     out['trace'] = trace
+    out['result'] = n.final_result()
     with n.lock:
-        out['result'] = n.result
         sts = list(n.states)
     opn = [st['values'] for st in sts if st['phase'] == 'open']
     out['open_trace'] = {'joint_max': max((v.get('open.done[0]') or 0.0 for v in opn), default=None),

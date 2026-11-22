@@ -151,8 +151,7 @@ def main():
         else:
             out['resets'].append(after_reset(*n.reset()))
             n.wait_for(lambda: n.result is not None, 10)   # a move episode ends with the reset
-        with n.lock:
-            res = n.result
+        res = n.final_result()
         ep['result'] = {k2: res.get(k2) for k2 in ('episode', 'passed', 'failed_phase', 'reason', 'duration_s',
                                                     'rate_hz', 'result_file', 'bag')} if res else None
         out['episodes'].append(ep)

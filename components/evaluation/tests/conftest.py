@@ -135,3 +135,16 @@ def _module(name, path):
     m = importlib.util.module_from_spec(s)
     s.loader.exec_module(m)
     return m
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "gpu: needs a free GPU, docker and the built images; set EVAL_GPU=1 to run")
+
+
+def pytest_collection_modifyitems(config, items):
+    """Tests marked `gpu` are skipped unless EVAL_GPU=1 (the unmarked ones, this dir's older GPU tests included, run as before)."""
+    if os.environ.get("EVAL_GPU") != "1":
+        skip = pytest.mark.skip(reason="needs a GPU: set EVAL_GPU=1")
+        for item in items:
+            if "gpu" in item.keywords:
+                item.add_marker(skip)

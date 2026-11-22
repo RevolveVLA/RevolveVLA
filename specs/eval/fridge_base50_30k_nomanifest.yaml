@@ -1,0 +1,18 @@
+# fridge_base50_30k.yaml for a machine WITHOUT the training manifest (runs/datagen/fridge_base50/manifest.json): the held-out distance is
+# `realised: false` (sampled, against the re-sampled training configs) and there is no `train` set (it needs the manifest's start dirs).
+# `./revolve evaluate specs/eval/fridge_base50_30k_nomanifest.yaml [--dry-run]`. With the manifest use fridge_base50_30k.yaml.
+train: specs/datagen/fridge_base50.yaml
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+out: runs/eval/fridge_base50_30k_nomanifest
+sets:
+  heldout:
+    count: 10
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 529], replacement: [530, 599]}
+    min_distance: {value: 0.1, realised: false}
+rollouts: 5                                    # per config
+retries: 1                                     # policy again from the failed phase start, up to N times
+runner: {actions_per_chunk: 21, chunk_size_threshold: 0}      # no-blend (20 executed)
+judge: {criterion: c2}
+run: {workers: 2, headless: true}

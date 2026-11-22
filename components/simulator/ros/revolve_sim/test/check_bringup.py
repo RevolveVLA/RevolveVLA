@@ -1,6 +1,10 @@
-"""T1 bring-up checks, run inside a simulator container started by `revolve sim` (see test_sim.py): prints one JSON
+"""T1 bring-up checks, run inside a simulator container started by `revolve sim` (see conftest.py): prints one JSON
 line with the measurements. Reads only the upstream topics: /controller_manager, the robot's ground-truth pose
-(/model/<robot>/pose), the camera images, the contact and joint-state topics, gz's model list.
+(/model/<robot>/pose), the cameras, the contact and joint-state topics, gz's model list.
+Cameras: the render rate from /<camera>/camera_info (published with every rendered frame, small) over WINDOW_S of sim
+time and its longest gap (a render stall), and the image size and content from the first FRAMES raw images. The raw
+images (0.7 MB each, over UDP) can reach a fresh subscriber with gaps of 1-2 s under host load, so their arrival times
+say little about the render rate.
 
   python3 check_bringup.py --scene S --robot R [--repo /repo] [--settle 3]
 """
@@ -17,11 +21,14 @@ import rclpy
 from controller_manager_msgs.srv import ListControllers
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
-from sensor_msgs.msg import Image, JointState
+from sensor_msgs.msg import CameraInfo, Image, JointState
 from tf2_msgs.msg import TFMessage
 
 from revolve_sim.robot import describe
 from revolve_sim.world import make_world
+
+WINDOW_S = 5.0      # sim time over which camera_info is counted
+FRAMES = 5          # raw images checked for size and content
 
 
 def yaw_of(q):
@@ -33,10 +40,13 @@ class Probe(Node):
         super().__init__('check_bringup', parameter_overrides=[rclpy.parameter.Parameter('use_sim_time', value=True)])
         self.pose = None
         self.images = {c: [] for c in cams}
+        self.info = {c: [] for c in cams}
         self.joints = {}
         self.create_subscription(TFMessage, f'/model/{robot}/pose', self.on_pose, 10)
         for c in cams:
             self.create_subscription(Image, f'/{c}/image', lambda m, c=c: self.on_image(c, m), 50)
+            self.create_subscription(CameraInfo, f'/{c}/camera_info', lambda m, c=c: self.info[c].append(
+                m.header.stamp.sec + m.header.stamp.nanosec * 1e-9), 50)
         for m in models:
             self.create_subscription(JointState, f'/world/{world}/model/{m}/joint_state',
                                      lambda msg, m=m: self.joints.__setitem__(m, dict(zip(msg.name, msg.position))),
@@ -47,8 +57,9 @@ class Probe(Node):
             self.pose = t.transform
 
     def on_image(self, c, m):
-        self.images[c].append((m.header.stamp.sec + m.header.stamp.nanosec * 1e-9, m.width, m.height,
-                               float(np.frombuffer(bytes(m.data), np.uint8).std()) if m.data else 0.0))
+        if len(self.images[c]) < FRAMES:
+            self.images[c].append((m.width, m.height,
+                                   float(np.frombuffer(bytes(m.data), np.uint8).std()) if m.data else 0.0))
 
     def sim_now(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -83,12 +94,20 @@ def main():
     out['controllers'] = {c.name: c.state for c in res.controller} if res else {}
     for c in n.images:
         n.images[c].clear()
-    n.spin_for(3.0)
+        n.info[c].clear()
+    n.spin_for(WINDOW_S)
+    info = {c: list(st) for c, st in n.info.items()}    # the window's camera_info stamps, not the wait's below
+    w0 = time.time()
+    while not all(len(ims) >= FRAMES for ims in n.images.values()) and time.time() - w0 < 30:
+        time.sleep(0.05)
+    out['camera_window_s'] = WINDOW_S
     out['cameras'] = {}
     for c, ims in n.images.items():
-        st = [s for s, *_ in ims]
+        st = sorted(info[c])
         rate = (len(st) - 1) / (st[-1] - st[0]) if len(st) > 2 and st[-1] > st[0] else 0.0
-        out['cameras'][c] = {'rate_hz': round(rate, 2), 'n': len(ims), 'size': list(ims[-1][1:3]) if ims else None,
+        out['cameras'][c] = {'rate_hz': round(rate, 2), 'n': len(st),
+                             'max_gap_s': round(float(np.diff(st).max()), 4) if len(st) > 1 else None,
+                             'frames': len(ims), 'size': list(ims[-1][:2]) if ims else None,
                              'min_std': round(min((s for *_, s in ims), default=0.0), 2)}
     x, y, yaw = scene.robot_start.base
     if n.pose is not None:

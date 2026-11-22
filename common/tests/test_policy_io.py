@@ -94,3 +94,25 @@ def test_contract_layout_rejects_world_pose_and_bad_twist():
         P.sources({"channel": {"topic": "/cmd_vel", "type": P.TWIST}, "select": ["linear.x", "linear.y"]})
     with pytest.raises(ValueError, match="not one of"):
         P.sources({"channel": {"topic": "/p", "type": "geometry_msgs/msg/PoseStamped"}, "select": ["pose.position.x"]})
+
+
+def wrapped(b):
+    """The same base poses with the yaw logged wrapped to (-pi, pi], as odometry and gz poses log it."""
+    b = np.array(b, float)
+    b[..., 2] = np.angle(np.exp(1j * b[..., 2]))
+    return b
+
+
+def test_body_twist_takes_the_shortest_rotation():
+    # 3.1 then 3.153 rad, logged as 3.1 then -3.13: a 0.053 rad turn, not a 6.23 rad one (188 rad/s over 1/30 s)
+    b0, b1 = [0.0, 0.0, 3.1], [0.01, 0.0, 3.153]
+    assert np.allclose(P.body_twist(b0, wrapped(b1), 1 / FPS), P.body_twist(b0, b1, 1 / FPS), atol=1e-9)
+    # a change below pi is kept as it is, not wrapped the other way
+    assert np.isclose(P.body_twist([0, 0, 0.1], [0, 0, 3.0], 1.0)[2], 2.9)
+
+
+def test_twists_of_a_path_logged_wrapped():
+    B = drive()                                       # its yaw swings across pi
+    assert np.ptp(wrapped(B)[:, 2]) > 6               # the log jumps
+    for twist in (P.measured_twist, P.command_twist):
+        assert np.allclose(twist(wrapped(B), FPS, DT), twist(B, FPS, DT), atol=1e-9)

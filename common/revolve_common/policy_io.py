@@ -41,9 +41,12 @@ def lag_steps(fps: float, dt: float) -> int:
 
 
 def body_twist(b0, b1, span: float) -> np.ndarray:
-    """(..., 3) twist [vx, vy, wz] in the robot frame that takes base pose b0 to b1 (..., 3: x, y, yaw) in span s."""
+    """(..., 3) twist [vx, vy, wz] in the robot frame that takes base pose b0 to b1 (..., 3: x, y, yaw) in span s.
+    The yaw change is the shortest rotation, so a yaw logged wrapped to (-pi, pi] gives the same twist as the
+    unwrapped one (a raw difference across the wrap is a 2 pi / span spike: 188 rad/s over 1/30 s)."""
     b0, b1 = np.asarray(b0, float), np.asarray(b1, float)
     d = b1 - b0
+    d[..., 2] -= 2 * math.pi * np.round(d[..., 2] / (2 * math.pi))    # exactly unchanged below pi
     mid = b0[..., 2] + d[..., 2] / 2
     c, s = np.cos(mid), np.sin(mid)
     return np.stack([(c * d[..., 0] + s * d[..., 1]) / span, (-s * d[..., 0] + c * d[..., 1]) / span,
@@ -66,7 +69,8 @@ def measured_twist_at(base, k: int, fps: float, dt: float) -> np.ndarray:
 
 def command_twist(base_cmd, fps: float, dt: float) -> np.ndarray:
     """(n, 3) per step k: base_cmd[k] -> the command at t_k + 1/fps (linear between steps, held after the last)."""
-    base_cmd = np.asarray(base_cmd, float)
+    base_cmd = np.array(base_cmd, float)
+    base_cmd[:, 2] = np.unwrap(base_cmd[:, 2])     # interpolating across a wrap would land mid-jump
     t = np.arange(len(base_cmd)) * dt
     ahead = np.stack([np.interp(t + 1.0 / fps, t, base_cmd[:, i]) for i in range(3)], -1)
     return body_twist(base_cmd, ahead, 1.0 / fps)

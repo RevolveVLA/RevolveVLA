@@ -119,10 +119,10 @@ def _ckpt(v, at) -> CkptSpec:
 def _judge(v, task, at) -> PluginRef:
     """The default is c2 when the task has a `success:` rule, else c0; c1/c2 need the rule (task None = not found: unchecked)."""
     if v is None:
-        return PluginRef("c2" if task and task.success else "c0")
+        return PluginRef("c2" if getattr(task, "success", None) else "c0")
     d = _mapping(v, at, required=("criterion",), free=True)
     criterion = _str(d["criterion"], f"{at}.criterion")
-    if criterion in NEEDS_SUCCESS and task and task.success is None:
+    if criterion in NEEDS_SUCCESS and task and getattr(task, "success", None) is None:
         _fail(f"{at}.criterion", f"{criterion} needs a `success:` block in task {task.name} (use c0)")
     return PluginRef(criterion, {k: x for k, x in d.items() if k != "criterion"})
 

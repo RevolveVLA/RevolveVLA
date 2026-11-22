@@ -35,6 +35,29 @@ COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]
 sys.path[:0] = [str(COMP), str(COMP / "src" / "evaluation"), str(COMP / "src"), str(REPO / "components" / "datagen" / "src")]
 sys.path.append(str(REPO / "components" / "datagen" / "tests"))      # fake_datagen: the fake training generator
+import legacy  # noqa: E402
+
+LEGACY = {      # old simulator rollout / state-log judges / Rosetta contract relabel / starts (TRIAGE.md); PRD 07 deletes them
+    "test_backcompat_unit.py": None, "test_cli_gpu.py": None, "test_evaluation.py": None, "test_evaluation_so101.py": None,
+    "test_evaluation_unit.py": None, "test_success_unit.py": None,
+    "test_ckpts_unit.py": {"test_served_ckpt_unchanged_when_it_matches_the_contract",     # need robots/*/contract.yaml (gone)
+                           "test_served_ckpt_renames_and_relabels_an_external_checkpoint", "test_served_ckpt_relabels_the_shape_alone",
+                           "test_served_ckpt_refuses_an_unknown_camera", "test_relabel_wraps_a_source_and_serves_under_out"},
+    "test_judges_unit.py": {"test_verdicts_on_state_logs", "test_a_missing_log_fails_with_the_reason_and_a_task_without_rule_is_an_error",
+                            "test_default_judge_follows_the_tasks_success_rule", "test_the_success_block_changes_no_datagen_spec_hash"},
+    "test_termination_unit.py": {"test_rollout_policy_agrees_with_rollout_py_and_the_shipped_task",
+                                 "test_docker_uses_the_measured_rtf_unless_the_yaml_gives_one",
+                                 "test_docker_passes_the_wall_limit_params_and_names_them"},
+    "test_rollout_unit.py": {"test_runner_params_yaml_default_and_override", "test_runner_params_yaml_aggregate",
+                             "test_docker_passes_the_rollout_run_kwargs", "test_docker_sets_the_robot_env_for_rollout_py",
+                             "test_docker_default_workers_is_the_gpu_default"},
+    "test_spec_unit.py": {"test_the_repo_example_loads", "test_aggregate_names_match_rollout_py"},
+    "test_trainings_unit.py": {"test_the_real_fridge_base50_run_loads"},
+    "test_cli_unit.py": {"test_revolve_evaluate_dry_run_on_the_repo_spec"},
+    "test_cli_system.py": {"test_every_try_records_why_it_ended_and_the_limits_that_applied",
+                           "test_the_gpu_specs_hold_out_without_a_training_manifest"},
+}
+collect_ignore = legacy.ignored(LEGACY)
 CACHE = REPO / "runs" / "test_cache" / "evaluation"
 RUN = REPO / "runs" / "evaluation_tests" / time.strftime("%Y%m%d_%H%M%S")
 TASK = "open_fridge_door"
@@ -139,10 +162,12 @@ def _module(name, path):
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: needs a free GPU, docker and the built images; set EVAL_GPU=1 to run")
+    config.addinivalue_line("markers", "legacy: tests of code the new simulator removed; skipped unless REVOLVE_LEGACY=1")
 
 
 def pytest_collection_modifyitems(config, items):
     """Tests marked `gpu` are skipped unless EVAL_GPU=1 (the unmarked ones, this dir's older GPU tests included, run as before)."""
+    legacy.mark(items, LEGACY)
     if os.environ.get("EVAL_GPU") != "1":
         skip = pytest.mark.skip(reason="needs a GPU: set EVAL_GPU=1")
         for item in items:

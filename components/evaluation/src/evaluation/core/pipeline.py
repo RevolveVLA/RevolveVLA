@@ -90,7 +90,7 @@ class Pipeline:
         workers = self.workers if s.run.workers or self.gui else "by free GPU memory"
         say(f"workers: {workers}, {'headless' if s.run.headless else 'gui'}")
         if task := load_task(s.train.task, repo_root(s, self.out)):
-            pol = rollout_policy(task.rollout, s.rollout.params, None)
+            pol = rollout_policy(getattr(task, "rollout", None), s.rollout.params, None)
             say("rollout limits: " + ", ".join(f"{k} {v}" for k, v in pol.items() if k not in ("rtf", "wall_limit_s")) +
                 (f", rtf {pol['rtf']}, wall limit {pol['wall_limit_s']} s" if pol["rtf"] else
                  ", rtf measured at run time (runs/eval_rtf.json), wall limit = sim time / rtf x wall_safety"))
@@ -130,7 +130,7 @@ class Pipeline:
                                        "ckpt_chunk_size": chunk_size, "text": r.describe()}
         self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
         task = load_task(s.train.task, repo_root(s, self.out))
-        policy = task and rollout_policy(task.rollout, s.rollout.params, p.rollout.rtf(p.policy))
+        policy = task and rollout_policy(getattr(task, "rollout", None), s.rollout.params, p.rollout.rtf(p.policy))
         walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt, task, self.out,
                     self.rollout_workers(), self.gui, self.log, self.abort)
         for n in names:

@@ -13,7 +13,6 @@ import shutil
 from pathlib import Path
 
 import yaml
-from revolve_common import specs
 
 from ...core import sets
 from ...core.errors import EvalError
@@ -67,7 +66,8 @@ class Relabel(CkptSource):
     def resolve(self, out):
         ckpt = self.source.resolve(out)
         root = sets.repo_root(self.spec, out)
-        robot = specs.load(root / "specs" / "tasks" / self.spec.train.task / "task.yaml", self.spec.train.robot).robot
-        contract = root / "specs" / "robots" / robot.name / robot.contract
+        contract = root / "specs" / "robots" / self.spec.train.robot / "contract.yaml"
+        if not contract.is_file():                  # main's robots have no Rosetta contract: nothing to relabel to (PRD 06)
+            return ckpt
         path, changes = served_ckpt(Path(ckpt.path), out / "ckpt", contract)
         return ckpt if changes is None else ResolvedCkpt(str(path), ckpt.origin, changes)

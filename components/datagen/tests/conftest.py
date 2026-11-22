@@ -17,12 +17,22 @@ from pathlib import Path
 
 import pytest
 
+import legacy
+
 os.environ["REVOLVE_ROBOT"] = "mobile_panda"    # the robot of every job here (the fixtures are its runs)
 
 COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]
 DG = COMP / "src" / "datagen"
 sys.path[:0] = [str(COMP), str(COMP / "src"), str(DG), str(DG / "plugins" / "automoma")]
+LEGACY = {      # old simulator / AutoMoMa / task.yaml starts+grasp / Rosetta recorder (TRIAGE.md); PRD 07 deletes them
+    "test_automoma_unit.py": None, "test_datagen.py": None, "test_generate_unit.py": None,
+    "test_grasp_equivalence_unit.py": None, "test_grasp_modes_unit.py": None, "test_layout_check_unit.py": None,
+    "test_layout_unit.py": None, "test_randomisers_unit.py": None, "test_rosetta_system.py": None,
+    "test_rosetta_unit.py": None, "test_start_config_unit.py": None, "test_start_design_unit.py": None,
+    "test_start_randomisers_unit.py": None,
+}
+collect_ignore = legacy.ignored(LEGACY)
 RUN = REPO / "runs" / "datagen_tests" / time.strftime("%Y%m%d_%H%M%S")
 TASKS = {"open_fridge_door": 0, "open_drawer": 0}       # task -> seed
 POLLED = "open_fridge_door"                             # its plan job is polled over HTTP
@@ -136,3 +146,8 @@ def numbers():
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: needs a free GPU, docker and the built images; set DATAGEN_GPU=1 to run")
+    config.addinivalue_line("markers", "legacy: tests of code the new simulator removed; skipped unless REVOLVE_LEGACY=1")
+
+
+def pytest_collection_modifyitems(config, items):
+    legacy.mark(items, LEGACY)

@@ -1,0 +1,14 @@
+# PRD 11 GPU matrix row ab_s: SIGINT during sample (count 3)
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_ab_s
+policy: {plugin: oracle}
+sets:
+  heldout:
+    count: 3
+    sampler: {strategy: sobol}
+    pool: {initial: [520, 529]}
+    min_distance: {value: 0.1, realised: false}
+rollouts: 1
+judge: {criterion: c2}
+run: {workers: 3}

@@ -1,0 +1,13 @@
+# PRD 11 GPU matrix row r1: budget_s 10 forces `budget`; retries 1
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_r1
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+sets:
+  train: {from: train, count: 2}
+rollout: {plugin: docker, budget_s: 10}
+rollouts: 1
+retries: 1
+judge: {criterion: c2}
+run: {workers: 1}

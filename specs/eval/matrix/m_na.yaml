@@ -1,0 +1,12 @@
+# PRD 11 GPU matrix row na: wait_s 0.2 -> no_action
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_na
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+sets:
+  train: {from: train, count: 1}
+rollout: {plugin: docker, wait_s: 0.2}
+rollouts: 1
+judge: {criterion: c2}
+run: {workers: 1}

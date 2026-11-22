@@ -1,0 +1,15 @@
+# PRD 11 GPU matrix row sr: sub-range randomiser x_m [0.05, 0.1]
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_sr
+policy: {plugin: oracle}
+sets:
+  heldout:
+    count: 2
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 504]}
+    min_distance: {value: 0.1, realised: false}
+    randomisers: {robot_base: {x_m: [0.05, 0.1]}}
+rollouts: 1
+judge: {criterion: c2}
+run: {workers: 2}

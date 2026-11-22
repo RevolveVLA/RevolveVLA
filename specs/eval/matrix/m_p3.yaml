@@ -1,0 +1,14 @@
+# PRD 11 GPU matrix row p3: min_distance 0.35 sampled
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_p3
+policy: {plugin: oracle}
+sets:
+  heldout:
+    count: 2
+    sampler: {strategy: sobol}
+    pool: {initial: [520, 529]}
+    min_distance: {value: 0.35, realised: false}
+rollouts: 1
+judge: {criterion: c2}
+run: {workers: 2}

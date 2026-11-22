@@ -1,0 +1,15 @@
+# PRD 11 GPU matrix row s1: sobol sampler, 2 configs
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_s1
+policy: {plugin: oracle}
+sets:
+  heldout:
+    count: 2
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 504]}
+    min_distance: {value: 0.1, realised: false}
+rollouts: 1
+retries: 0
+judge: {criterion: c2}
+run: {workers: 2}

@@ -1,0 +1,13 @@
+# PRD 11 GPU matrix row rn_noblend: runner no-blend (21, 0.0) + judge c2: base of RN / J
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_rn_noblend
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+sets:
+  train: {from: train, count: 2}
+rollouts: 1
+retries: 0
+runner: {actions_per_chunk: 21, chunk_size_threshold: 0}
+judge: {criterion: c2}
+run: {workers: 2}

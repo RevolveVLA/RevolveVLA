@@ -1,0 +1,10 @@
+# PRD 11 GPU matrix row gui: --gui without DISPLAY
+train: specs/datagen/fridge_base50.yaml
+training: {plugin: legacy_layouts, run: runs/fridge_base50}
+out: runs/eval/m_gui
+policy: {plugin: oracle}
+sets:
+  train: {from: train, count: 1}
+rollouts: 1
+judge: {criterion: c2}
+run: {workers: 1}

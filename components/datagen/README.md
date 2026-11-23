@@ -16,7 +16,7 @@ A re-run resumes from `<out>/state.json`. Exit codes: 0 ok, 1 failed check or er
 Required: `task`, `robot`, `out` (inside runs/), `generator` (`plugin: moveit`, `attempts`, `episodes_per_scene`, `record:
 images|no-images`), `splits` (`<name>: {target, sampler, pool: {initial, replacement}, min_distance, record}`).
 Optional: `randomisers` (`robot_start`: `x_m`, `y_m`, `yaw_rad`, `arm`, as ranges or choices), `validators` (`collision_free`),
-`checks`, `seed`, `scene`, `runner` (`sim`, or `fake` for tests), `converter` (skipped until the new bags have a Rosetta
+`checks`, `seed`, `scene`, `runner` (`sim`, or `fake` for tests), `converter` (`rosetta`: bags -> LeRobot through components/dataset; skipped until the new bags have a Rosetta
 contract), `run: {workers, headless}`. Plugins live under `src/datagen/plugins/<kinds>/` and register with the core registry.
 
 ## Outputs (`<out>/`)

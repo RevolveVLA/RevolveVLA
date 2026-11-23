@@ -1,0 +1,17 @@
+# The PartNet-Mobility kitchen (6.2 m room): fridge 11211 and cabinet 46452 (as kitchen_counter) from
+# assets/generated_partnet, the room, table_01 and the cup from assets/generated. The assets are licence-bound
+# and git-ignored, made once by `./revolve assets` (assets_pipeline/). Ground, lights and physics are the
+# simulator's defaults.
+name: kitchen_partnet
+assets: [assets/generated_partnet, assets/generated]   # model://<name>: the first dir that has it
+models:                                                # <entity>: {model, pose [x, y, z, yaw], joints}
+  walls: {model: kitchen_room_partnet}
+  kitchen_counter: {model: kitchen_counter, pose: [-2.625, 0.29, 0.0, 0.0]}
+  fridge: {model: fridge, pose: [-1.5, 2.68, 0.0, -1.5707963267948966]}
+  table_01: {model: table_01, pose: [1.5, -0.5, 0.002, 0.0]}
+  cup: {model: cup, pose: [-1.5, 2.56, 1.1765, 0.0]}  # on the fridge's upper wire rack (its top at z 1.1745)
+# Drive-in start for open_fridge_door: the base 1.0 m in front of the fridge (its front at world y 2.35 faces -y,
+# the handle at (-1.79, 2.35, 1.02)), centred on the handle and facing it, so the approach drives ~1 m straight in;
+# the arm `folded` (tucked above the chassis) while driving. The counter's front is at x -2.23, 0.23 m from the
+# base's side. Open floor behind and to the right (+x) of the start.
+robot_start: {base: [-1.75, 1.1, 1.5707963267948966], arm: folded}

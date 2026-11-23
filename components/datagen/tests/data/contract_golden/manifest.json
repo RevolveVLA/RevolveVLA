@@ -1,0 +1,11 @@
+{
+ "task": "open_fridge_door",
+ "robot": "mobile_panda",
+ "created": "2026-11-22T10:15:00Z",
+ "episodes": [
+  {"seed": 0, "scene": "scene_0/scene.yaml", "robot": "mobile_panda", "task": "open_fridge_door", "episode": 0,
+   "result": "scene_0/episode_0.json", "bag": "scene_0/episode_0_bag", "passed": true,
+   "datagen": {"expert": "moveit_ompl_pilz_v1", "attempt": 0, "wall_s": 41.2}}
+ ],
+ "counts": {"scenes": 1, "attempted": 1, "passed": 1}
+}

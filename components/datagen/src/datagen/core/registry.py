@@ -38,7 +38,7 @@ class Registry:
         self._plugins: dict[tuple[str, str], type] = {}
 
     def register(self, kind: str, name: str) -> Callable[[type], type]:
-        """Class decorator: `@registry.register("generator", "automoma")`."""
+        """Class decorator: `@registry.register("generator", "moveit")`."""
         if kind not in self.kinds:
             raise RegistryError(f"unknown plugin kind {kind!r} (kinds: {self.kinds})")
 

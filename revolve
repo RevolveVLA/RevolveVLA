@@ -172,11 +172,9 @@ def cmd_sim(a):
 
 
 BUILDS = {"simulator": REPO / "components" / "simulator" / "build.sh",
-          "datagen": REPO / "components" / "datagen" / "build.sh",
           "recovery": REPO / "components" / "recovery" / "build.sh",
           "dataset": REPO / "components" / "dataset" / "build.sh",
           "training": REPO / "components" / "training" / "build.sh",
-          "evaluation": REPO / "components" / "evaluation" / "build.sh",
           "manager": REPO / "components" / "manager" / "build.sh"}
 
 

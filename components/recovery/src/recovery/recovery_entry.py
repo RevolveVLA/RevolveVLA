@@ -11,6 +11,7 @@ The gz side (actions, clearance precheck, the restored run, acceptance, the bag)
 image (regen_sim.py); the host composition is components/recovery/recover.py.
 """
 import argparse
+import importlib.util
 import json
 import os
 import shutil
@@ -29,7 +30,9 @@ def plan(a):
         if p.name not in KEEP:
             shutil.rmtree(p) if p.is_dir() else p.unlink()
     rg = json.loads((out / "regen.json").read_text())
-    import cli as sim_cli                     # the simulator's model generator (components/simulator/src/sim)
+    sim = importlib.util.spec_from_file_location("sim_cli", datagen_entry.SIM_CLI)     # the simulator's model generator;
+    sim_cli = importlib.util.module_from_spec(sim)                                      # by path: datagen has a cli.py too
+    sim.loader.exec_module(sim_cli)
     import spec as sim_spec
     datagen_entry.progress(stage="models", task=rg["task"], phase=rg["phase"], mode=rg["mode"], seed=a.seed)
     sim_cli.models(sim_spec.task(rg["task"]))

@@ -1,0 +1,14 @@
+# Smallest end-to-end run on the GPU box: ONE scene instance of open_fridge_door, one sim, up to 3 tries, 1 accepted episode.
+task: open_fridge_door
+robot: mobile_panda
+out: runs/datagen/smoke_v2
+generator: {plugin: moveit, attempts: 3, episodes_per_scene: 1, record: images}
+randomisers:
+  robot_start: {x_m: [-1.8, -1.7], y_m: [1.05, 1.15], yaw_rad: [1.52, 1.62]}
+validators:
+  - {plugin: collision_free}
+seed: 0
+splits:
+  train:
+    target: 1
+    pool: {initial: [0, 2], replacement: [3, 7]}

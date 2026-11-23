@@ -1,0 +1,18 @@
+# Smallest eval on the GPU box: 1 held-out scene instance (no run needed: sampled-only against the training spec) and, once
+# `./revolve datagen specs/datagen/smoke_v2.yaml` has run, its 1 training instance, both with the oracle policy (no checkpoint).
+# `./revolve evaluate specs/eval/smoke_v2.yaml sample` writes the instances; `all --set train` rolls the oracle out on the
+# train instance (the held-out one has no datagen bag to replay: the oracle refuses it; a policy with a checkpoint takes it).
+train: specs/datagen/smoke_v2.yaml
+policy: {plugin: oracle}
+out: runs/eval/smoke_v2
+sets:
+  heldout:
+    count: 1
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 504], replacement: [505, 529]}
+    min_distance: {value: 0.1}
+  train: {from: train, count: 1}
+rollout: {plugin: sim, record: no-images}
+rollouts: 1
+retries: 0
+run: {workers: 1, headless: true}

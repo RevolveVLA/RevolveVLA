@@ -1,0 +1,57 @@
+# What the AutoMoMa / cuRobo plan needs beyond the specs (task.yaml, robot.yaml, scene.yaml): planner settings (sized for a 6 GB GPU),
+# the planner model of each robot and the grasp of each task. Frames: the robot's `base_footprint` is the floor frame of the
+# planner URDF's `base_link`.
+seed: 0                   # torch, numpy and cuRobo ik_seed (1531 + seed)
+# Running pose cost of cuRobo's gradient_trajopt_fixbase.yml on the AKR end link: rotation, position, and its two activation
+# values (cuRobo default [2000, 50000, 30, 50]). With the default rotation weight the end link turned by 2-5 deg (7-26 mm at the
+# TCP) on the PartNet door and the 0.025 rad filter below rejected every trajectory.
+trajopt_pose_weight: [20000, 50000.0, 30, 50]
+planner:                  # AutoMoMa configs/plan.yaml `planner:` block
+  collision_checker_type: VOXEL
+  # Centred on the fridge origin (floor level), so z covers 0..2.4 m. dims/2 must be an exact multiple of voxel_size:
+  # cuRobo sizes the grid with int().
+  voxel_dims: [4.0, 4.0, 4.8]
+  voxel_size: 0.02
+  # AutoMoMa clears the object's box (+ these margins) from the scene ESDF because its scenes contain the object. Ours keeps
+  # the fridge body in the scene and leaves only the moving door out, so nothing is cleared.
+  expanded_dims: [0.0, 0.0, 0.0]
+  enable_collision: true
+  ik_seeds: 5000
+  clustering: {kmeans_clusters: 500, ap_fallback_clusters: 30, ap_clusters_upperbound: 80, ap_clusters_lowerbound: 10}
+  traj: {batch_size: 10, fixed_base: true, num_trajopt_seeds: 12, num_graph_seeds: 12, interpolation_dt: 0.05, trajopt_tsteps: 32}
+  # AutoMoMa's waypoint FK filter on the AKR end link: 0.025 rad there is ~1 cm at the handle (AutoMoMa default 0.05).
+  filter: {position_tolerance: 0.01, rotation_tolerance: 0.025}
+timing:                   # sim seconds
+  standoff_m: 0.12        # the staging pose: the grasp moved this far back along the hand axis (floor plane)
+  drive_slowdown: 1.5     # x the drive-in's planned time steps
+  approach_s: 2.5         # staging -> grasp pose
+  settle_s: 1.0           # still at the grasp pose before the fingers close
+  close_s: 1.0            # the fingers' reference goes from open to squeezing
+  hold_s: 1.0             # squeezing before the pull starts
+  pull_slowdown: 3.0      # the pull takes max(pull_min_s, pull_slowdown x its time at the planner's joint velocity limits)
+  pull_min_s: 8.0
+  end_hold_s: 2.0         # still at the end pose
+  base_accel: 0.5         # m/s^2 and rad/s^2: the base reference's slew limit (omni rollers kick under a step in twist)
+robots:
+  mobile_panda:
+    arm: panda            # cuRobo's franka URDF + collision spheres (the moveit_resources Panda is the same arm)
+    mount_xyz: [0.12, 0.0, 0.60]       # panda_link0 in base_footprint (robot.urdf.xacro)
+    tcp_z: 0.1034                      # panda_tcp along panda_hand z
+    joint_margin: 0.1                  # rad inside the arm's joint limits
+    gripper_open: 0.04
+    gripper_squeeze: -0.04             # past closed: the effort controller squeezes at its clamp
+    base: {limits: 3.0, v_max: 0.3, w_max: 0.5}     # |x|, |y| [m] in the world; planner velocity limits
+    collision_sphere_buffer: 0.005
+    # chassis box 0.50 x 0.50 x 0.56 m from z 0.04, base_footprint frame; the radius reaches its corners
+    base_spheres: {radius: 0.14, x: [-0.15, 0.0, 0.15], y: [-0.15, 0.0, 0.15], z: [0.15, 0.32, 0.48]}
+    base_self_collision_ignore: [panda_link0, panda_link1, panda_link2]
+    max_acceleration: 15.0
+    max_jerk: 500.0
+tasks:
+  open_fridge_door:
+    grasp_along: [0.0, 0.03, -0.03, 0.06, -0.06]    # TCP along the bar from its centre [m]: the grasps the plan tries, in order
+    goal_margin: 0.22     # rad past the task's `open` threshold the door is pulled to
+    # spheres on the moving door: a grid every `step`, those within `clearance` of the rest of the object dropped (a closed door touches it)
+    door_spheres: {radius: 0.025, step: 0.08, clearance: 0.03}
+    yaw_window: 1.2       # base yaw may differ this much from the start's [rad]
+floor: {size: [12.0, 12.0], thickness: 0.1}       # the ground plane as a box

@@ -1,0 +1,192 @@
+"""cli.py + core/pipeline.py on fake plugins (CPU): dry-run, stages, resume, exit codes, imports."""
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+import yaml
+
+from evaluation import cli
+
+TESTS = Path(__file__).resolve().parent
+REPO = TESTS.parents[2]
+TRAIN = {
+    "task": "t", "robot": "r", "out": "train_run", "generator": {"plugin": "fake_datagen"},
+    "randomisers": {"fake_datagen": {"x": [-0.5, 0.5], "y": [1, 2]}},
+    "splits": {"train": {"target": 3, "pool": {"initial": [0, 9]}}},
+}
+SPEC = {
+    "train": "train.yaml", "out": "run", "ckpt": {"source": "fake_eval", "tag": "v1"},
+    "policy": {"plugin": "fake_eval", "needs_ckpt": True}, "rollout": {"plugin": "fake_eval"},
+    "judge": {"criterion": "fake_eval", "fail_seeds": [4]},
+    "sets": {"heldout": {"plugin": "fake_eval", "count": 3, "pool": {"initial": [100, 109]}},
+             "train": {"plugin": "fake_eval", "from": "train", "count": 2}},
+    "rollouts": 2, "retries": 0,
+}
+
+
+@pytest.fixture(autouse=True)
+def plugins(monkeypatch, tmp_path):
+    monkeypatch.syspath_prepend(str(TESTS))
+    monkeypatch.delenv("FAKE_EVAL_FAIL_CHECK", raising=False)
+    monkeypatch.setenv("FAKE_EVAL_LOG", str(tmp_path / "calls.log"))
+    (tmp_path / "train.yaml").write_text(yaml.safe_dump(TRAIN))
+
+
+def evaluate(tmp_path, *args, spec=SPEC):
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump(spec, sort_keys=False))
+    return cli.main([str(tmp_path / "spec.yaml"), *args], root=tmp_path)
+
+
+def calls(tmp_path):
+    p = tmp_path / "calls.log"
+    return p.read_text().splitlines() if p.exists() else []
+
+
+def test_dry_run_prints_the_plan_and_touches_nothing(tmp_path, capsys):
+    assert evaluate(tmp_path, "--dry-run") == 0
+    out = capsys.readouterr().out
+    assert "[dry-run] set heldout (fake_eval): 3 held-out configs, random sampler, pool [100, 109]" in out
+    assert "set train (fake_eval): 2 configs from training split 'train'" in out
+    assert "ckpt: fake_eval {'tag': 'v1'} (nothing resolved)" in out
+    assert "2 rollouts per config, retries 0: 10 first tries, up to 10 runs" in out and "workers: by free GPU memory" in out
+    assert not (tmp_path / "run").exists() and calls(tmp_path) == []
+
+
+def test_dry_run_needs_no_plugin(tmp_path, capsys):
+    spec = SPEC | {"ckpt": {"source": "no_such_source"}, "judge": {"criterion": "nope"}}
+    assert evaluate(tmp_path, "--dry-run", spec=spec) == 0
+
+
+def test_all_runs_the_stages_and_resumes(tmp_path, capsys):
+    assert evaluate(tmp_path) == 0
+    out = capsys.readouterr().out
+    assert "sample heldout: 3 configs" in out and "check heldout fake: PASS" in out
+    r = json.loads((tmp_path / "run" / "results.json").read_text())
+    assert r["ckpt"]["origin"] == "fake v1" and r["ckpt"]["path"].endswith("run/ckpt")
+    roll = r["sets"]["heldout"]["rollouts"]
+    assert sorted(roll) == [f"{s}_r{i}" for s in (100, 101, 102) for i in (0, 1)]
+    assert roll["100_r0"]["passed"] and not roll["101_r0"]["passed"]
+    assert (tmp_path / "run" / "heldout" / "100_r0").is_dir() and (tmp_path / "run" / "heldout" / "starts" / "seed_100").is_dir()
+    assert (tmp_path / "run" / "report.md").read_text().count("## ") == 3 and "| 100 |" in (tmp_path / "run" / "report.md").read_text()
+    assert len(calls(tmp_path)) == 10
+    assert evaluate(tmp_path) == 0 and len(calls(tmp_path)) == 10                 # resume: nothing re-run
+
+
+def test_a_killed_run_resumes_where_it_stopped(tmp_path, monkeypatch):
+    import fake_eval
+    n = []
+    run = fake_eval.FakeRollout.run
+
+    def dying(self, *a, **k):
+        if len(n) == 3:
+            raise KeyboardInterrupt
+        n.append(1)
+        return run(self, *a, **k)
+    monkeypatch.setattr(fake_eval.FakeRollout, "run", dying)
+    with pytest.raises(KeyboardInterrupt):
+        evaluate(tmp_path, "rollout")
+    monkeypatch.setattr(fake_eval.FakeRollout, "run", run)
+    assert evaluate(tmp_path, "rollout") == 0
+    assert len(calls(tmp_path)) == 11             # 3 + the 8 missing: a config's rollouts commit together (101_r0 is redone)
+
+
+def test_stages_and_set_filter(tmp_path):
+    assert evaluate(tmp_path, "sample", "--set", "train") == 0
+    assert (tmp_path / "run" / "train" / "starts").is_dir() and not (tmp_path / "run" / "heldout").exists()
+    assert calls(tmp_path) == []
+    assert evaluate(tmp_path, "report") == 0 and (tmp_path / "run" / "report.md").exists()
+    assert evaluate(tmp_path, "rollout", "--set", "heldout") == 0 and len(calls(tmp_path)) == 6
+
+
+def test_a_failed_check_exits_1(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("FAKE_EVAL_FAIL_CHECK", "1")
+    assert evaluate(tmp_path, "check") == 1
+    assert "check heldout fake: FAIL (scripted)" in capsys.readouterr().out
+
+
+def test_unknown_set_and_missing_ckpt_are_errors(tmp_path, capsys):
+    assert evaluate(tmp_path, "--set", "nope") == 1 and "unknown set ['nope']" in capsys.readouterr().err
+    assert evaluate(tmp_path, "rollout", spec={k: v for k, v in SPEC.items() if k != "ckpt"}) == 1
+    assert "needs a `ckpt:`" in capsys.readouterr().err
+    assert evaluate(tmp_path, spec=SPEC | {"judge": {"criterion": "nope"}}) == 1
+    assert "no judge plugin 'nope'" in capsys.readouterr().err
+
+
+def test_a_changed_spec_refuses_the_existing_out(tmp_path, capsys):
+    assert evaluate(tmp_path) == 0
+    assert evaluate(tmp_path, spec=SPEC | {"rollouts": 3}) == 1
+    assert "another spec" in capsys.readouterr().err
+    assert evaluate(tmp_path, spec=SPEC | {"run": {"workers": 2}}) == 0              # `run` is not in the hash
+
+
+def test_workers_and_gui_override_the_run_block(tmp_path, capsys):
+    assert evaluate(tmp_path, "--dry-run", "--workers", "4") == 0
+    assert "workers: 4, headless" in capsys.readouterr().out
+    assert evaluate(tmp_path, "--dry-run", "--workers", "4", "--gui") == 0
+    assert "workers: 1, gui" in capsys.readouterr().out
+
+
+def test_a_bad_spec_exits_2_naming_the_key(tmp_path, capsys):
+    assert evaluate(tmp_path, spec=SPEC | {"retrys": 1}) == 2
+    assert "spec.yaml.retrys: unknown key" in capsys.readouterr().err
+    assert evaluate(tmp_path, spec=SPEC | {"train": "missing.yaml"}) == 2
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"sets": {"h": {"count": 1, "pool": {"initial": [1, 2]}}}}) == 2
+    assert "sets.h.pool" in capsys.readouterr().err
+
+
+def test_importing_the_cli_pulls_no_docker_or_torch():
+    code = ("import sys; sys.path[:0] = sys.argv[1:]; import evaluation.cli, evaluation.core.pipeline;"
+            "bad = [m for m in ('docker', 'torch', 'huggingface_hub', 'rollout', 'launch', 'numpy', 'rclpy') if m in sys.modules];"
+            "assert not bad, bad")
+    src = [str(REPO / "components" / "datagen" / "src"), str(TESTS.parent / "src")]
+    subprocess.run([sys.executable, "-c", code, *src], check=True)
+
+
+def test_revolve_evaluate_dry_run_on_the_repo_spec():
+    r = subprocess.run([sys.executable, str(REPO / "revolve"), "evaluate", "specs/eval/fridge_panda_v2.yaml", "--dry-run"],
+                       capture_output=True, text=True, cwd=REPO)
+    assert r.returncode == 0, r.stderr
+    assert "[dry-run] set heldout" in r.stdout and "[dry-run] ckpt: local" in r.stdout
+    bad = subprocess.run([sys.executable, str(REPO / "revolve"), "evaluate", "--dry-run", "/dev/stdin"],
+                         input=yaml.safe_dump({"train": "specs/datagen/fridge_panda_v2.yaml", "out": "x", "sets": {}, "typo": 1}),
+                         capture_output=True, text=True, cwd=REPO)
+    assert bad.returncode == 2 and "typo: unknown key" in bad.stderr
+
+
+def test_runner_in_dry_run_results_and_report(tmp_path, capsys):
+    runner = {"n_action_steps": 10, "chunk_size_threshold": 0.5, "temporal_ensembling": {"aggregate": "average"}}
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"runner": runner}) == 0
+    out = capsys.readouterr().out
+    assert "runner 10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average" in out and "warning" not in out
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"runner": {"temporal_ensembling": {"aggregate": "average"}}}) == 0
+    assert "[dry-run] warning: runner: aggregate 'average' has no effect with chunk_size_threshold 0" in capsys.readouterr().out
+    assert evaluate(tmp_path, spec=SPEC | {"runner": runner}) == 0
+    r = json.loads((tmp_path / "run" / "results.json").read_text())["runner"]
+    assert r == {"n_action_steps": 10, "actions_per_chunk": 11, "chunk_size_threshold": 0.5, "aggregate": "average",
+                 "ckpt_chunk_size": None, "text": "10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average"}
+    assert "Runner: 10 action steps (11 per chunk), chunk_size_threshold 0.5, aggregate average\n" in (tmp_path / "run" / "report.md").read_text()
+
+
+def test_runner_longer_than_the_ckpt_chunk_is_refused(tmp_path, capsys):
+    for out in ("run", "run2"):
+        (tmp_path / out / "ckpt").mkdir(parents=True)
+        (tmp_path / out / "ckpt" / "config.json").write_text(json.dumps({"chunk_size": 50}))
+    assert evaluate(tmp_path, "rollout", spec=SPEC | {"runner": {"n_action_steps": 49}}) == 0      # 50 per chunk fits
+    assert json.loads((tmp_path / "run" / "results.json").read_text())["runner"]["ckpt_chunk_size"] == 50
+    assert evaluate(tmp_path, "rollout", spec=SPEC | {"runner": {"n_action_steps": 50}, "out": "run2"}) != 0
+    assert "n_action_steps 50 needs 51 actions per chunk" in capsys.readouterr().err
+
+
+def test_stop_jobs_removes_the_runs_containers_through_common(tmp_path, monkeypatch, capsys):
+    import revolve_common.sim_session as SS
+    from evaluation.core.sims import sim_prefix
+    (tmp_path / "spec.yaml").write_text(yaml.safe_dump(SPEC, sort_keys=False))
+    spec = cli.load(str(tmp_path / "spec.yaml"), tmp_path)
+    seen = []
+    monkeypatch.setattr(SS, "stop_sims", lambda prefix: seen.append(prefix) or 2)
+    cli.stop_jobs(spec)
+    assert seen == [sim_prefix(spec)] and sim_prefix(spec).startswith("ev-") and "removed 2 container(s)" in capsys.readouterr().err
+    assert "datagen.containers" not in sys.modules

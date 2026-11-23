@@ -1,0 +1,23 @@
+# open_fridge_door with mobile_panda on the new simulator (DATAGEN-v2.md): scene instances vary only the robot start
+# (DATAGEN 8.1's suggested ranges around the base scene's [-1.75, 1.1, pi/2]); per instance one sim, up to 3 tries until the
+# evaluator accepts 1 episode. Output runs/datagen/fridge_panda_v2/{state.json, manifest.json, report.md, train/scene_<seed>/}.
+task: open_fridge_door
+robot: mobile_panda
+out: runs/datagen/fridge_panda_v2
+generator: {plugin: moveit, attempts: 3, episodes_per_scene: 1, record: images}
+randomisers:
+  robot_start: {x_m: [-1.85, -1.65], y_m: [1.0, 1.2], yaw_rad: [1.47, 1.67], arm: {choices: [folded]}}
+validators:
+  - {plugin: collision_free}
+seed: 0
+splits:
+  train:
+    target: 20
+    sampler: {strategy: stratified, bins: {robot_start.x_m: 2, robot_start.y_m: 2}}
+    pool: {initial: [0, 29], replacement: [30, 59]}
+  heldout:                          # a pool kept aside for evaluation: sampled and validated, no episodes
+    target: 10
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 529]}
+    min_distance: {from: train, value: 0.1, realised: true}
+    record: false

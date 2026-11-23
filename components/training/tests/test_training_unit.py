@@ -4,10 +4,12 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import types
 from pathlib import Path
 
 import pytest
+import yaml
 
 import gpu_machine as G
 import modal_backend as M
@@ -344,3 +346,32 @@ def test_gpu_machine_host_from_env(monkeypatch):
     monkeypatch.setenv(L.GPU_HOST_ENV, "user@gpu-host")
     assert L.gpu_machine_settings({"scratch": "~/s"}) == {"scratch": "~/s", "host": "user@gpu-host"}
     assert L.gpu_machine_settings({"host": "a@b"})["host"] == "a@b"
+
+
+def test_policy_server_drops_a_repeated_observation(monkeypatch):
+    """Against a stub of Rosetta's server (the real one needs LeRobot, see test_training.py): a timestep is marked at
+    accept time, a non-must_go observation of a marked timestep is dropped, a must_go one is not."""
+    import threading
+
+    class Base:
+        def __init__(self, config):
+            self._predicted_timesteps, self._predicted_timesteps_lock = set(), threading.Lock()
+            self.queue = []
+
+        def _enqueue_observation(self, obs):
+            self.queue.append(obs)
+            return True
+
+    pkg = types.ModuleType("lerobot_rosetta")
+    pkg.policy_server = types.SimpleNamespace(RosettaPolicyServer=Base)
+    monkeypatch.setitem(sys.modules, "lerobot_rosetta", pkg)
+    monkeypatch.setitem(sys.modules, "lerobot_rosetta.policy_server", pkg.policy_server)
+    monkeypatch.delitem(sys.modules, "policy_server", raising=False)
+    import policy_server as PS
+
+    s = PS.Server(None)
+    obs = lambda t, go: types.SimpleNamespace(get_timestep=lambda: t, must_go=go)
+    assert [s._enqueue_observation(obs(*a)) for a in ((0, True), (0, False), (0, False), (0, True), (1, False))] \
+        == [True, False, False, True, True]
+    assert len(s.queue) == 3 and sorted(s._predicted_timesteps) == [0, 1]
+    assert yaml.safe_load((Path(PS.__file__).parent / "smolvla.yaml").read_text())["serve"]["module"] == "policy_server"

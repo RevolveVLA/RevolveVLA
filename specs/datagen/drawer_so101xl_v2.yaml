@@ -1,0 +1,16 @@
+# open_drawer with mobile_so101_xl on the new simulator (DATAGEN-v2.md): small offsets of the robot start from the base
+# scene's (the drawer is reached by driving up to it, so the start only needs to be near the same spot).
+task: open_drawer
+robot: mobile_so101_xl
+out: runs/datagen/drawer_so101xl_v2
+generator: {plugin: moveit, attempts: 3, episodes_per_scene: 1, record: images}
+randomisers:
+  robot_start: {dx_m: [-0.1, 0.1], dy_m: [-0.1, 0.1], dyaw_rad: [-0.1, 0.1], arm: {choices: [folded]}}
+validators:
+  - {plugin: collision_free}
+seed: 0
+splits:
+  train:
+    target: 20
+    sampler: {strategy: sobol}
+    pool: {initial: [0, 29], replacement: [30, 59]}

@@ -1,7 +1,7 @@
 """System test: `./revolve evaluate` as a subprocess on the host venv (CPU, no docker, no GPU, no network).
 
 The plugins are the real ones where they run on CPU: the `heldout` / `train` sets (fake randomiser: no instance files; the real scene_instance in the last test), the `local` / `hf`
-checkpoint sources + relabel, the `smolvla` policy, the `fake` rollout (as `fake_eval_log`: + a call log) and the judge c0. `hf` runs against a stub huggingface_hub (fake_hf/): no download. Each test gets a root dir (`specs/` copied in, the
+checkpoint sources, the `smolvla` policy, the `fake` rollout (as `fake_eval_log`: + a call log) and the judge c0. `hf` runs against a stub huggingface_hub (fake_hf/): no download. Each test gets a root dir (`specs/` copied in, the
 training spec, a checkpoint under runs/); paths in the specs are absolute, so the repo's runs/ is never written."""
 import json
 import os
@@ -42,7 +42,7 @@ EXPECTED = {100: 1, 101: 1, 102: 1, 0: 1, 1: 1}
 
 @pytest.fixture
 def root(tmp_path):
-    """A repo-like root: specs/ (task + robot contract), the training spec + manifest, a checkpoint to relabel."""
+    """A repo-like root: specs/ (task + robot contract), the training spec + manifest, a checkpoint."""
     shutil.copytree(REPO / "specs", tmp_path / "specs")
     (tmp_path / "train.yaml").write_text(yaml.safe_dump(TRAIN | {"out": str(tmp_path / "train_run")}))
     ck = tmp_path / "runs" / "ckpts" / "c"
@@ -251,8 +251,6 @@ def test_a_bad_spec_exits_2_naming_the_key(root):
     assert evaluate(root, "all", spec=spec_of(root) | {"train": str(root / "missing.yaml")})[0] == 2
     rc, _, err = evaluate(root, "all", spec=spec_of(root, sets={"h": {"count": 1, "pool": {"initial": [1, 2]}}}))
     assert rc == 2 and "sets.h.pool" in err
-    rc, _, err = evaluate(root, "all", spec=spec_of(root, judge={"criterion": "c2"}))           
-    assert rc == 2 and "judge.criterion: c2 is not available on the new simulator" in err
 
 
 def test_a_changed_spec_refuses_the_existing_out_and_run_does_not_matter(root):

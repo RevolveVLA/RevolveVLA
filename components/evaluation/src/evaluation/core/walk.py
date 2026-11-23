@@ -42,7 +42,7 @@ class RetryPolicy:
 
 
 class Progress:
-    """`PROGRESS {json}` lines of one set (what eval_progress.parse reads): rollouts, rollouts_done, passed,
+    """`PROGRESS {json}` lines of one set (the wrapper's default parser reads them): rollouts, rollouts_done, passed,
     first_try_passed, running."""
     def __init__(self, name: str, keys: Sequence[str], log: Callable[[str], None]):
         self.name, self.log, self.lock = name, log, threading.Lock()

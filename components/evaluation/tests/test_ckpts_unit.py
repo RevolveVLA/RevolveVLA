@@ -1,4 +1,4 @@
-"""plugins/ckpts (local, hf, relabel) on tiny fake checkpoint dirs and a fake huggingface_hub module (CPU, no network)."""
+"""plugins/ckpts (local, hf) on tiny fake checkpoint dirs and a fake huggingface_hub module (CPU, no network)."""
 import json
 import os
 import subprocess
@@ -12,15 +12,12 @@ import yaml
 from evaluation import cli
 from evaluation.core import spec as S
 from evaluation.core.errors import EvalError
-from evaluation.core.interfaces import ResolvedCkpt
 from evaluation.plugins.ckpts import hf as H
-from evaluation.plugins.ckpts import relabel as R
 from evaluation.plugins.ckpts.local import LocalCkpt
 
 TESTS = Path(__file__).resolve().parent
 REPO = TESTS.parents[2]
 TASK = "open_fridge_door"
-CONTRACT = REPO / "specs" / "robots" / "mobile_panda" / "contract.yaml"
 CAMS = [f"observation.images.{c}" for c in ("wrist", "overhead_left", "overhead_right")]
 SHA = "a" * 40
 TOKEN = "hf_dummy_token_value"
@@ -58,7 +55,7 @@ def fake_ckpt(d, keys=CAMS, shape=(3, 480, 480), rename_map=None):
 def test_local_resolves_a_ckpt_under_runs(spec, root, out):
     fake_ckpt(root / "runs" / "ckpts" / "c")
     r = LocalCkpt(spec, {"path": "runs/ckpts/c"}).resolve(out)
-    assert r.path == str(root / "runs" / "ckpts" / "c") and r.changes is None
+    assert r.path == str(root / "runs" / "ckpts" / "c")
     assert r.origin["source"] == "local" and r.origin["path"] == "runs/ckpts/c" and r.origin["model_bytes"] == 7
     assert len(r.origin["config_sha256"]) == 64
 
@@ -156,79 +153,13 @@ def test_hf_rejects_invalid_params(spec, params):
 
 def test_importing_the_component_does_not_load_huggingface_hub():
     code = ("import sys; from evaluation import cli; from evaluation.core import pipeline; "
-            "import evaluation.plugins.ckpts.hf, evaluation.plugins.ckpts.local, evaluation.plugins.ckpts.relabel; "
+            "import evaluation.plugins.ckpts.hf, evaluation.plugins.ckpts.local; "
             "assert 'huggingface_hub' not in sys.modules")
     paths = [REPO / "components/evaluation/src", REPO / "components/datagen/src", REPO / "common"]
     subprocess.run([sys.executable, "-c", code], check=True, env={**os.environ, "PYTHONPATH": os.pathsep.join(map(str, paths))})
 
 
-# ------------------------------------------------------------------ relabel
-EXT = [f"observation.images.camera{i}" for i in (1, 2, 3)]
-
-
-def test_served_ckpt_unchanged_when_it_matches_the_contract(tmp_path):
-    ck = fake_ckpt(tmp_path / "ck", rename_map={})
-    assert R.served_ckpt(ck, tmp_path / "view", CONTRACT) == (ck, None)
-    assert not (tmp_path / "view").exists()
-
-
-def test_served_ckpt_renames_and_relabels_an_external_checkpoint(tmp_path):
-    ck = fake_ckpt(tmp_path / "ck", EXT, (3, 256, 256), rename_map=dict(zip(CAMS, EXT)))
-    before = (ck / "config.json").read_text()
-    d, changes = R.served_ckpt(ck, tmp_path / "view", CONTRACT)
-    cfg = json.loads((d / "config.json").read_text())
-    assert d == tmp_path / "view" and list(cfg["input_features"]) == ["observation.state", *CAMS]    # same order
-    assert all(cfg["input_features"][k]["shape"] == [3, 480, 480] for k in CAMS)
-    assert cfg["input_features"]["observation.state"]["shape"] == [6] and cfg["output_features"]["action"]["shape"] == [11]
-    assert changes == {e: dict(key=c, shape=[3, 480, 480]) for e, c in zip(EXT, CAMS)}
-    assert json.loads((d / "served_ckpt.json").read_text()) == dict(source=str(ck), changes=changes)
-    assert (d / "model.safetensors").stat().st_ino == (ck / "model.safetensors").stat().st_ino    # linked, not copied
-    assert (d / "policy_preprocessor.json").is_file() and (d / "train_config.json").is_file()
-    assert (ck / "config.json").read_text() == before                                         # source untouched
-    assert R.served_ckpt(ck, tmp_path / "view", CONTRACT)[0] == d                             # again (resume)
-
-
-def test_served_ckpt_relabels_the_shape_alone(tmp_path):
-    ck = fake_ckpt(tmp_path / "ck", CAMS, (3, 256, 256))
-    d, changes = R.served_ckpt(ck, tmp_path / "view", CONTRACT)
-    assert changes == {c: dict(key=c, shape=[3, 480, 480]) for c in CAMS} and d == tmp_path / "view"
-
-
-def test_served_ckpt_refuses_an_unknown_camera(tmp_path):
-    ck = fake_ckpt(tmp_path / "ck", ["observation.images.camera1"], (3, 256, 256))
-    with pytest.raises(EvalError, match="camera1"):
-        R.served_ckpt(ck, tmp_path / "view", CONTRACT)
-
-
-class Source:
-    relabel = True
-
-    def __init__(self, path):
-        self.path = path
-
-    def resolve(self, out):
-        return ResolvedCkpt(str(self.path), {"source": "fake"})
-
-
-def test_relabel_wraps_a_source_and_serves_under_out(spec, root, out):
-    (root / "specs").symlink_to(REPO / "specs")
-    ck = fake_ckpt(root / "runs" / "ck", EXT, (3, 256, 256), rename_map=dict(zip(CAMS, EXT)))
-    r = R.Relabel(spec, {"of": Source(ck)}).resolve(out)
-    assert r.path == str(out / "ckpt") and r.origin == {"source": "fake"} and set(r.changes) == set(EXT)
-
-
-def test_relabel_returns_a_matching_source_untouched(spec, root, out):
-    (root / "specs").symlink_to(REPO / "specs")
-    r = R.Relabel(spec, {"of": Source(fake_ckpt(root / "runs" / "ck"))}).resolve(out)
-    assert r.path == str(root / "runs" / "ck") and r.changes is None and not (out / "ckpt").exists()
-
-
-def test_relabel_is_not_a_yaml_source(spec):
-    with pytest.raises(EvalError, match="wraps a source"):
-        R.Relabel(spec, {})
-
-
-def test_the_cli_wraps_real_sources_in_relabel_and_leaves_fakes(tmp_path, monkeypatch):
+def test_the_cli_builds_the_ckpt_source_of_the_spec(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(TESTS))
     (tmp_path / "train.yaml").write_text(yaml.safe_dump({
         "task": "t", "robot": "r", "out": "train_run", "generator": {"plugin": "fake_datagen"},
@@ -237,6 +168,6 @@ def test_the_cli_wraps_real_sources_in_relabel_and_leaves_fakes(tmp_path, monkey
            "rollout": {"plugin": "fake_eval"}, "judge": {"criterion": "fake_eval"},
            "sets": {"heldout": {"plugin": "fake_eval", "count": 1, "pool": {"initial": [100, 109]}}}}
     wrapped = cli.build_plugins(S.parse(raw, root=tmp_path), ("rollout",)).ckpt
-    assert isinstance(wrapped, R.Relabel) and isinstance(wrapped.source, LocalCkpt)
+    assert isinstance(wrapped, LocalCkpt)
     plain = cli.build_plugins(S.parse(raw | {"ckpt": {"source": "fake_eval"}}, root=tmp_path), ("rollout",)).ckpt
     assert type(plain).__name__ == "FakeCkpt"

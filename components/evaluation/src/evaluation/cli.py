@@ -33,8 +33,6 @@ def build_plugins(spec: EvalSpec, stages) -> PluginSet:
         p.rollout.validate(p.policy)
         if spec.ckpt:
             p.ckpt = REGISTRY.create("ckpt", spec.ckpt.source, spec, spec.ckpt.params)
-            if p.ckpt.relabel:                       # whatever the source, serve it under the robot contract's cameras
-                p.ckpt = REGISTRY.create("ckpt", "relabel", spec, {"of": p.ckpt})
     return p
 
 

@@ -18,9 +18,6 @@ from datagen.core.spec import (DatagenSpec, Dim, MinDistance, PluginRef, PoolSpe
 from datagen.core.spec import load as load_train
 
 
-NOT_ON_NEW_SIM = ("c1", "c2")                           # judges of the old simulator's state log (no such log in the new bags)
-UNSUPPORTED_TRAINING = {"legacy_layouts": "a run of the old simulator (object-frame starts) cannot be replayed on the new "
-                                          "one: evaluate a datagen v2 run (`training: {plugin: datagen}`)"}
 # lerobot 0.6.1 (revolve-training image) lerobot.async_inference.configs.AGGREGATE_FUNCTIONS, the registry Rosetta's
 # `aggregate_fn_name` is looked up in (the host venv has no lerobot to import it from)
 AGGREGATE_FNS = ("weighted_average", "latest_only", "average", "conservative")
@@ -120,14 +117,11 @@ def _ckpt(v, at) -> CkptSpec:
 
 
 def _judge(v, at) -> PluginRef:
-    """c0 (the evaluator's `passed`) unless named; c1 / c2 need the old simulator's state log."""
+    """c0 (the evaluator's `passed`) unless named."""
     if v is None:
         return PluginRef("c0")
     d = _mapping(v, at, required=("criterion",), free=True)
     criterion = _str(d["criterion"], f"{at}.criterion")
-    if criterion in NOT_ON_NEW_SIM:
-        _fail(f"{at}.criterion", f"{criterion} is not available on the new simulator (no state log; a stricter rule "
-                                 "has to come from task.yaml): use c0")
     return PluginRef(criterion, {k: x for k, x in d.items() if k != "criterion"})
 
 
@@ -245,8 +239,6 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
     sets = {n: _set(n, v, train, f"{source}.sets.{n}") for n, v in raw_sets.items()}
     _check_pools(train, sets.values(), source)
     fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("training", "policy", "rollout") if k in d}
-    if (why := UNSUPPORTED_TRAINING.get(getattr(fields.get("training"), "plugin", None))):
-        _fail(f"{source}.training.plugin", why)
     return EvalSpec(
         train=train, out=_str(d["out"], f"{source}.out"), sets=sets,
         train_manifest=_str(d.get("train_manifest", f"{train.out}/state.json"), f"{source}.train_manifest"),

@@ -172,14 +172,12 @@ def test_done_items_are_not_run_again(tmp_path):
     assert [c[0] for c in stub.calls] == [2] and list(got) == ["2_r0"]
 
 
-def test_progress_lines_are_what_eval_progress_reads(tmp_path):
+def test_progress_lines_carry_the_set_counters(tmp_path):
     lines = []
     run(walk(tmp_path, Stub({(1, 1): FAIL}), log=lines.append), built(0, 1))
-    from evaluation import eval_progress
     progress = [json.loads(m[len("PROGRESS "):]) for m in lines if m.startswith("PROGRESS ")]
     assert progress[0] == {"set": "s", "rollouts": 2, "rollouts_done": 0, "passed": 0, "first_try_passed": 0, "running": ["0_r0"]}
     assert progress[-1] == {"set": "s", "rollouts": 2, "rollouts_done": 2, "passed": 2, "first_try_passed": 1, "running": []}
-    assert any(eval_progress.ROLLOUT.search(m) for m in lines)
     assert any("1_r0: try 0: FAIL grasp, try 1: PASS" in m for m in lines)
 
 

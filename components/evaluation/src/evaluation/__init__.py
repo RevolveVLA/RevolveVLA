@@ -1,2 +1,2 @@
-"""Evaluation component package (core/, plugins/, cli.py). The flat scripts beside it (dummy_policy.py, rosetta_goal.py,
-eval_progress.py) run inside containers by file path and stay flat: no flat `core` / `plugins` / `cli` modules here."""
+"""Evaluation component package (core/, plugins/, cli.py). rollout_client.py and oracle_actions.py run inside the client
+container by module path (`python3 -m evaluation.rollout_client`); no flat `core` / `plugins` / `cli` modules here."""

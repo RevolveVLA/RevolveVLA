@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from .errors import EvalError
-from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, ResolvedCkpt, Rollout
+from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, Rollout
 from .results import Results
 from .runner import check_chunk_size
 from .sets import repo_root
@@ -125,7 +125,7 @@ class Pipeline:
         self.results.data["runner"] = {"n_action_steps": r.n_action_steps, "actions_per_chunk": r.actions_per_chunk,
                                        "chunk_size_threshold": r.chunk_size_threshold, "aggregate": r.aggregate,
                                        "ckpt_chunk_size": chunk_size, "text": r.describe()}
-        self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin, "changes": ckpt.changes}
+        self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin}
         task = load_task(s.train.task, repo_root(s, self.out))
         policy = rollout_policy(task, s.rollout.params)
         walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt, task, self.out,

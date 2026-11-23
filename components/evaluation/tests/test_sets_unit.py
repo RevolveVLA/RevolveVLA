@@ -322,11 +322,3 @@ def test_the_cli_exits_1_on_a_failed_check(root, capsys):
     assert evaluate(root, SPEC, "check") == 1
     assert "check heldout seeds_disjoint: FAIL (seeds also used by training [105])" in capsys.readouterr().out
 
-
-def test_the_cli_refuses_a_legacy_training_run_and_the_state_log_judges(root, capsys):
-    make(root)
-    assert evaluate(root, SPEC | {"training": {"plugin": "legacy_layouts", "run": "runs/fridge_base50"}}, "sample") == 2
-    assert "training.plugin: a run of the old simulator" in capsys.readouterr().err
-    for criterion in ("c1", "c2"):
-        assert evaluate(root, SPEC | {"judge": {"criterion": criterion}}, "sample") == 2
-        assert f"judge.criterion: {criterion} is not available on the new simulator" in capsys.readouterr().err

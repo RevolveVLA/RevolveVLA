@@ -63,17 +63,6 @@ def test_judge_criterion_and_params(root):
     assert (j.plugin, dict(j.params)) == ("c0", {"grip": 1})
 
 
-@pytest.mark.parametrize("criterion", ["c1", "c2"])
-def test_the_state_log_judges_are_a_spec_error(root, criterion):
-    with pytest.raises(SpecError, match=f"judge.criterion: {criterion} is not available on the new simulator"):
-        parse(root, judge={"criterion": criterion})
-
-
-def test_a_legacy_layouts_training_run_is_a_spec_error(root):
-    with pytest.raises(SpecError, match="training.plugin: a run of the old simulator"):
-        parse(root, training={"plugin": "legacy_layouts", "run": "runs/x"})
-
-
 def test_hash_ignores_out_and_run_but_not_settings(root):
     base = parse(root)
     assert parse(root, out="elsewhere", run={"workers": 4, "headless": False}).hash == base.hash
@@ -121,11 +110,6 @@ def test_runner_params_and_text():
     assert S.RunnerSpec().describe() == "20 action steps (21 per chunk), chunk_size_threshold 0.0, aggregate none (no overlap)"
     assert "aggregate weighted_average (default)" in S.RunnerSpec(21, 0.5).describe()
     assert "10 action steps (11 per chunk)" in r.describe() and "aggregate conservative" in r.describe()
-
-
-def test_aggregate_names_match_rollout_py():
-    import rollout as R
-    assert S.AGGREGATE_FNS == R.AGGREGATE_FNS and S.DEFAULT_AGGREGATE in S.AGGREGATE_FNS
 
 
 def test_the_default_hash_is_as_before_the_aggregate_field(root):

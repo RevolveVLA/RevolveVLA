@@ -118,6 +118,12 @@ class Generator(ABC):
     not randomise anything (the scene instance is the variation), does not record (the sim does) and does not judge
     (the evaluator does)."""
 
+    def plan(self, instance: Path, task: str, robot: str) -> Result:
+        """Called on the host once per scene instance, before its sim is launched (and not when the scene is finished): make what
+        the episodes need in the instance's folder (a planner run). A failed Result rejects the scene with its reason.
+        Default: nothing to do."""
+        return Result()
+
     def prepare(self, client: EpisodeClient, instance: Path, task: str, robot: str) -> None:
         """Called once per sim launch, after the sim is ready and before the first episode starts: start what is slow
         (a planner), so that it does not run on the episode's clock. Default: nothing."""

@@ -4,7 +4,6 @@ A subclass says how to make its session and how the episode loop reaches it (`wo
 pair, the relaunch budget, the fault bookkeeping in the scene log and the SceneError mapping are the same for all."""
 from __future__ import annotations
 
-import hashlib
 import sys
 import threading
 from abc import abstractmethod
@@ -12,6 +11,7 @@ from pathlib import Path
 
 from datagen.core import episodes
 from datagen.core.interfaces import Generator, Runner
+from datagen.core.naming import container_prefix
 from datagen.core.spec import DatagenSpec
 from revolve_common.sim_session import DomainPool, RelaunchPolicy, SimInfraError, run_with_relaunch
 
@@ -28,7 +28,7 @@ class SessionRunner(Runner):
     def __init__(self, spec: DatagenSpec, params):
         """params: `infra_retries` (3): sim relaunches per scene before it is given up."""
         self.spec, self.retries = spec, int(params.get("infra_retries", 3))
-        self.prefix = "dg-" + hashlib.sha1(str(spec.out).encode()).hexdigest()[:6]      # names this run's containers
+        self.prefix = container_prefix(spec.out)
         self.stopped = threading.Event()
         self.pool = self.domain_pool()
 

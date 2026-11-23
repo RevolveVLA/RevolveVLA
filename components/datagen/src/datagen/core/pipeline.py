@@ -152,6 +152,10 @@ class Pipeline:
         """Run the config's scene instance on the sim -> accepted (enough evaluator-accepted episodes) or why not."""
         folder = self.scene_dir(config)
         try:
+            if not episodes.finished(episodes.read(folder), self.spec.episodes):
+                planned = generator.plan(folder / "scene.yaml", self.spec.task, self.spec.robot)
+                if not planned.ok:
+                    return Result.fail(f"plan: {planned.reason}")
             self._need("runner", self.plugins.runner).run(config.seed, folder / "scene.yaml", generator)
         except SceneError as e:
             return Result.fail(str(e))

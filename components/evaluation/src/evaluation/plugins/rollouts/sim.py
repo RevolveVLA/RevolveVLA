@@ -8,9 +8,9 @@ the start (the same reset). A SimFault (clock fault, sim exit, ready / reset / r
 The record is the evaluator's verdict (DATAGEN 4.3): passed, phases {name: status}, failed_phase, reason, duration_s, episode,
 bag, result_file; `error` when there is none: `wall limit` (the client ran over `wall_s`), `interrupted`, `infrastructure`, or
 the client's failure. Params (yaml `rollout: {plugin: sim, ...}`): `record` (images | no-images, default images: a policy needs
-the cameras, the oracle does not), `wall_s` (wall seconds per episode, 600), `ready_s` (wall seconds to be ready, 180),
+the cameras, the oracle and the expert do not), `wall_s` (wall seconds per episode, 600), `ready_s` (wall seconds to be ready, 180),
 `infra_retries` (3), `lead_s` (0.1: time_from_start of each streamed point). Limits of the episode itself (budget, phase
-timeouts) are the task's. Only policies that bring their own actions (`client_only`: the oracle) run: a served checkpoint is
+timeouts) are the task's. Only policies that bring their own actions (`client_only`: the oracle, the expert) run: a served checkpoint is
 blocked on the new simulator."""
 from __future__ import annotations
 
@@ -31,9 +31,9 @@ from ...core.sims import sim_prefix
 from ...core.termination import LIMITS
 
 PARAMS = ("record", "wall_s", "ready_s", "infra_retries", "lead_s")
-CLIENT_SRC = "/repo/components/evaluation/src"           # in the client container (the repo is mounted at /repo)
+CLIENT_SRC = ("/repo/components/evaluation/src", "/repo/components/datagen/src")   # in the client container (repo = /repo)
 BLOCKED = ("policy {name!r} is not available on the new simulator: a served checkpoint needs a v2 dataset, a retrained "
-           "checkpoint and a Rosetta contract for the new bag topics (use `policy: {{plugin: oracle}}`)")
+           "checkpoint and a Rosetta contract for the new bag topics (use `policy: {{plugin: oracle}}` or `expert`)")
 
 
 class Failed(Exception):
@@ -96,7 +96,7 @@ class SimRollout(Rollout):
         command = ["python3", "-m", "evaluation.rollout_client", "--sim-out", str(session.out), "--rollout", str(rollout),
                    *map(in_container, args), "--ready-s", str(self.ready_s), "--lead-s", str(self.lead_s),
                    *(["--reset"] if reset else [])]
-        client = session.client(command, pythonpath=[CLIENT_SRC], mounts=[rollout])
+        client = session.client(command, pythonpath=CLIENT_SRC, mounts=[rollout])
         return client.run(log, timeout=self.wall_s, watch=lambda: None if self.stopped.is_set() else session.check())
 
     # ---- Rollout
@@ -111,7 +111,7 @@ class SimRollout(Rollout):
         try:
             episode = self._episode(item, out, policy, gui)
             res = episode["result"]
-            record = dict(base, episode=episode["episode"], resets=episode["resets"], steps=episode["steps"],
+            record = dict(base, episode=episode["episode"], resets=episode["resets"], steps=episode.get("steps"),
                           phases={p["name"]: p["status"] for p in res["phases"]}, failed_phase=res["failed_phase"],
                           reason=res["reason"], check=res["check"], passed=bool(res["passed"]), duration_s=res["duration_s"],
                           bag=res["bag"], result_file=res["result_file"], error=None)

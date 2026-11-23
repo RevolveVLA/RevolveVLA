@@ -94,7 +94,7 @@ class EvalSpec:
     sets: Mapping[str, SetSpec]
     train_manifest: str = ""                            # the `datagen` training plugin's state file (default <train.out>/state.json)
     training: PluginRef = PluginRef("datagen")          # where the training configs come from
-    ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle)
+    ckpt: CkptSpec | None = None                        # None only for a policy that needs none (the oracle, the expert)
     policy: PluginRef = PluginRef("smolvla")
     rollout: PluginRef = PluginRef("sim")
     judge: PluginRef = PluginRef("c0")                  # yaml `judge: {criterion: c0}`: the plugin is the criterion (evaluator passed)

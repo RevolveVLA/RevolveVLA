@@ -21,8 +21,9 @@ from evaluation.plugins.rollouts import sim as S
 from revolve_common.sim_fake import FakeClient, FakeSession
 from revolve_common.sim_session import REPO, DomainPool, SimFault
 
-spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda"), out="runs/eval/x")
-smolvla, oracle = (REGISTRY.create("policy", n, spec, {}) for n in ("smolvla", "oracle"))
+spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda", raw={"task": "open_fridge_door"}),
+                       out="runs/eval/x")
+smolvla, oracle, expert = (REGISTRY.create("policy", n, spec, {}) for n in ("smolvla", "oracle", "expert"))
 
 
 # ------------------------------------------------------------------ the oracle's actions
@@ -129,6 +130,36 @@ def test_play_waits_until_the_command_topics_have_subscribers(tmp_path):
     sess.start()
     C.play(FakeClient(sess), tmp_path / "r", series(), Publish(), reset=False)
     assert seen[0] == "matched"
+
+
+def test_the_expert_episode_prepares_before_the_start_and_drives_after_it(tmp_path):
+    sess = FakeSession(tmp_path / "scene.yaml", "mobile_panda", "open_fridge_door", tmp_path / "sim", "n", 100)
+    sess.start()
+    calls = []
+
+    class Generator:
+        def prepare(self, client, instance, task, robot):
+            calls.append(("prepare", client.resets(), task, robot))
+
+        def drive(self, client, instance, task, robot):
+            calls.append(("drive", instance))
+            return {"expert": "fake_v1", "notes": "ok"}
+    gen, scene = Generator(), tmp_path / "scene.yaml"
+    first = C.play_expert(FakeClient(sess), tmp_path / "r0", gen, scene, "open_fridge_door", "mobile_panda", reset=False)
+    second = C.play_expert(FakeClient(sess), tmp_path / "r1", gen, scene, "open_fridge_door", "mobile_panda", reset=True)
+    assert [c[0] for c in calls] == ["prepare", "drive", "prepare", "drive"] and calls[1] == ("drive", scene)
+    assert calls[2][1] == 1 and calls[0][2:] == ("open_fridge_door", "mobile_panda")           # prepared after the reset
+    assert (first["episode"], second["episode"], second["resets"]) == (0, 1, 1)
+    assert first["expert"] == "fake_v1" and first["notes"] == "ok" and "steps" not in first and first["result"]["passed"]
+    assert json.loads((tmp_path / "r1" / "episode.json").read_text()) == second
+
+
+def test_the_client_main_needs_a_bag_or_a_spec_with_its_instance(monkeypatch):
+    monkeypatch.setattr(C, "run_client", lambda fn, out: None)
+    with pytest.raises(SystemExit):                                              # neither a bag nor a spec
+        C.main(["--sim-out", "s", "--rollout", "r"])
+    with pytest.raises(SystemExit):                                              # a spec needs its instance
+        C.main(["--sim-out", "s", "--rollout", "r", "--spec", "{}"])
 
 
 # ------------------------------------------------------------------ the plugin
@@ -244,6 +275,21 @@ def test_stop_removes_the_runs_containers_and_starts_no_sim(item, tmp_path):
     assert run(r, item, tmp_path)["error"].startswith("interrupted") and r.client_calls == []
 
 
+def test_the_expert_policy_hands_the_training_spec_and_the_instance_to_the_client(item):
+    assert (expert.name, expert.needs_ckpt, expert.client_only) == ("expert", False, True)
+    assert expert.client_args(item) == ["--spec", json.dumps(spec.train.raw), "--instance", str(item.scene)]
+    assert expert.client_args(EvalItem(Config("heldout", 3), item.scene)) == expert.client_args(item)     # no bag needed
+    with pytest.raises(EvalError, match="takes no parameters"):
+        REGISTRY.create("policy", "expert", spec, {"x": 1})
+    REGISTRY.create("rollout", "sim", spec, {}).validate(expert)
+
+
+def test_an_expert_rollout_is_the_evaluators_verdict(item, tmp_path):
+    r = InProcess()
+    rec = run(r, item, tmp_path, policy=expert)
+    assert rec["passed"] and rec["policy"] == "expert" and r.client_calls[0][0][0] == "--spec"
+
+
 def test_oracle_without_a_bag_raises(item, tmp_path):
     with pytest.raises(EvalError, match="no passed datagen episode"):
         run(InProcess(), EvalItem(Config("heldout", 3), tmp_path / "s.yaml"), tmp_path)
@@ -285,7 +331,7 @@ def test_the_client_container_command(item, tmp_path):
     assert seen["command"] == ["python3", "-m", "evaluation.rollout_client", "--sim-out", str(tmp_path / "sim"), "--rollout",
                                str(tmp_path / "r0"), "--bag", "/repo/runs/x/episode_0_bag", "--ready-s", "60.0", "--lead-s", "0.1",
                                "--reset"]
-    assert seen["pythonpath"] == [S.CLIENT_SRC] and seen["mounts"] == [tmp_path / "r0"] and seen["timeout"] == 90.0
+    assert seen["pythonpath"] == S.CLIENT_SRC and seen["mounts"] == [tmp_path / "r0"] and seen["timeout"] == 90.0
     assert seen["fault"] == "fault"
     r.stopped.set()
     r.run_client(Session(), tmp_path / "r0", [], False, tmp_path / "c.log")

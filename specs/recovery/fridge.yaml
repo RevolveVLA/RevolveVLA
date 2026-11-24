@@ -4,7 +4,8 @@
 # `collect` and `run` need the simulator image (bags are read with rosbag2_py), the assets and a GPU.
 task: open_fridge_door
 robot: mobile_panda
-from: {eval: runs/eval/fridge_panda_v2}        # a finished `./revolve evaluate` run (its out)
+from: {eval: runs/eval/fridge_panda_v2}        # a finished `./revolve evaluate` run (its out); only its sets that are not held-out are mined
+# (here `train`); `sets: [..]` names others, `heldout: [..]` sets kept unseen besides its held-out ones; the held-out failures are counted
 triggers:                                      # what names a failure, first to fire wins (default: the evaluator's verdict)
   - {plugin: verdict}
   - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}

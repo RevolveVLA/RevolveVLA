@@ -31,7 +31,7 @@ def fakes(monkeypatch):
 
 
 def write_recovery(root, name="rec.yaml", **edits):
-    raw = {"task": "open_fridge_door", "robot": "mobile_panda", "from": {"eval": "unused"}, "out": "unused",
+    raw = {"task": "open_fridge_door", "robot": "mobile_panda", "from": {"eval": "unused", "sets": ["scored"]}, "out": "unused",
            "phases": {"generator": {"plugin": "probe_recovery", "attempts": 2}, "quota": {"approach": 2, "grasp": 1}},
            "scanner": {"plugin": "local", "reader": "fake_recovery:read_messages"}, "runner": {"plugin": "fake"}}
     (root / name).write_text(yaml.safe_dump({**raw, **edits}))
@@ -80,6 +80,40 @@ def test_failures_of_the_rollouts_are_recovered_on_the_evaluations_slots_into_it
     assert "| approach | 3 | 0 | 2 | 2 | 2 | 2 | 100% |" in (out_of(tmp_path) / "recovery" / "report.md").read_text()
     for e in m["episodes"]:
         assert (out_of(tmp_path) / "recovery" / e["scene"]).is_file() and (out_of(tmp_path) / "recovery" / e["result"]).is_file()
+
+
+BLIND = {"count": 3, "pool": {"initial": [300, 304]}, "plugin": "fake_scenes"}
+
+
+def test_the_failures_of_a_held_out_set_are_counted_not_scanned_and_never_recovered(tmp_path):
+    C.TRIES.update({300 + i: F.Try(seed=300 + i, failed="approach") for i in range(3)})
+    write_recovery(tmp_path)                                                    # mines `scored`; `blind` (held-out kind) stays unseen
+    write_eval(tmp_path, sets={"scored": {"count": 6, "pool": {"initial": [100, 105]}, "plugin": "fake_scenes"}, "blind": BLIND})
+    assert evaluate(tmp_path)[0] == 0
+    m = manifest(tmp_path)
+    assert {e["recovery"]["from_rollout"]["set"] for e in m["episodes"]} == {"scored"} and len(m["episodes"]) == 3
+    state = json.loads((out_of(tmp_path) / "recovery" / "state.json").read_text())
+    assert state["scan"] == {"failed": 5, "passed": 1, "held_out": 3}         # the blind set's 3 failures were counted, not read
+    assert state["mining"] == {"mined": ["scored"], "held_out": ["blind"]}
+    assert all(f["set"] == "scored" for f in state["failures"])
+    assert "3 held-out, not mined" in (out_of(tmp_path) / "recovery" / "report.md").read_text()
+
+
+def test_a_set_inside_the_pool_the_training_keeps_aside_is_refused_before_anything_runs(tmp_path, capsys):
+    write_recovery(tmp_path)
+    write_eval(tmp_path, sets={"scored": {"count": 3, "pool": {"initial": [22, 29]}, "plugin": "fake_scenes"}})
+    code, _, err = evaluate(tmp_path, capsys=capsys)
+    assert code == 2 and "overlaps training split 'aside'" in err and not out_of(tmp_path).exists()
+
+
+def test_with_only_held_out_sets_nothing_is_recovered_and_the_report_says_why(tmp_path, capsys):
+    write_recovery(tmp_path, **{"from": {"eval": "unused"}})                    # default: the sets that are not held-out; there are none
+    write_eval(tmp_path)
+    code, out, _ = evaluate(tmp_path, capsys=capsys)
+    assert code == 1 and "check quota: FAIL" in out and manifest(tmp_path)["episodes"] == []
+    state = json.loads((out_of(tmp_path) / "recovery" / "state.json").read_text())
+    assert state["failures"] == [] and state["scan"] == {"held_out": 5} and "scanned" in state
+    assert "Nothing is recorded: every set of the run is held-out" in (out_of(tmp_path) / "recovery" / "report.md").read_text()
 
 
 def test_no_job_starts_while_a_rollout_is_pending_and_never_more_than_the_workers_run(tmp_path):

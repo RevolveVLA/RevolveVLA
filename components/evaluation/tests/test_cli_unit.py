@@ -75,6 +75,13 @@ def test_all_runs_the_stages_and_resumes(tmp_path, capsys):
     assert evaluate(tmp_path) == 0 and len(calls(tmp_path)) == 10                 # resume: nothing re-run
 
 
+def test_results_keep_the_sets_kinds_and_pools_and_the_pools_kept_aside(tmp_path):
+    assert evaluate(tmp_path) == 0
+    leakage = json.loads((tmp_path / "run" / "results.json").read_text())["leakage"]
+    assert leakage["sets"]["heldout"]["kind"] == "heldout" and leakage["sets"]["heldout"]["pool"][0][0] == 100
+    assert all(lo <= hi for s in leakage["sets"].values() for lo, hi in s["pool"]) and isinstance(leakage["aside"], list)
+
+
 def test_a_killed_run_resumes_where_it_stopped(tmp_path, monkeypatch):
     import fake_eval
     n = []

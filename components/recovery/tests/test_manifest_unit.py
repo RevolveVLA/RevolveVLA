@@ -17,7 +17,7 @@ def spec(keep="successes", out="o"):
 def job(tmp_path, tries, resets=None, seed=4):
     """A job dir with a log of `tries` ([(episode, passed)]) on the sim folder `<out>/sims/rc-0` and its result files."""
     out = tmp_path / "out"
-    sim, d = out / "sims" / "rc-0", out / "grasp" / "heldout_100_r0_t0"
+    sim, d = out / "sims" / "rc-0", out / "grasp" / "mined_100_r0_t0"
     sim.mkdir(parents=True), d.mkdir(parents=True)
     for n, passed in tries:
         (sim / f"episode_{n}.json").write_text(json.dumps({"passed": passed}))
@@ -27,7 +27,7 @@ def job(tmp_path, tries, resets=None, seed=4):
         for i, (n, p) in enumerate(tries)]}))
     if resets is not None:
         (d / "resets.json").write_text(json.dumps(resets))
-    f = Failure("heldout_100_r0_t0", "heldout", "100_r0", 0, "/runs/eval/scene.yaml", "grasp", "verdict", "grasp:timeout_s", 11.0, 6.0,
+    f = Failure("mined_100_r0_t0", "mined", "100_r0", 0, "/runs/eval/scene.yaml", "grasp", "verdict", "grasp:timeout_s", 11.0, 6.0,
                 "/runs/eval/bag", "res", RESTART)
     return out, f, d
 
@@ -36,11 +36,11 @@ def test_entry_shape(tmp_path):
     out, f, d = job(tmp_path, [(2, True)], resets=[{"attempt": 0, "mode": "warm", "ok": True, "base_err_m": 0.01}])
     (e,) = M.entries(out, d, f, spec())
     assert {k: e[k] for k in ("seed", "scene", "robot", "task", "episode", "result", "bag", "passed")} == {
-        "seed": 4, "scene": "grasp/heldout_100_r0_t0/scene.yaml", "robot": "mobile_panda", "task": "open_fridge_door", "episode": 2,
+        "seed": 4, "scene": "grasp/mined_100_r0_t0/scene.yaml", "robot": "mobile_panda", "task": "open_fridge_door", "episode": 2,
         "result": "sims/rc-0/episode_2.json", "bag": "sims/rc-0/episode_2_bag", "passed": True}
     assert e["datagen"] == {"expert": "fake_v1", "attempt": 0, "wall_s": 1.5}
     assert e["recovery"] == {
-        "kind": "phase", "from_rollout": {"run": "/runs/eval", "set": "heldout", "rollout": "100_r0", "try": 0,
+        "kind": "phase", "from_rollout": {"run": "/runs/eval", "set": "mined", "rollout": "100_r0", "try": 0,
                                           "scene": "/runs/eval/scene.yaml", "bag": "/runs/eval/bag"},
         "phase": "grasp", "trigger": "verdict", "reason": "grasp:timeout_s", "t_restart": 10.0, "restart_from": "before_failure",
         "restart_state": {"base": (-1.5, 1.7, 1.5), "arm": (0.1,) * 7, "object_joint": 0.0},

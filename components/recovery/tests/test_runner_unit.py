@@ -32,7 +32,7 @@ def jobs(tmp_path):
         scene = tmp_path / "eval" / f"scene_{i}.yaml"
         scene.parent.mkdir(exist_ok=True)
         scene.write_text(yaml.safe_dump(base | {"robot_start": {"base": [-1.75, 1.1 + 0.1 * i, 1.5], "arm": "folded"}}))
-        f = Failure(f"f{i}", "heldout", f"{i}_r0", 0, str(scene), "approach", "verdict", "", 5.0, 0.0, "bag", "res",
+        f = Failure(f"f{i}", "mined", f"{i}_r0", 0, str(scene), "approach", "verdict", "", 5.0, 0.0, "bag", "res",
                     Restart(4.0, (-1.7, 1.5 + 0.1 * i, 1.5), tuple([0.1] * 7), 0.0))
         made.append(J.make(i, f, tmp_path / "out", "mobile_panda", ARM))
     return made

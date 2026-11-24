@@ -65,7 +65,17 @@ def test_a_later_run_continues_the_selection_it_found(tmp_path):
     assert [(i, f.id) for i, f in again.absorb(Scan([failure(2), failure(3)], {"failed": 2}))] == [(1, "s_2_r0_t0")]
 
 
+def write_results(root, sets):
+    """results.json of the evaluation in `root`: `sets` = {name: (kind, {rollout key: passed})}."""
+    rolls = lambda r: {"rollouts": {k: {"tries": [{"record": {"passed": ok, "error": None}}]} for k, ok in r.items()}}
+    (root / "eval").mkdir(parents=True, exist_ok=True)
+    (root / "eval" / "results.json").write_text(json.dumps({
+        "sets": {n: rolls(r) for n, (_, r) in sets.items()},
+        "leakage": {"sets": {n: {"kind": k, "pool": [[0, 9]] if k == "train" else [[10, 19]]} for n, (k, _) in sets.items()}, "aside": []}}))
+
+
 def test_after_scans_only_the_new_rollouts_and_hands_each_job_out_once(tmp_path):
+    write_results(tmp_path, {"s": ("train", {f"{n}_r0": False for n in range(1, 5)})})
     p = pipeline(tmp_path)
     scans = []
 
@@ -90,3 +100,21 @@ def test_a_spec_without_phases_has_no_follow_up_tasks(tmp_path):
     p.spec = dataclasses.replace(p.spec, phases=None)
     assert coupling.Coupled(p, tmp_path, log=lambda m: None).after("s", {"1_r0": {}}) == []
     assert coupling.Coupled(p, tmp_path, log=lambda m: None).check() is True
+
+
+def test_after_never_scans_a_held_out_set_and_counts_its_failures(tmp_path):
+    write_results(tmp_path, {"s": ("train", {"1_r0": False}), "h": ("heldout", {"10_r0": False, "11_r0": False, "12_r0": True})})
+    p = pipeline(tmp_path)
+    scans = []
+
+    class Scanner:
+        def scan(self, out, only):
+            scans.append(sorted(only))
+            return Scan([failure(1)], {"failed": 1})
+    p.plugins = P.PluginSet(scanner=Scanner(), runner=FakeRunner(p.spec, {}))
+    c = coupling.Coupled(p, tmp_path / "eval", log=lambda m: None)
+    assert len(c.after("h", {"10_r0": {}, "11_r0": {}, "12_r0": {}})) == 0 and scans == []     # nothing to scan: not even a scanner call
+    assert len(c.after("s", {"1_r0": {}})) == 1 and scans == [[("s", "1_r0")]]
+    data = pipeline(tmp_path).state.data
+    assert data["scan"] == {"held_out": 2, "failed": 1} and data["mining"] == {"mined": ["s"], "held_out": ["h"]}
+    assert [f["id"] for f in data["failures"]] == ["s_1_r0_t0"]

@@ -4,7 +4,7 @@ from recovery.core.failures import Failure
 from recovery.core.restart import Restart
 
 
-def failure(config, n, phase, ok=True, set="heldout"):
+def failure(config, n, phase, ok=True, set="mined"):
     return Failure(f"{set}_{config}_r{n}_t0", set, f"{config}_r{n}", 0, f"/runs/{set}/scene_{config}/scene.yaml", phase, "verdict", "",
                    10.0, 0.0, "bag", "result", Restart(9.0, (0.0, 0.0, 0.0), (0.0,), 0.0, None if ok else "door"))
 
@@ -63,9 +63,9 @@ def test_a_config_is_its_set_and_scene():
 def test_admission_picks_failures_as_they_arrive_up_to_the_phases_jobs():
     adm = Q.Admission({"approach": 3, "grasp": 1}, 2)                    # 2 approach jobs, 1 grasp job
     first = adm.pick([failure(1, 0, "approach"), failure(1, 1, "grasp"), failure(1, 2, "approach", ok=False), failure(2, 0, "open")])
-    assert ids(first) == ["heldout_1_r0_t0", "heldout_1_r1_t0"]          # an unreproducible one or a phase out of the quota is left
+    assert ids(first) == ["mined_1_r0_t0", "mined_1_r1_t0"]          # an unreproducible one or a phase out of the quota is left
     second = adm.pick([failure(2, 1, "approach"), failure(2, 2, "approach"), failure(2, 3, "grasp")])
-    assert ids(second) == ["heldout_2_r1_t0"]                            # the phases are full
+    assert ids(second) == ["mined_2_r1_t0"]                            # the phases are full
     assert [f.phase for f in Q.Admission({"approach": 3}, 2, ["approach", "grasp"]).pick(FAILS)] == ["approach"]       # jobs of an earlier run count
 
 

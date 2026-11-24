@@ -8,7 +8,7 @@ from revolve_common.supervision import BagSource, build
 def test_fake_run_reads_back(tmp_path):
     run = F.write_eval_run(tmp_path, [F.Try(failed="grasp")])
     task = specs.resolve(specs.REPO_SPECS, "open_fridge_door", assets=False)
-    rec = F.json.loads((run / "results.json").read_text())["sets"]["heldout"]["rollouts"]["100_r0"]["tries"][0]["record"]
+    rec = F.json.loads((run / "results.json").read_text())["sets"]["mined"]["rollouts"]["100_r0"]["tries"][0]["record"]
     src = BagSource(F.read_messages, rec["bag"], F.ROBOT, F.json.loads(F.Path(rec["result_file"]).read_text()))
     firing = build([{"plugin": "verdict"}], task, arm_joints=F.ARM).scan(src.ticks())
     assert (firing.phase, firing.t) == ("grasp", 11.0)

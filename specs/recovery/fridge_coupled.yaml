@@ -8,7 +8,7 @@
 # collect|run|check`; `from.eval` below is then the run to read.
 task: open_fridge_door
 robot: mobile_panda
-from: {eval: runs/eval/fridge_recovery}
+from: {eval: runs/eval/fridge_recovery}        # live and phases both work on the evaluation's sets that are not held-out (here `train`)
 triggers:                                      # what names a failure of the phase-wise recovery (the evaluator's verdict first)
   - {plugin: verdict}
   - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}

@@ -5,7 +5,8 @@
 # from the takeovers'. `run.reset: warm` keeps a sim per slot and warm-resets it between configs and jobs.
 # The policy streams the oracle's replay with noise (`noisy_expert`: a bad policy the triggers catch, no checkpoint needed): it replays
 # the training episodes, so only the train set can run. A served policy (smolvla) takes its place once it runs on the new simulator;
-# a held-out set then needs `from.sets` in the recovery spec to leave it out of the recorder (its pool is the training spec's aside pool).
+# a held-out set stays out of both recorders by default (the recovery spec's `from.sets` / `from.heldout` change that; the guard refuses
+# a mined set whose pool overlaps a held-out or aside pool); `train` is the set that is mined.
 train: specs/datagen/fridge_panda_v2.yaml
 policy: {plugin: noisy_expert, sigma: 0.03}
 out: runs/eval/fridge_recovery

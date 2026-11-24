@@ -69,6 +69,57 @@ def test_all_stages(tmp_path, run, capsys):
     assert "| open | 1 | 1 | 0 | 0 | 0 | - | - |" in report and "fridge::top_door_hinge" in report
 
 
+HELD = [F.Try(set="held", seed=500 + i, failed="approach") for i in range(2)]
+
+
+def test_failures_of_held_out_sets_are_counted_and_never_mined(tmp_path, capsys):
+    run = F.write_eval_run(tmp_path, [*HELD, *TRIES], heldout=("held",))
+    code, out, err = recover(tmp_path, write_spec(tmp_path, run, quota={"approach": 3}), capsys=capsys)
+    assert code == 0, err
+    assert "collect: 6 failures (1 unreproducible) in 6 failed, 2 held-out, not mined, 1 passed tries" in out
+    entries = manifest(tmp_path)["episodes"]
+    assert len(entries) == 3 and {e["recovery"]["from_rollout"]["set"] for e in entries} == {"mined"}
+    assert not any("held_" in f["id"] for f in state(tmp_path)["failures"])
+    report = (out_of(tmp_path) / "report.md").read_text()
+    assert "2 held-out, not mined" in report and "Mined sets: mined; kept unseen: held." in report
+    assert "| approach | 3 | 0 | 3 | 3 | 3 | 3 | 100% |" in report
+
+
+def test_from_sets_and_from_heldout_choose_the_sets_as_for_the_live_recorder(tmp_path, capsys):
+    run = F.write_eval_run(tmp_path, [*HELD, *TRIES], heldout=("held",))
+    code, out, err = recover(tmp_path, write_spec(tmp_path, run, quota={"approach": 5}, **{"from": {"eval": str(run), "sets": ["held"]}}),
+                             capsys=capsys)                                      # the user names the held-out set to mine: theirs to choose
+    assert code == 1 and "collect: 2 failures" in out and "held-out" not in out.split("collect:")[1].splitlines()[0]
+    assert {f["set"] for f in state(tmp_path)["failures"]} == {"held"}
+    both = write_spec(tmp_path, run, name="both.yaml", out="runs/recovery/both",
+                      **{"from": {"eval": str(run), "sets": ["mined"], "heldout": ["mined"]}})
+    code, _, err = recover(tmp_path, both, "collect", capsys=capsys)
+    assert code == 2 and "also in from.heldout" in err
+
+
+def test_a_run_with_only_held_out_sets_records_nothing_and_says_why(tmp_path, capsys):
+    run = F.write_eval_run(tmp_path, HELD, heldout=("held",))
+    code, out, err = recover(tmp_path, write_spec(tmp_path, run, quota={"approach": 1}), capsys=capsys)
+    assert code == 1 and "collect: 0 failures (0 unreproducible) in 2 held-out, not mined tries" in out
+    assert manifest(tmp_path)["episodes"] == [] and "check quota: FAIL" in out
+    assert "Nothing is recorded: every set of the run is held-out" in (out_of(tmp_path) / "report.md").read_text()
+
+
+def test_a_run_that_does_not_say_which_sets_are_held_out_is_refused(tmp_path, capsys):
+    run = F.write_eval_run(tmp_path, TRIES)
+    results = json.loads((run / "results.json").read_text())
+    del results["leakage"]
+    (run / "results.json").write_text(json.dumps(results))
+    code, _, err = recover(tmp_path, write_spec(tmp_path, run), capsys=capsys)
+    assert code == 2 and "will not guess which sets are held-out" in err
+
+
+def test_a_mined_set_that_overlaps_a_held_out_pool_is_refused(tmp_path, capsys):
+    run = F.write_eval_run(tmp_path, [*HELD, F.Try(seed=501, failed="approach")], heldout=("held",))      # mined seeds 501..501 inside held 500..501
+    code, _, err = recover(tmp_path, write_spec(tmp_path, run), capsys=capsys)
+    assert code == 2 and "set 'mined' (seeds [501, 501]) overlaps held-out set 'held'" in err
+
+
 def test_the_jobs_scenes_start_at_the_restart_states(tmp_path, run, capsys):
     recover(tmp_path, write_spec(tmp_path, run), capsys=capsys)
     for e in manifest(tmp_path)["episodes"]:
@@ -98,7 +149,7 @@ def test_per_failure_records_several_episodes_per_restart(tmp_path, run, capsys)
     assert len(entries) == 4 and len({e["scene"] for e in entries}) == 2                  # 2 failures x 2 episodes
 
 
-ALL = ["heldout_100_r0_t0", "heldout_101_r0_t0", "heldout_102_r0_t0"]
+ALL = ["mined_100_r0_t0", "mined_101_r0_t0", "mined_102_r0_t0"]
 
 
 @pytest.mark.parametrize("keep, passed", [("all", [False, True]), ("successes", [True])])
@@ -117,13 +168,13 @@ def test_a_job_that_never_passes_stays_short_and_fails_the_check(tmp_path, run, 
 
 
 def test_warm_reset_after_the_first_job_and_the_fallback_in_the_manifest(tmp_path, run, capsys):
-    spec = write_spec(tmp_path, run, quota={"approach": 3}, run={"reset": "warm"}, runner={"miss_jobs": ["heldout_101_r0_t0"]})
+    spec = write_spec(tmp_path, run, quota={"approach": 3}, run={"reset": "warm"}, runner={"miss_jobs": ["mined_101_r0_t0"]})
     code, out, err = recover(tmp_path, spec, capsys=capsys)
     assert code == 0, err
     modes = {e["scene"].split("/")[1]: e["recovery"]["reset"] for e in manifest(tmp_path)["episodes"]}
-    assert modes["heldout_100_r0_t0"] == {"mode": "relaunch"}                           # the first job launched the sim at its restart
-    assert modes["heldout_101_r0_t0"]["mode"] == "relaunch" and modes["heldout_101_r0_t0"]["fallback"]["ok"] is False
-    assert modes["heldout_102_r0_t0"]["mode"] == "warm" and modes["heldout_102_r0_t0"]["ok"] is True
+    assert modes["mined_100_r0_t0"] == {"mode": "relaunch"}                           # the first job launched the sim at its restart
+    assert modes["mined_101_r0_t0"]["mode"] == "relaunch" and modes["mined_101_r0_t0"]["fallback"]["ok"] is False
+    assert modes["mined_102_r0_t0"]["mode"] == "warm" and modes["mined_102_r0_t0"]["ok"] is True
 
 
 def test_relaunch_mode_never_resets_warm(tmp_path, run, capsys):
@@ -176,7 +227,7 @@ def test_the_generator_plans_each_job_on_the_host_first_and_a_failed_plan_is_a_j
     F.CALLS.clear()
     code, out, _ = recover(tmp_path, spec, capsys=capsys)
     scenes = [c[1].parent.name for c in F.CALLS if c[0] == "plan"]
-    assert code == 1 and sorted(scenes) == ALL and "run approach heldout_101_r0_t0: error (plan: no plan)" in out
+    assert code == 1 and sorted(scenes) == ALL and "run approach mined_101_r0_t0: error (plan: no plan)" in out
     assert [c[1].parent.name for c in F.CALLS if c[0] == "drive"].count(ALL[1]) == 0 and state(tmp_path)["jobs"][ALL[1]]["status"] == "error"
     F.CALLS.clear()
     recover(tmp_path, spec, capsys=capsys)
@@ -238,7 +289,7 @@ def test_a_missing_live_plugin_or_generator_is_an_error(tmp_path, run, capsys):
 
 def test_a_run_that_is_not_an_eval_run_is_an_error(tmp_path, capsys):
     code, _, err = recover(tmp_path, write_spec(tmp_path, tmp_path / "nothing"), capsys=capsys)
-    assert code == 1 and "not an evaluation run" in err
+    assert code == 2 and "not an evaluation run" in err
 
 
 @REGISTRY.register("live", "fake_live")

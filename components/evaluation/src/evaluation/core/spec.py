@@ -120,6 +120,19 @@ class EvalSpec:
     def coupled(self) -> bool:
         return self.recovery is not None and self.recovery.enabled
 
+    def pool_ranges(self, name: str) -> list[tuple[int, int]]:
+        """The seed ranges set `name` draws its configs from (a `train` set: the training split's pool)."""
+        s = self.sets[name]
+        if s.kind == "train":
+            return next(p.pool for p in self.train.splits if p.name == s.source).ranges()
+        return s.pool.ranges()
+
+    def leakage(self) -> dict:
+        """What a recorder that must not train on scored scenes needs to know (kept in results.json): per set its kind and pool,
+        and the pools the training spec keeps aside (its splits with `record: false`)."""
+        return {"sets": {n: {"kind": s.kind, "pool": self.pool_ranges(n)} for n, s in self.sets.items()},
+                "aside": [[f"training split {p.name!r} (kept aside)", p.pool.ranges()] for p in self.train.splits if not p.record]}
+
     @property
     def hash(self) -> str:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""

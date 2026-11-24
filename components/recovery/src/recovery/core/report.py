@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Mapping, Sequence
 
 from .failures import Failure
+from .mining import LABEL
 from .spec import RecoverySpec
 
 
@@ -26,13 +27,17 @@ def table(spec: RecoverySpec, failures: Sequence[Failure], selected: Sequence[st
 
 
 def render(spec: RecoverySpec, failures: Sequence[Failure], selected: Sequence[str], counts: Mapping[str, int],
-           entries: Sequence[Mapping], jobs: Mapping[str, Mapping]) -> str:
+           entries: Sequence[Mapping], jobs: Mapping[str, Mapping], mining: Mapping | None = None) -> str:
     pct = lambda v: "-" if v is None else f"{100 * v:.0f}%"
     p = spec.phases
     lines = [f"# Recovery {spec.hash}: {spec.task} ({spec.robot})", "",
-             f"From {spec.eval_run}: " + ", ".join(f"{n} {k}" for k, n in sorted(counts.items())) + " tries. "
+             f"From {spec.eval_run}: " + ", ".join(f"{n} {LABEL.get(k, k)}" for k, n in sorted(counts.items())) + " tries. "
              f"Restart from {p.restart_from}, {p.per_failure} per failure, keep {spec.keep}, reset {spec.run.reset}.", "",
              "| phase | failures | unreproducible | selected | recorded | passed | quota | fill |", "|---|---|---|---|---|---|---|---|"]
+    if mining:
+        lines[4:4] = [f"Mined sets: {', '.join(mining['mined']) or 'none'}; kept unseen: {', '.join(mining['held_out']) or 'none'}."
+                      + ("" if mining["mined"] else " Nothing is recorded: every set of the run is held-out (name the sets to mine in "
+                         "`from.sets`)."), ""]
     for r in table(spec, failures, selected, entries):
         quota = "-" if r["quota"] is None else r["quota"]
         lines.append(f"| {r['phase']} | {r['failures']} | {r['unreproducible']} | {r['selected']} | {r['recorded']} | "

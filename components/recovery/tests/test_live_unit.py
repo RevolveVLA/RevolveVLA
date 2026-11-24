@@ -76,6 +76,22 @@ def test_a_set_that_is_reserved_or_overlaps_a_reserved_or_aside_pool_is_refused(
         leakage.sets_of(only_heldout, None, None)
 
 
+def test_the_guard_reads_the_same_sets_from_the_spec_and_from_a_finished_run(tmp_path):
+    spec = eval_spec(tmp_path)
+    sets = leakage.of_spec(spec)
+    assert sets.kinds == {"a": "heldout", "b": "heldout", "tr": "train"} and sets.pools["a"] == [(100, 104)] and sets.aside[0][1] == [(20, 24)]
+    (tmp_path / "results.json").write_text(json.dumps({"leakage": spec.leakage()}))
+    from_run = leakage.of_run(tmp_path)
+    assert leakage.sets_of(from_run, None, None) == (["tr"], ["a", "b"])
+    leakage.check(from_run, ["tr"], ["a", "b"])
+    near_aside = leakage.Sets({"c": "train"}, {"c": [[22, 25]]}, [["training split 'aside' (kept aside)", [[20, 24]]]])
+    with pytest.raises(SpecError, match="overlaps training split 'aside'"):
+        leakage.check(near_aside, ["c"], [])
+    assert leakage.sets_of(leakage.Sets({"a": "heldout"}, {"a": [[1, 2]]}), None, None, required=False) == ([], ["a"])
+    with pytest.raises(SpecError, match="no recorded set kinds"):
+        leakage.of_run(tmp_path / "nothing")
+
+
 # ------------------------------------------------------------------ the policy under the recorder
 def item(seed=7, episodes=({"passed": True, "bag": "/b"},)):
     return EvalItem(Config("a", seed), Path("/s/scene.yaml"), tuple(episodes))

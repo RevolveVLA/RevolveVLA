@@ -5,7 +5,8 @@ evaluation's own out) and the standalone split (a spec for a live run, a run dir
 - `live`: the evaluation's policy runs under the recorder (core/live.py `wrap`) in the sets `from.sets` (default: the ones that are not
   held-out; the leakage guard of the standalone run applies), found by the seed of the config; the other sets run the plain policy. Its sidecars sit next to the
   evaluation's episode results.
-- `phases`: when a config's rollouts are committed the failures of their tries are scanned (the spec's scanner, only those rollouts)
+- `phases`: when a config's rollouts are committed the failures of their tries are scanned (the spec's scanner, only those rollouts,
+  only in the sets to mine: the same selection and guard as `live`, core/mining.py; held-out failures are counted, not scanned)
   and the quota (core/quota.py `Admission`) picks the jobs, which the evaluation's worker slots run (evaluation core/slots.py) when no
   rollout is pending: the same core as `./revolve recover` (`Pipeline.work`, `record`, the same state, manifest and report) into
   `<eval out>/recovery/`. A job takes a slot's sim of its own (the runner's slots, warm-reset between jobs under `run.reset: warm`);
@@ -50,7 +51,7 @@ class Coupled(Follow):
         scanned = set(p.state.data.get("scanned", ()))
         fresh = sorted(k for k in entries if f"{set_name}/{k}" not in scanned)
         if fresh:
-            scan = p.plugins.scanner.scan(p.out, {(set_name, k) for k in fresh})
+            scan = p.mine({(set_name, k) for k in fresh})
             p.absorb(scan)
             with p.lock:
                 p.state.data["scanned"] = sorted(scanned | {f"{set_name}/{k}" for k in fresh})
@@ -107,10 +108,10 @@ def attach(eval_spec, plugins, root: Path, out: Path, log: Callable[[str], None]
     goes under the live recorder and `plugins.follow` is the phase-wise recovery. SpecError when the recovery spec does not fit."""
     path = Path(eval_spec.recovery.spec)
     spec = checked(coupled_spec(load(path if path.is_absolute() else root / path), eval_spec, out))
+    run, reserved = leakage.sets_of(eval_spec, spec.eval_sets, spec.heldout, required=spec.live is not None)
+    leakage.check(eval_spec, run, reserved)
     if spec.live:
-        run, reserved = leakage.sets_of(eval_spec, spec.eval_sets, spec.heldout)
-        leakage.check(eval_spec, run, reserved)
-        seeds = [r for n in run for r in leakage.pool_of(eval_spec, n)]
+        seeds = [r for n in run for r in eval_spec.pool_ranges(n)]
         lv.wrap(plugins, spec, REGISTRY.create("live", spec.live.plugin, spec, spec.live.params), out, seeds)
     pipeline = Pipeline(spec, arm_of(spec.robot, specs.REPO_SPECS), phase_plugins(spec, ("collect", "run")) if spec.phases
                         else PluginSet(), Path(spec.out), live_dir=out, log=log)

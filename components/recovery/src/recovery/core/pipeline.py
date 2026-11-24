@@ -1,6 +1,7 @@
 """collect -> run -> check over injected plugins; `report.md` + `manifest.json` after every run.
 
-`live` rolls out an evaluation spec under the live recorder (core/live.py). `collect` reads the failures of the spec's eval run (the scanner: bags are read where rosbag2_py is) and keeps them in
+`live` rolls out an evaluation spec under the live recorder (core/live.py). `collect` reads the failures of the spec's eval run (the scanner: bags are read where rosbag2_py is; only the sets the
+live recorder would roll out, core/mining.py: held-out failures are counted) and keeps them in
 state.json, so a resumed run works on the same failures. `run` picks the failures to recover (core/quota.py; also kept),
 makes a job of each (core/jobs.py: its scene instance at the restart state), has the generator plan it (`Generator.plan`: a
 planner that works offline per scene instance) and runs them on `spec.run.workers` slots
@@ -26,7 +27,7 @@ from datagen.core.state import State
 from . import jobs as jb
 from . import live as lv
 from . import manifest as mf
-from . import quota, report
+from . import mining, quota, report
 from .errors import JobError, RecoveryError
 from .failures import Failure, Scan
 from .generator import create as create_generator
@@ -100,7 +101,8 @@ class Pipeline:
         if p is None:
             say(f"workers: {self.workers}, reset {s.run.reset}, {'headless' if s.run.headless else 'gui'}")
             return
-        say(f"collect: failures of the eval run {s.eval_run}, triggers {', '.join(t['plugin'] for t in s.triggers)}")
+        say(f"collect: failures of the eval run {s.eval_run} in {', '.join(s.eval_sets) if s.eval_sets else 'its sets that are not held-out'}"
+            f" (never {', '.join(s.heldout) if s.heldout else 'its held-out sets'}), triggers {', '.join(t['plugin'] for t in s.triggers)}")
         say(f"restart: {p.restart_from}" + (f", {p.back_s} s before the failure" if p.restart_from == "before_failure" else "")
             + f"; unreproducible when a scene joint is beyond {p.max_object_joint}")
         say("quota (episodes): " + (", ".join(f"{k} {n}" for k, n in p.quota.items()) or "none")
@@ -152,16 +154,23 @@ class Pipeline:
     def _ensure_collected(self):
         data = self.state.data
         if "failures" not in data:
-            scan = self._need("scanner", self.plugins.scanner).scan(self.out)
+            scan = self.mine()
             data["failures"], data["scan"] = [f.to_dict() for f in scan.failures], dict(scan.counts)
             self.state.save()
+
+    def mine(self, only=None) -> Scan:
+        """The failures of the tries `only` (default all) in the sets phase recovery may mine (core/mining.py); the selection is kept."""
+        scan, data = mining.mine(self.spec, self._need("scanner", self.plugins.scanner), self.out, only)
+        with self.lock:
+            self.state.data["mining"] = data
+        return scan
 
     def _collect(self):
         self._ensure_collected()
         data, failures = self.state.data, self.failures
         bad = sum(not f.restart.reproducible for f in failures)
         self.log(f"collect: {len(failures)} failures ({bad} unreproducible) in " + ", ".join(
-            f"{n} {k}" for k, n in sorted(data["scan"].items())) + " tries")
+            f"{n} {mining.LABEL.get(k, k)}" for k, n in sorted(data["scan"].items())) + " tries")
 
     def _run(self):
         self._ensure_collected()
@@ -234,7 +243,8 @@ class Pipeline:
         mf.write(path, manifest)
         if "failures" in data:
             (self.out / "report.md").write_text(report.render(
-                self.spec, self.failures, data.get("selection", []), data["scan"], manifest["episodes"], data.get("jobs", {})))
+                self.spec, self.failures, data.get("selection", []), data["scan"], manifest["episodes"], data.get("jobs", {}),
+                data.get("mining")))
 
     @staticmethod
     def _need(kind, plugin):

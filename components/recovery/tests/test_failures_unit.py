@@ -28,7 +28,7 @@ def test_a_failed_try_is_a_failure_at_the_verdict_and_a_passed_one_is_not(tmp_pa
     s = scan(tmp_path, [F.Try(seed=100), F.Try(seed=101, failed="grasp")])
     assert dict(s.counts) == {"passed": 1, "failed": 1}
     (f,) = s.failures
-    assert (f.id, f.set, f.rollout, f.attempt, f.phase, f.trigger) == ("heldout_101_r0_t0", "heldout", "101_r0", 0, "grasp", "verdict")
+    assert (f.id, f.set, f.rollout, f.attempt, f.phase, f.trigger) == ("mined_101_r0_t0", "mined", "101_r0", 0, "grasp", "verdict")
     assert f.reason == "grasp:timeout_s" and f.t_fail == 11.0 and f.phase_t_start == 6.0
     assert Path(f.scene).name == "scene.yaml" and Path(f.bag).is_dir() and Path(f.result).is_file()
     assert f.restart.reproducible and f.restart.t == 10.0                            # before_failure, back_s 1
@@ -41,7 +41,7 @@ def test_restart_from_phase_start(tmp_path):
 
 def test_every_try_of_a_rollout_is_scanned(tmp_path):
     s = scan(tmp_path, [F.Try(failed="approach"), F.Try(failed="open"), F.Try()])        # retries of one rollout
-    assert [(f.id, f.phase) for f in s.failures] == [("heldout_100_r0_t0", "approach"), ("heldout_100_r0_t1", "open")]
+    assert [(f.id, f.phase) for f in s.failures] == [("mined_100_r0_t0", "approach"), ("mined_100_r0_t1", "open")]
     assert not s.failures[1].restart.reproducible and "fridge::top_door_hinge" in s.failures[1].restart.reason
 
 
@@ -61,7 +61,7 @@ def test_failures_no_trigger_names_are_counted_not_dropped(tmp_path):
 def test_tries_without_a_verdict_or_files_are_counted(tmp_path):
     run = F.write_eval_run(tmp_path, [F.Try(failed="grasp"), F.Try(seed=101, failed="grasp"), F.Try(seed=102, failed="grasp")])
     results = json.loads((run / "results.json").read_text())
-    rolls = results["sets"]["heldout"]["rollouts"]
+    rolls = results["sets"]["mined"]["rollouts"]
     rolls["101_r0"]["tries"][0]["record"]["error"] = "wall limit 600 s"
     Path(rolls["102_r0"]["tries"][0]["record"]["result_file"]).unlink()
     (run / "results.json").write_text(json.dumps(results))
@@ -71,7 +71,7 @@ def test_tries_without_a_verdict_or_files_are_counted(tmp_path):
 
 def test_results_of_another_task_are_refused(tmp_path):
     run = F.write_eval_run(tmp_path, [F.Try(failed="grasp")])
-    result = next(run.glob("heldout/*_sim/episode_0.json"))
+    result = next(run.glob("mined/*_sim/episode_0.json"))
     result.write_text(json.dumps({**json.loads(result.read_text()), "task": "open_drawer"}))
     with pytest.raises(RecoveryError, match="an episode of open_drawer"):
         scan_run(spec(), run, F.read_messages)

@@ -134,6 +134,7 @@ class Pipeline:
         task = load_task(s.train.task, repo_root(s, self.out))
         policy = rollout_policy(task, s.rollout.params)
         walk = self._walk(ckpt, task)
+        self.results.data["leakage"] = s.leakage()
         for n in names:
             built = self._build(n)
             self.results.set(n)["rollout_policy"] = policy

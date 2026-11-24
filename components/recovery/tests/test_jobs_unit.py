@@ -28,13 +28,13 @@ def scene(tmp_path):
 
 
 def failure(scene, restart=RESTART):
-    return Failure("heldout_100_r0_t0", "heldout", "100_r0", 0, str(scene), "grasp", "verdict", "grasp:timeout_s", 11.0, 6.0, "bag",
+    return Failure("mined_100_r0_t0", "mined", "100_r0", 0, str(scene), "grasp", "verdict", "grasp:timeout_s", 11.0, 6.0, "bag",
                    "result", restart)
 
 
 def test_make_writes_the_scene_at_the_restart(tmp_path, scene):
     job = J.make(3, failure(scene), tmp_path / "out", "mobile_panda", ARM)
-    assert job.dir == tmp_path / "out" / "grasp" / "heldout_100_r0_t0" and job.index == 3 and job.scene == job.dir / "scene.yaml"
+    assert job.dir == tmp_path / "out" / "grasp" / "mined_100_r0_t0" and job.index == 3 and job.scene == job.dir / "scene.yaml"
     written = yaml.safe_load(job.scene.read_text())
     assert written["robot_start"] == {"base": [-1.5, 1.7, 1.5], "arm": [round(0.1 * i, 6) for i in range(7)]}
     assert written["models"] == yaml.safe_load(scene.read_text())["models"] and written["name"] == "kitchen_partnet"

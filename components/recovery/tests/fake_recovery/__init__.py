@@ -28,7 +28,7 @@ CALLS = []              # ("drive", scene file) of the fake generator, in order
 
 @dataclass
 class Try:
-    set: str = "heldout"
+    set: str = "mined"
     seed: int = 100
     rollout: int = 0
     failed: str | None = None           # the failed phase; None: the episode passed
@@ -91,8 +91,9 @@ def result(t: Try, episode: int, sim: Path, seed_scene: str) -> dict:
             "result_file": str(sim / f"episode_{episode}.json"), "bag": str(sim / f"episode_{episode}_bag")}
 
 
-def write_eval_run(root: Path, tries: list[Try]) -> Path:
-    """`<root>/eval/`: an evaluation run with the given tries (several tries of one rollout: same set, seed and rollout)."""
+def write_eval_run(root: Path, tries: list[Try], heldout: tuple[str, ...] = ()) -> Path:
+    """`<root>/eval/`: an evaluation run with the given tries (several tries of one rollout: same set, seed and rollout). The sets in
+    `heldout` are of kind heldout (the others `train`); each set's pool = the range of its tries' seeds."""
     run = root / "eval"
     base = yaml.safe_load((specs.REPO_SPECS / "scenes" / "kitchen_partnet" / "scene.yaml").read_text())
     sets, numbers = {}, {}
@@ -118,7 +119,9 @@ def write_eval_run(root: Path, tries: list[Try]) -> Path:
                                "record": record})
         entry["passed"] = t.failed is None
     run.mkdir(parents=True, exist_ok=True)
-    (run / "results.json").write_text(json.dumps({"spec_hash": "fake", "ckpt": None, "sets": sets}))
+    pools = {n: [min(t.seed for t in tries if t.set == n), max(t.seed for t in tries if t.set == n)] for n in sets}
+    leakage = {"sets": {n: {"kind": "heldout" if n in heldout else "train", "pool": [pools[n]]} for n in sets}, "aside": []}
+    (run / "results.json").write_text(json.dumps({"spec_hash": "fake", "ckpt": None, "sets": sets, "leakage": leakage}))
     return run
 
 

@@ -13,3 +13,4 @@ sys.path.append(str(REPO / "components" / "datagen" / "tests"))        # fake_da
 
 def pytest_configure(config):
     config.addinivalue_line("markers", "gpu: needs a free GPU, docker and the built images; set RECOVERY_GPU=1 to run")
+    config.addinivalue_line("markers", "bench: capacity benchmark on the real simulator; set RECOVERY_BENCH=1 to run")

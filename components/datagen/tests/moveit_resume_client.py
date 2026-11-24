@@ -5,6 +5,7 @@
             which the expert drives for 2 s, stops (a frozen policy takes over) and `resume()` finishes the task."""
 import json
 import sys
+import traceback
 from pathlib import Path
 
 from datagen.plugins.moveit import setup
@@ -14,6 +15,7 @@ from datagen.plugins.moveit.robot_io import EpisodeOver
 from revolve_common.sim_client import run_client
 
 REPO, TAKEOVER_S = "/repo", 2.0
+KEEP = []           # moveit_py segfaults when its objects are destroyed: they live until run_client's os._exit
 
 
 class Stop(EpisodeOver):
@@ -33,6 +35,7 @@ def row(client, n, notes, started) -> dict:
 def pregrasp(client, task, robot, instance, n):
     gen = MoveItGenerator(None, {"resume": True, "repo": REPO})
     gen.prepare(client, instance, task, robot)
+    KEEP.append(gen)
     rows = []
     for i in range(n):
         if i:
@@ -59,6 +62,7 @@ def probe(client, expert_cls, s) -> dict:
 
 def takeover(client, task, robot, instance, n):
     s = setup.build(client, instance, task, robot, Path(REPO))
+    KEEP.append(s)
     start = probe(client, EXPERTS[task], s)
     rows = []
     for _ in range(n):
@@ -80,7 +84,13 @@ def takeover(client, task, robot, instance, n):
 
 def main(client, task, robot, instance, mode, n):
     client.wait_ready()
-    print("RESULT " + json.dumps({"pregrasp": pregrasp, "takeover": takeover}[mode](client, task, robot, instance, int(n))), flush=True)
+    try:
+        out = {"pregrasp": pregrasp, "takeover": takeover}[mode](client, task, robot, instance, int(n))
+    except BaseException:
+        traceback.print_exc()
+        sys.stderr.flush()
+        raise
+    print("RESULT " + json.dumps(out), flush=True)
 
 
 if __name__ == "__main__":

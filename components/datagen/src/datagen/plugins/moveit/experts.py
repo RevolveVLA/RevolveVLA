@@ -68,7 +68,7 @@ class Expert:
         """Take the task over from the robot's current state (`state` for tests; live otherwise): hold the measured pose, then the
         entry the state calls for and what follows it. Logs `max_delta_action` of the first second. -> the notes, as `run()`."""
         self.io.begin_episode()
-        self.t0 = self.io.client.now()
+        self.log, self.t0 = [], self.io.client.now()
         self.io.record_arm(1.0)
         try:
             s = state or self.observe()

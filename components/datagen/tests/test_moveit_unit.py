@@ -399,6 +399,15 @@ def test_resume_reads_the_situation_from_the_robot_when_none_is_given():
 
 
 @needs_assets
+def test_each_resume_logs_its_own_notes():
+    S, f = fake_robot("open_fridge_door", "mobile_panda")
+    e = experts.OpenFridgeDoor(S)
+    first = e.resume(R.Situation(0.10, 0.04, 0.0))
+    second = e.resume(R.Situation(0.10, 0.04, 0.0))
+    assert first == second and second.count('"resume"') == 1
+
+
+@needs_assets
 def test_run_is_the_scenes_start_and_does_not_resume():
     S, f = fake_robot("open_fridge_door", "mobile_panda")
     notes = experts.OpenFridgeDoor(S).run()

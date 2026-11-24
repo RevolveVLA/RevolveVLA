@@ -6,6 +6,18 @@ specified here, with the exact names, flags, topics, paths and message types as 
 something you need is not here, it is not part of the contract. Ask for a new simulator flag or topic rather than
 reaching into the simulator (see [Roles and boundaries](#3-roles-and-boundaries)).
 
+> **Change since the first version (2026-11-24): the action is the streamed command.** The recorded arm and gripper
+> action is now each controller's **`/<jtc>/joint_trajectory` topic** (single-point `trajectory_msgs/JointTrajectory`,
+> streamed at **30 Hz or faster**) and the base action `/omni_wheel_drive_controller/cmd_vel`, streamed continuously:
+> exactly what a policy publishes at inference. The dataset decodes the action from these topics with the robot's
+> Rosetta contract (`specs/robots/<r>/contract.yaml`; a Rosetta action channel is one topic, decoded when porting and
+> encoded by the policy). **FollowJointTrajectory goals leave no action in the bag, so they are not acceptable for
+> demonstrations.** MoveIt may still plan: time-sample its trajectory and stream the samples. `/<jtc>/controller_state`
+> stays recorded, as a diagnostic only. Also new in every bag: `/task/prompt` (the task's prompt). Changed: sections
+> 5.1-5.3, 7.2, 7.4, 11, 12, 13, 14, 15. In the datagen code on main: `plugins/moveit/robot_io.py` sends
+> FollowJointTrajectory goals (must change to streaming), `plugins/automoma/execute.py` already streams, and
+> `contract.py`'s `action_series` reads the controller_state reference (switch it to the streamed topics, section 7.4).
+
 Contents
 
 1. [Purpose and status](#1-purpose-and-status)
@@ -275,8 +287,11 @@ Notes:
 | What | Interface | Type |
 |---|---|---|
 | Base | `/omni_wheel_drive_controller/cmd_vel` | `geometry_msgs/msg/TwistStamped` (only this type), **robot frame** (`base_footprint`): `linear.x` forward, `linear.y` left, `angular.z` counter-clockwise (the other twist fields are not used by an omni base). |
-| Arm | `/<arm controller>/follow_joint_trajectory` (action) or `/<arm controller>/joint_trajectory` (topic) | `control_msgs/action/FollowJointTrajectory`, `trajectory_msgs/msg/JointTrajectory` |
-| Gripper | `/<hand controller>/follow_joint_trajectory` or `/<hand controller>/joint_trajectory` | same types |
+| Arm | `/<arm controller>/joint_trajectory` (topic), streamed single points | `trajectory_msgs/msg/JointTrajectory` |
+| Gripper | `/<hand controller>/joint_trajectory` (topic), streamed single points | `trajectory_msgs/msg/JointTrajectory` |
+
+The controllers also accept FollowJointTrajectory goals (`/<controller>/follow_joint_trajectory`), but a goal leaves
+no action in the bag (section 5.3): never during a demonstration episode.
 
 Controller names per robot:
 
@@ -291,35 +306,46 @@ All arm and gripper controllers are `joint_trajectory_controller` on **effort** 
 ### 5.2 Rules and semantics
 
 * **Ramp base twists** over ~0.5 s. The controller has no limiter; a step in twist kicks the yaw (up to ~9 deg seen).
-* The base stops if no `cmd_vel` arrives for 0.5 s (`cmd_vel_timeout`). Publish continuously (we use 50 Hz) while
-  moving, then a few zero twists.
-* **FollowJointTrajectory** (e.g. what MoveIt executes): the JTC interpolates the whole trajectory. The result's
-  `error_code` 0 means success.
-* **Streaming** (what a policy does at inference): publish single-point `JointTrajectory` messages on
-  `/<controller>/joint_trajectory` at the action rate (30 Hz) with a short `time_from_start` (the contract test uses
-  0.1 s) and a zero header stamp (start now). Each message replaces the active trajectory.
+* The base stops if no `cmd_vel` arrives for 0.5 s (`cmd_vel_timeout`). **Publish `cmd_vel` continuously for the
+  whole episode** (30 Hz or faster; zero twists while the base stands): the dataset holds the last `cmd_vel` at any
+  age, so a stream that stops after a nonzero twist would record that twist while the base has stopped.
+* **Stream the arm and the gripper** (what a policy does at inference): publish single-point `JointTrajectory`
+  messages on `/<controller>/joint_trajectory` at **30 Hz or faster for the whole episode** (also while holding a
+  pose or squeezing: repeat the target), with all of the controller's joints in `joint_names`, a short
+  `time_from_start` (the contract test and `plugins/automoma/execute.py` use 0.1 s) and a zero header stamp ("start
+  now"; the dataset aligns actions on the bag's receive time, so the stamp does not matter). Each message replaces the
+  active trajectory.
+* **MoveIt**: plan as before, then time-sample the planned trajectory at the stream rate (interpolate the
+  `RobotTrajectory` waypoints at t = k / rate) and stream the samples. Do not execute plans through
+  FollowJointTrajectory during an episode.
 * **Gripper**: grasping is by friction, with no weld. Command a goal *past* closed so the effort controller squeezes
   at its clamp: Panda `panda_finger_joint1` -0.04 (~12 N per finger, `u_clamp` 12); SO-101 / SO-101 XL `gripper`
   about -0.3 (the XL's clamp gives ~12 N). The joint stops where the object is; the controller keeps squeezing.
 * Never send NaN/Inf: the `finite_cmds` sanity check fails the episode (it watches `cmd_vel` and the
-  `joint_trajectory` topics; FollowJointTrajectory goals are not seen by it, but are still your responsibility).
-* MoveIt plans the arm only. Command the hand directly (FollowJointTrajectory or streamed points), not with
-  MoveIt's GripperCommand: the hand controllers are JTCs.
+  `joint_trajectory` topics).
+* MoveIt plans the arm only. Command the hand directly by streamed points, not with MoveIt's GripperCommand: the
+  hand controllers are JTCs.
 
-### 5.3 How the action is recorded (independent of how you command)
+### 5.3 How the action is recorded: the streamed commands
 
-The recorded action is defined on the simulator side, so it is the same whether you used MoveIt + FollowJointTrajectory
-or streamed points:
+The recorded action is what you stream, on the same topics a policy publishes at inference. The dataset decodes it
+with the robot's Rosetta contract (`specs/robots/<r>/contract.yaml`, `components/dataset/DATASET-v2.md`):
 
-* **arm and gripper**: each JTC's `/<controller>/controller_state` (`control_msgs/msg/JointTrajectoryControllerState`)
-  `reference.positions`, the setpoint the controller is tracking at that instant (published every control cycle,
-  1 kHz);
-* **base**: the commanded twist on `/omni_wheel_drive_controller/cmd_vel` (zero when none arrived within 0.5 s).
+* **arm and gripper**: the first point's `positions` of each `/<controller>/joint_trajectory` message (all of the
+  controller's joints, in its joint order);
+* **base**: `twist.linear.x`, `twist.linear.y`, `twist.angular.z` of `/omni_wheel_drive_controller/cmd_vel`;
 
-The dataset samples both at **30 Hz** (section 7.4). At inference, the policy streams single-point
-`joint_trajectory` messages and `cmd_vel` at 30 Hz, i.e. exactly the recorded action format. Consequence for the
-expert: smooth, continuous references make learnable actions. Avoid large jumps in the reference (e.g. a 0 s
-`time_from_start` to a far point) and long pauses that are not part of the task.
+sampled at **30 Hz**, each value the last message received at or before the frame (section 7.4). The action vector
+is [base twist (3), arm joints, gripper joint]: 11 wide on `mobile_panda`, 9 on the SO-101 robots, in the same units
+as the state (joint positions from `/joint_states`, the base twist from the omni odometry).
+
+A FollowJointTrajectory goal never appears in the bag: an episode commanded that way has no arm or gripper action, and
+the dataset refuses an episode whose bag lacks a contract topic. `/<controller>/controller_state`
+(`control_msgs/msg/JointTrajectoryControllerState`, 1 kHz; `reference` = the setpoint the controller tracks) stays
+in the bag as a **diagnostic only**, not the action.
+
+Consequence for the expert: smooth, continuous references make learnable actions. Avoid large jumps between
+consecutive points and long pauses that are not part of the task.
 
 ## 6. Observations and privileged information
 
@@ -375,9 +401,9 @@ It is the contract with the dataset converter: it changes only together with its
 | `/tf` | `tf2_msgs/TFMessage` | ~1.1 kHz | robot_state_publisher (100 Hz) + odometry `odom -> base_footprint` (1 kHz) |
 | `/tf_static` | `tf2_msgs/TFMessage` | once per bag | Transient local; in every bag. |
 | `/joint_states` | `sensor_msgs/JointState` | 1 kHz | |
-| `/<jtc>/controller_state` | `control_msgs/JointTrajectoryControllerState` | 1 kHz | Per JTC: `reference` = the arm / gripper action. |
-| `/<jtc>/joint_trajectory` | `trajectory_msgs/JointTrajectory` | as commanded | Streamed commands. |
-| `/omni_wheel_drive_controller/cmd_vel` | `geometry_msgs/TwistStamped` | as commanded | The base action. |
+| `/<jtc>/controller_state` | `control_msgs/JointTrajectoryControllerState` | 1 kHz | Per JTC, a diagnostic (`reference` = the setpoint it tracks); not the action. |
+| `/<jtc>/joint_trajectory` | `trajectory_msgs/JointTrajectory` | as streamed (>= 30 Hz) | The arm / gripper action (single points). |
+| `/omni_wheel_drive_controller/cmd_vel` | `geometry_msgs/TwistStamped` | as streamed (>= 30 Hz) | The base action. |
 | `/omni_wheel_drive_controller/odom` | `nav_msgs/Odometry` | 1 kHz | Wheel odometry. |
 | `/model/<robot>/pose` | `tf2_msgs/TFMessage` | 100 Hz | Ground truth. |
 | `/model/<m>/pose` (each scene model) | `tf2_msgs/TFMessage` | 100 Hz | Ground truth. |
@@ -386,10 +412,12 @@ It is the contract with the dataset converter: it changes only together with its
 | `/<camera>/camera_info` | `sensor_msgs/CameraInfo` | 30 Hz | |
 | `/evaluator/state` | `std_msgs/String` (JSON) | 10 Hz | |
 | `/evaluator/result` | `std_msgs/String` (JSON) | once, at the end | Recorded live only (never the previous episode's). |
+| `/task/prompt` | `std_msgs/String` | once per bag | Transient local: the task.yaml `prompt` (the dataset's task string; also in the bag's `metadata.yaml`, `custom_data` `lerobot.operator_prompt`). |
 | `/<camera>/image/compressed` | `sensor_msgs/CompressedImage` | 30 Hz | `--record images` only. JPEG (`format` `"rgb8; jpeg compressed bgr8"`), from `compressed_image_transport` through ros_gz_image's image_transport publisher. Raw images are never recorded. |
 
 Topics that carry messages only on demand (contacts, `joint_trajectory`, `cmd_vel`) are absent from a bag in which
-they never had a publisher; treat "absent" as "no messages". Every other topic is in every bag.
+they never had a publisher; treat "absent" as "no messages". Every other topic is in every bag. A demonstration's bag
+must have messages on both `joint_trajectory` topics and on `cmd_vel` (the action, section 5.3).
 
 `controller_state`, `joint_states`, `odom` and `/tf` run at the controller rate (1 kHz) because the upstream
 controllers publish every cycle; the dataset downsamples.
@@ -406,46 +434,45 @@ The images dominate. Plan disk space for the images case: ~0.4 GB per minute of 
 
 ### 7.4 Extracting the 30 Hz action
 
+What the dataset computes with the robot's Rosetta contract (`align: hold` on the bag's receive time), for a quick
+check of your own bags:
+
 ```python
 import numpy as np, rosbag2_py
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 
-def read(bag, topics):
+def read(bag, topics):                 # {topic: [(bag receive time [s, sim time], message)]}
     r = rosbag2_py.SequentialReader()
     r.open(rosbag2_py.StorageOptions(uri=bag, storage_id="mcap"), rosbag2_py.ConverterOptions("", ""))
     types = {t.name: t.type for t in r.get_all_topics_and_types()}
     out = {t: [] for t in topics}
     while r.has_next():
-        topic, data, _ = r.read_next()
+        topic, data, t = r.read_next()
         if topic in out:
-            out[topic].append(deserialize_message(data, get_message(types[topic])))
+            out[topic].append((t * 1e-9, deserialize_message(data, get_message(types[topic]))))
     return out
 
-stamp = lambda m: m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
-msgs = read(bag, ["/panda_arm_controller/controller_state", "/panda_hand_controller/controller_state",
-                  "/omni_wheel_drive_controller/cmd_vel"])
-arm, hand = msgs["/panda_arm_controller/controller_state"], msgs["/panda_hand_controller/controller_state"]
-t0, t1 = max(stamp(arm[0]), stamp(hand[0])), min(stamp(arm[-1]), stamp(hand[-1]))
+arm, hand, cmd = ("/panda_arm_controller/joint_trajectory", "/panda_hand_controller/joint_trajectory",
+                  "/omni_wheel_drive_controller/cmd_vel")
+msgs = read(bag, [arm, hand, cmd])
+assert all(msgs.values()), "a demonstration streams all three"
+t0 = min(ms[0][0] for ms in msgs.values())
+t1 = max(ms[-1][0] for ms in msgs.values())
 grid = np.arange(t0, t1, 1 / 30)
-def hold(ms, f):                       # the last value at or before each tick
-    st = np.array([stamp(m) for m in ms]); v = np.array([f(m) for m in ms])
-    return v[np.clip(np.searchsorted(st, grid, side="right") - 1, 0, len(st) - 1)]
-a_arm = hold(arm, lambda m: m.reference.positions)
-a_hand = hold(hand, lambda m: m.reference.positions)
-cmd = msgs["/omni_wheel_drive_controller/cmd_vel"]
-a_base = np.zeros((len(grid), 3))      # zero unless a cmd_vel arrived within the controller's 0.5 s timeout
-if cmd:
-    ct = np.array([stamp(m) for m in cmd])
-    cv = np.array([[m.twist.linear.x, m.twist.linear.y, m.twist.angular.z] for m in cmd])
-    i = np.searchsorted(ct, grid, side="right") - 1
-    ok = (i >= 0) & (grid - ct[np.clip(i, 0, None)] <= 0.5)
-    a_base[ok] = cv[i[ok]]
+def hold(ms, f):                       # the last message at or before each tick, at any age; zeros before the first
+    t = np.array([x[0] for x in ms]); v = np.array([f(x[1]) for x in ms], dtype=float)
+    i = np.searchsorted(t, grid, side="right") - 1
+    out = np.zeros((len(grid), v.shape[1])); out[i >= 0] = v[i[i >= 0]]
+    return out
+action = np.hstack([hold(msgs[cmd], lambda m: [m.twist.linear.x, m.twist.linear.y, m.twist.angular.z]),
+                    hold(msgs[arm], lambda m: m.points[0].positions),
+                    hold(msgs[hand], lambda m: m.points[0].positions)])     # (frames, 11) on mobile_panda
 ```
 
-The same code, with checks, is `action_series()` in
-`components/simulator/ros/revolve_sim/test/check_contract.py`. The dataset component will convert bags with a
-Rosetta contract written against the topic list above.
+The simulator's contract test checks every bag it records against the robot's contract with Rosetta's own loader and
+decoders (`components/simulator/ros/revolve_sim/test/check_rosetta.py`). `action_series()` in `check_contract.py`
+still extracts the controller_state reference: that is the diagnostic of section 5.3, not the action.
 
 ## 8. Datagen inputs and outputs
 
@@ -657,7 +684,8 @@ SO-101 uses the `pick_ik` kinematics plugin (5 DoF: a full 6-DoF pose target is 
   ~20-25 s sim time (approach ~12 s, grasp ~3 s, open ~4-5 s); an episode can last at most the task's `budget_s`
   (45 s for both tasks).
 * The reference expert clients (MoveIt 2 through moveit_py + scripted base segments), each a full positive
-  episode, are the simulator's T4 test scripts:
+  episode, are the simulator's T4 test scripts (they execute arm and hand motions as FollowJointTrajectory goals,
+  which is fine for the simulator's tests but not for demonstrations: stream the same motions, section 5.2):
   `components/simulator/ros/revolve_sim/test/check_open_door.py` (mobile_panda, fridge) and
   `components/simulator/ros/revolve_sim/test/check_open_drawer.py` (mobile_so101_xl, drawer). The minimal datagen
   -style client is `check_contract.py` next to them.
@@ -680,7 +708,8 @@ Physics and control:
 * **Folded arms stick out ahead of the chassis**: the folded Panda reaches ~0.11 m in front of the chassis at door
   height (it touches the door before the chassis does); the folded XL jaws hang ~0.51 m ahead of `base_footprint`.
   Stop the drive-in early enough, or unfold first, or `robot_contacts` fails the episode.
-* **A pattern that worked** (both T4 scripts): open-loop ramped drive to a base pose found by an IK search (rotate,
+* **A pattern that worked** (both T4 scripts, executed there with FollowJointTrajectory goals; stream the same
+  motions for demonstrations): open-loop ramped drive to a base pose found by an IK search (rotate,
   then translate); MoveIt OMPL to a pre-grasp a few cm back along the approach; Pilz LIN onto the handle; small LINs
   until the TCP is within ~1 mm of the target; squeeze; then open. Fridge: Pilz CIRC about the hinge for the first
   part, then the base orbits the hinge with one constant body twist at <= 0.12 rad/s (0.2 rad/s caused finger
@@ -756,7 +785,8 @@ What moved or was deleted, and why your old imports break:
 | `components/simulator/launch.py` (the simulator HTTP job: `replay` jobs), `components/simulator/ros/Dockerfile` | `./revolve sim` (section 4.1). |
 | `common/revolve_common/metrics.py` (+ its test) | The evaluator's `revolve_sim/metrics.py` (internal) and the metric registry in `specs.METRICS`. |
 | The old schemas in `common/revolve_common/specs.py` (experiments, task start blocks, planner fields `detailed`/`skip`/`floor`, contracts) | The new `specs.py` (section 9). |
-| `specs/experiments/*.yaml`, `specs/robots/*/contract.yaml` | Nothing yet (the manager is broken). Your job YAML (section 8.2) carries task, robot, scenes. |
+| `specs/experiments/*.yaml` | Nothing yet (the manager is broken). Your job YAML (section 8.2) carries task, robot, scenes. |
+| the old `specs/robots/*/contract.yaml` | New hand-written Rosetta contracts at the same paths (section 5.3; `components/dataset/DATASET-v2.md`). |
 | `ThirdParty/franka_description` | `moveit_resources_panda_description` (ROS binaries). |
 | `components/simulator/src/sim/robots/`, `model.py`, the custom controller, `gen_camera_model.py`, old robot YAMLs | `specs/robots/<r>/` (xacro + controllers.yaml + robot.yaml + moveit/). |
 | `revolve run / resume / status / stop` | Removed with the manager for now. |
@@ -786,8 +816,10 @@ favour of the old versions); keep only your datagen changes; then port datagen t
 - [ ] Episodes pass the evaluator (`passed: true`) for both tasks (`open_fridge_door` on `mobile_panda`,
       `open_drawer` on `mobile_so101_xl`) at a success rate you report; failed attempts are kept with
       `passed: false`.
-- [ ] Every bag has the frozen topics (section 7.2), cameras JPEG at ~30 Hz, `/tf_static`, and a 30 Hz action series
-      can be extracted from it (section 7.4).
+- [ ] The arm and gripper are commanded only by streamed single-point `joint_trajectory` messages (>= 30 Hz) and the
+      base by continuous `cmd_vel` during every episode; no FollowJointTrajectory goals in an episode.
+- [ ] Every bag has the frozen topics (section 7.2), cameras JPEG at ~30 Hz, `/tf_static`, `/task/prompt`, messages on
+      both `joint_trajectory` topics and `cmd_vel`, and a 30 Hz action series can be extracted from it (section 7.4).
 - [ ] All timing in sim time; works at real-time factor 1.
 - [ ] Tests: `./revolve test datagen` runs datagen's unit tests and one end-to-end `mock_manager.py` run on a real
       sim; `./revolve test simulator -- -k contract` still passes.
@@ -800,6 +832,8 @@ favour of the old versions); keep only your datagen changes; then port datagen t
 | `revolve` | The CLI (`assets`, `build`, `test`, `sim`, `validate`). |
 | `components/simulator/README.md` | Simulator details (launch, evaluator, reset, tests). |
 | `components/simulator/ros/revolve_sim/config/record.yaml` | The frozen recording topic list. |
+| `specs/robots/<r>/contract.yaml` | The robot's Rosetta contract: which recorded topics are the observation, the action and the task. |
+| `components/dataset/DATASET-v2.md` | The dataset component's hand-over (how the bags become a LeRobot dataset). |
 | `components/simulator/ros/revolve_sim/config/bridge.yaml` | The gz <-> ROS bridge entries (the topics in section 6). |
 | `components/simulator/ros/revolve_sim/launch/sim.launch.py` | What `revolve sim` runs inside the container. |
 | `components/simulator/ros/revolve_sim/revolve_sim/evaluator.py`, `reset.py` | The evaluator and the reset service. |

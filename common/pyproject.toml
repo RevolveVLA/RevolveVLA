@@ -20,4 +20,4 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["revolve_common"]
+packages = ["revolve_common", "revolve_common.supervision", "revolve_common.supervision.triggers"]

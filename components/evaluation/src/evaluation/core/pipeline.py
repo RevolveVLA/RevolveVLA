@@ -87,7 +87,7 @@ class Pipeline:
             pool = " + ".join(f"[{lo}, {hi}]" for lo, hi in t.pool.ranges()) if t.pool else ""
             md = f", min_distance {t.min_distance.value}" if t.min_distance else ""
             what = (f"{t.count} configs from training split {t.source!r}" if t.kind == "train" else
-                    f"{t.count} held-out configs, {t.sampler.strategy} sampler, pool {pool}{md}")
+                    f"{t.count} {'held-out' if t.kind == 'heldout' else t.kind} configs, {t.sampler.strategy} sampler, pool {pool}{md}")
             say(f"set {n} ({t.plugin}): {what}")
             runs += t.count * s.rollouts
         say(f"{s.rollouts} rollouts per config, retries {s.retries}: {runs} first tries, "

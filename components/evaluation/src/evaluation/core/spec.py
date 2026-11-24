@@ -87,7 +87,8 @@ class RecoveryRef:
 class SetSpec:
     """An eval set. kind `heldout`: `count` new configs from `pool`, drawn by `sampler` inside the training ranges (or the
     narrower `randomisers`), `min_distance` from the training configs (`realised` is an alias: an instance's values are
-    the realised start). kind `train`: `count` of the training split `source`."""
+    the realised start). kind `sampled`: drawn the same way (`kind: sampled` in the yaml) but a scene the policy may be trained
+    on (a recorder mines it); the yaml default `heldout` is kept unseen. kind `train`: `count` of the training split `source`."""
     name: str
     kind: str
     count: int
@@ -255,10 +256,13 @@ def _set(name, v, train, at) -> SetSpec:
         if count > known[source].target:
             _fail(f"{at}.count", f"{count} > the {known[source].target} configs of training split {source!r}")
         return SetSpec(name, "train", count, _str(d.get("plugin", "train"), f"{at}.plugin"), source)
-    d = _mapping(v, at, required=("count", "pool"), optional=("sampler", "min_distance", "randomisers", "plugin"))
+    d = _mapping(v, at, required=("count", "pool"), optional=("sampler", "min_distance", "randomisers", "plugin", "kind"))
     count = _int(d["count"], f"{at}.count", 1)
+    kind = _str(d.get("kind", "heldout"), f"{at}.kind")
+    if kind not in ("heldout", "sampled"):
+        _fail(f"{at}.kind", f"{kind!r} is not heldout (kept unseen) or sampled (may be mined)")
     md = _min_distance(d["min_distance"], train, f"{at}.min_distance") if "min_distance" in d else None
-    return SetSpec(name, "heldout", count, _str(d.get("plugin", "heldout"), f"{at}.plugin"),
+    return SetSpec(name, kind, count, _str(d.get("plugin", "heldout"), f"{at}.plugin"),
                    sampler=_sampler(d.get("sampler", {}), f"{at}.sampler", train.dims()),
                    pool=_pool(d["pool"], count, f"{at}.pool"), min_distance=md,
                    randomisers=_randomisers(d.get("randomisers", {}), train, f"{at}.randomisers"))

@@ -119,6 +119,13 @@ def test_heldout_draws_instances_inside_the_training_ranges_and_passes_the_check
     assert (root / "run" / "heldout" / "state.json").is_file() and not (root / "run" / "heldout" / "manifest.json").exists()
 
 
+def test_a_sampled_set_is_built_like_a_held_out_one_without_the_training_run(root):
+    spec = make(root, {"scenes": HELDOUT | {"kind": "sampled"}})
+    built = build(spec, root, "scenes")
+    assert spec.sets["scenes"].kind == "sampled" and len(built.items) == 4 and all(i.scene.is_file() for i in built.items)
+    assert all(100 <= i.config.seed <= 129 for i in built.items) and "sampled-only" in built.checks["training_configs"].reason
+
+
 def test_a_held_out_set_needs_no_generator(root):
     spec = make(root, train=TRAIN | {"generator": {"plugin": "no_such_generator"}})
     assert len(build(spec, root).items) == 4 and fake_datagen.CALLS == []

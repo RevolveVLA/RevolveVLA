@@ -46,6 +46,14 @@ def test_the_repo_examples_load(name):
     assert all(s.pool.initial[0] >= 500 for s in spec.sets.values() if s.kind == "heldout")
 
 
+@pytest.mark.parametrize("name", ["fridge_smolvla_phases", "fridge_smolvla_dagger"])
+def test_the_smolvla_recovery_specs_sample_their_own_minable_scenes(name):
+    spec = S.load(REPO / "specs" / "eval" / f"{name}.yaml", REPO)
+    (s,) = spec.sets.values()
+    taken = [r for p in spec.train.splits for r in p.pool.ranges()] + [(500, 599)]       # training, aside, the held-out set of fridge_smolvla_v2
+    assert (s.kind, s.count) == ("sampled", 5) and not any(s.pool.ranges()[0][0] <= b and a <= s.pool.ranges()[0][1] for a, b in taken)
+
+
 def test_values_and_defaults(root):
     spec = parse(root)
     assert spec.train.out == "runs/train_run" and spec.ckpt == S.CkptSpec("local", {"path": "runs/ckpts/x"})
@@ -163,6 +171,19 @@ def test_train_path_is_relative_to_root_or_absolute(root):
 def test_errors_name_the_yaml_path(root, edits, match):
     with pytest.raises(SpecError, match=match):
         parse(root, **edits)
+
+
+def test_a_sampled_set_is_drawn_like_a_held_out_one_but_is_not_one(root):
+    sampled = {"count": 2, "pool": {"initial": [100, 109]}, "kind": "sampled"}
+    spec = parse(root, sets={"s": sampled, "h": {"count": 1, "pool": {"initial": [200, 201]}}})
+    assert (spec.sets["s"].kind, spec.sets["s"].plugin, spec.sets["s"].pool.ranges()) == ("sampled", "heldout", [(100, 109)])
+    assert spec.sets["h"].kind == "heldout" and spec.pool_ranges("s") == [(100, 109)]
+    assert spec.leakage()["sets"] == {"s": {"kind": "sampled", "pool": [(100, 109)]}, "h": {"kind": "heldout", "pool": [(200, 201)]}}
+    assert parse(root, sets={"s": sampled}).hash != parse(root, sets={"s": sampled | {"kind": "heldout"}}).hash
+    with pytest.raises(SpecError, match=r"sets.s.kind: 'train' is not heldout"):
+        parse(root, sets={"s": sampled | {"kind": "train"}})
+    with pytest.raises(SpecError, match=r"sets.s.pool: seeds \[8, 12\] overlap \[0, 9\] of training split 'train'"):
+        parse(root, sets={"s": sampled | {"pool": {"initial": [8, 12]}}})
 
 
 def test_narrower_randomisers_are_kept_and_the_unrecorded_training_pool_may_be_reused(root):

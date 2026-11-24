@@ -61,6 +61,18 @@ def test_default_sets_are_the_non_heldout_ones_and_the_heldout_stay_unseen(tmp_p
         leakage.sets_of(spec, ["zz"], None)
 
 
+def test_a_sampled_set_is_mined_by_default_and_a_held_out_one_still_is_not(tmp_path):
+    spec = eval_spec(tmp_path, s={"count": 2, "pool": {"initial": [200, 204]}, "kind": "sampled"})
+    assert leakage.sets_of(spec, None, None) == (["tr", "s"], ["a", "b"])
+    leakage.check(spec, ["s", "tr"], ["a", "b"])
+    assert leakage.sets_of(leakage.of_spec(spec), None, None) == (["tr", "s"], ["a", "b"])
+    near = eval_spec(tmp_path, s={"count": 1, "pool": {"initial": [20, 29]}, "kind": "sampled"})
+    with pytest.raises(SpecError, match="set 's'.*overlaps training split 'aside'"):
+        leakage.check(near, ["s"], ["a"])
+    with pytest.raises(SpecError, match="also in from.heldout"):
+        leakage.check(spec, ["s"], ["s"])
+
+
 def test_a_set_that_is_reserved_or_overlaps_a_reserved_or_aside_pool_is_refused(tmp_path):
     spec = eval_spec(tmp_path, c={"count": 1, "pool": {"initial": [20, 29]}})
     with pytest.raises(SpecError, match="also in from.heldout"):

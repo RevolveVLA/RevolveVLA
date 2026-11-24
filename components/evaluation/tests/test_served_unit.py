@@ -138,6 +138,18 @@ def test_the_loop_stops_when_halted_before_an_inference_and_before_each_action()
     assert stats["steps"] == 0 and stats["chunks"] == 0
 
 
+def test_the_drive_can_be_entered_again_after_a_halt_with_a_fresh_chunk():
+    clock, sent, halted = Clock(end_s=3.0), [], [False]
+    policy = Policy(clock)
+    first, _ = loop(clock, policy, halt=lambda: halted[0] or len(sent) >= 5, sent=sent)
+    assert first["steps"] == 5 and len(policy.calls) == 1 and [int(p) for p, _ in sent] == [1] * 5
+    sent.clear()
+    second, _ = loop(clock, policy, sent=sent)                       # the hand-back: the same policy, the same clock, no halt
+    assert len(policy.calls) == 1 + second["chunks"] and second["chunks"] >= 2
+    assert [int(p) for p, _ in sent[:20]] == [2] * 20                # a new chunk from a new observation: nothing of the old one
+    assert sent[0][0] == pytest.approx(2.0)                          # its first action (not the 6th of the first chunk)
+
+
 def test_a_non_finite_chunk_raises_and_a_missing_result_times_out():
     clock = Clock()
 
@@ -191,9 +203,18 @@ def test_play_served_runs_the_episode_loop_with_the_live_wrapper(tmp_path, monke
     client.has_result = lambda n: False
     client.now = lambda t=iter(np.arange(1.0, 10.0, 0.01)): next(t)
     serve = {"url": "http://x", "prompt": "p", "robot": "mobile_panda", "actions_per_chunk": 20, "image_size": None}
-    ep = S.play_served(client, tmp_path / "r", serve, False, 1.0, None, Live(), 0.1, make_streamer=Streamer)
+    drives = []
+
+    class Again(Live):
+        def driver(self, drive):
+            drives.append(drive)
+            return drive
+    ep = S.play_served(client, tmp_path / "r", serve, False, 1.0, None, Again(), 0.1, make_streamer=Streamer)
+    sent.clear()
+    again = drives[0](0)                                             # the hand-back calls the drive again mid-episode
+    assert again["chunks"] == 1 and again["steps"] >= 3 and len(sent) == again["steps"]
     assert seen[:2] == [("streamer", ["panda_arm_controller", "panda_hand_controller"], 0.1), "matched"]
-    assert ep["steps"] == 3 == len(sent) and ep["chunks"] == 1 and ("finish", 3) in seen and ep["episode"] == 0
+    assert ep["steps"] == 3 and ep["chunks"] == 1 and ("finish", 3) in seen and ep["episode"] == 0
     assert json.loads((tmp_path / "r" / "episode.json").read_text())["inference"]["n"] == 1
     with pytest.raises(ValueError, match="no observation / action contract"):
         S.play_served(client, tmp_path / "r2", {**serve, "robot": "nope"}, False, 1.0, None, Live(), 0.1)

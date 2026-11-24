@@ -39,8 +39,10 @@ def restart_time(restart_from: str, back_s: float, t_fail: float, phase_t_start:
 
 
 def restart_at(source: BagSource, t: float, arm_joints: Sequence[str], max_object_joint: float) -> Restart:
-    """The restart of episode time `t` from the bag (the last messages at or before it)."""
+    """The restart of episode time `t` from the bag (the last messages at or before it; at the very start of the episode, the first state)."""
     state = source.state_at(t)
+    if t >= 0 and (first := source.first_state_t) is not None and first > t:
+        state = source.state_at(first)
     if state.base is None or any(j not in state.joints for j in arm_joints):
         return Restart(t, reason=f"no robot state in the bag at t={t:.2f} s")
     name, value = max(state.objects.items(), key=lambda kv: abs(kv[1]), default=(None, 0.0))

@@ -95,6 +95,13 @@ class BagSource:
         self._objects = {k: _Series(v) for k, v in objects.items()}
         self.t0 = (self.result or {}).get("sim_time_start", self.states[0][1]["t"] if self.states else 0.0)
 
+    @property
+    def first_state_t(self) -> float | None:
+        """Episode time of the first complete robot state (base and joints; None: the bag has none): a bag starts a few tens
+        of ms after `sim_time_start`, so `state_at(0)` is empty."""
+        firsts = [s.t[0] for s in (self._pose, self._joints) if s.t]
+        return max(firsts) - self.t0 if len(firsts) == 2 else None
+
     def state_at(self, t: float) -> RobotState:
         """The last messages at or before `t` (episode time), no interpolation."""
         a = self.t0 + t

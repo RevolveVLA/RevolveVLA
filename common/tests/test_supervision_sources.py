@@ -155,3 +155,11 @@ def test_unsorted_messages_are_ordered():
     src = BagSource(reader(list(reversed(m))), "b", ROBOT)
     assert [t.t for t in src.ticks()] == sorted(t.t for t in src.ticks())
     assert src.state_at(0.51).joints["panda_joint1"] == pytest.approx(0.25)
+
+
+def test_first_state_t_is_when_a_bag_that_starts_late_has_base_and_joints():
+    late = [m for m in msgs() if m.topic not in ("/joint_states", "/model/mobile_panda/pose") or m.t >= T0 + 0.07]
+    src = BagSource(reader(late), "b", ROBOT)
+    assert src.first_state_t == pytest.approx(0.1) and src.state_at(0.0).base is None
+    assert src.state_at(src.first_state_t).base is not None and src.state_at(src.first_state_t).joints
+    assert BagSource(reader([m for m in msgs() if m.topic != "/joint_states"]), "b", ROBOT).first_state_t is None

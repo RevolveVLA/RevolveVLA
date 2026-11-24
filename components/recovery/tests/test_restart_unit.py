@@ -5,10 +5,10 @@ from recovery.core.restart import Restart, restart_at, restart_time
 from revolve_common.supervision import BagSource
 
 
-def source(tmp_path, t: F.Try):
+def source(tmp_path, t: F.Try, reader=F.read_messages):
     run = F.write_eval_run(tmp_path, [t])
     rec = F.json.loads((run / "results.json").read_text())["sets"][t.set]["rollouts"][f"{t.seed}_r0"]["tries"][0]["record"]
-    return BagSource(F.read_messages, rec["bag"], F.ROBOT, F.json.loads(F.Path(rec["result_file"]).read_text()))
+    return BagSource(reader, rec["bag"], F.ROBOT, F.json.loads(F.Path(rec["result_file"]).read_text()))
 
 
 @pytest.mark.parametrize("restart_from, back_s, t_fail, start, expected", [
@@ -47,3 +47,14 @@ def test_dict_round_trip():
     r = Restart(1.0, (1.0, 2.0, 3.0), (0.1, 0.2), 0.0)
     assert Restart.from_dict(r.to_dict()) == r
     assert Restart.from_dict(Restart(1.0, reason="x").to_dict()) == Restart(1.0, reason="x")
+
+
+def test_a_restart_at_the_episode_start_takes_the_first_state_of_a_bag_that_starts_late(tmp_path):
+    t0 = source(tmp_path / "a", F.Try(failed="approach")).t0
+    late = lambda bag, wanted: (m for m in F.read_messages(bag, wanted)
+                                if m.topic not in ("/joint_states", f"/model/{F.ROBOT}/pose") or m.t >= t0 + 0.07)
+    src = source(tmp_path / "b", F.Try(failed="approach"), late)
+    assert src.state_at(0.0).base is None
+    r = restart_at(src, 0.0, F.ARM, 0.02)
+    assert r.reproducible and r.t == 0.0 and r.base is not None and len(r.arm) == len(F.ARM)
+    assert not restart_at(src, -5.0, F.ARM, 0.02).reproducible

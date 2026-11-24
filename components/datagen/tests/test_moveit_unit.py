@@ -9,7 +9,7 @@ import pytest
 
 from datagen.core import registry
 from datagen.core.errors import DatagenError
-from datagen.plugins.moveit import experts, geometry as G, motion, setup
+from datagen.plugins.moveit import experts, geometry as G, motion, resume as R, setup
 from datagen.plugins.moveit.generator import EXPERT, MoveItGenerator
 from datagen.plugins.moveit.robot_io import EpisodeOver
 
@@ -159,6 +159,7 @@ class FakeRobot:
     def __init__(self, base, bias, arm_error=0.0):
         self.client, self.articulation, self.pose, self.bias, self.calls = FakeClient(), None, base, bias, []
         self.tcp, self.arm_error, self.over_after = np.array([0.0, 0.0, 1.0, 1.0]), arm_error, None
+        self.hand, self.arm_trace = 0.04, []
 
     # RobotIO
     def begin_episode(self): ...
@@ -168,8 +169,10 @@ class FakeRobot:
     def phase(self): return "approach"
     def wait(self, s): self.check()
     def wait_for(self, pred, wall_s): return True
-    def joints(self): return dict(zip(self.case["arm_joints"], self.folded)) if self.arm_error == 0 else \
-        {j: q + self.arm_error for j, q in zip(self.case["arm_joints"], self.folded)}
+    def joints(self):
+        q = {j: v + self.arm_error for j, v in zip(self.case["arm_joints"], self.folded)}
+        return {**q, self.case["hand_joint"]: self.hand}
+    def record_arm(self, window_s): ...
     def base(self):
         x, y, yaw = self.pose
         return G.rpy_matrix(x, y, 0, 0, 0, yaw), self.pose
@@ -281,3 +284,134 @@ def test_drive_prepares_once_runs_the_expert_and_turns_a_crash_into_notes(monkey
     Expert.crash = True
     out = g.drive(None, "i", "open_drawer", "r")
     assert out["expert"] == EXPERT and out["notes"] == "error: RuntimeError: no plan" and len(built) == 2
+
+
+# ------------------------------------------------------------------ resume.py: the entry from the current state
+PANDA, SO101 = setup.CASES["mobile_panda"], setup.CASES["mobile_so101_xl"]
+
+
+@pytest.mark.parametrize("case, situation, entry", [
+    (PANDA, R.Situation(0.80, 0.04, 0.0), R.APPROACH),                 # far, open hand, closed door
+    (PANDA, R.Situation(0.80, 0.04, 0.4, "approach"), R.APPROACH),     # far with the door ajar: approach the moved handle
+    (PANDA, R.Situation(0.10, 0.04, 0.0), R.GRASP),                    # the pre-grasp
+    (PANDA, R.Situation(0.14, 0.04, 0.0), R.GRASP),
+    (PANDA, R.Situation(0.16, 0.04, 0.0), R.APPROACH),
+    (PANDA, R.Situation(0.01, 0.04, 0.0), R.GRASP),                    # at the bar, hand still open
+    (PANDA, R.Situation(0.01, 0.006, 0.0, "grasp"), R.OPEN),           # closed on the bar
+    (PANDA, R.Situation(0.01, 0.006, 0.5, "open"), R.OPEN),
+    (PANDA, R.Situation(0.08, 0.006, 0.5, "open"), R.OPEN),            # the evaluator is in `open` and the hand is closed
+    (PANDA, R.Situation(0.08, 0.006, 0.5, "approach"), R.GRASP),       # closed but away from the bar, phase not open
+    (PANDA, R.Situation(0.50, 0.006, 0.0), R.APPROACH),                # a closed hand far away
+    (SO101, R.Situation(0.01, -0.2, 0.0, "open"), R.OPEN),
+    (SO101, R.Situation(0.01, -0.02, 0.0), R.GRASP),                   # barely moved from open: not closed
+    (SO101, R.Situation(0.10, 0.0, 0.0), R.GRASP),
+])
+def test_the_entry_follows_the_hand_and_the_distance_to_the_handle(case, situation, entry):
+    assert R.entry_for(situation, case) == entry
+
+
+def test_a_door_or_drawer_moved_beyond_the_tolerance_is_ajar():
+    assert not R.is_ajar(R.Situation(0.5, 0.04, 0.01)) and R.is_ajar(R.Situation(0.5, 0.04, 0.05))
+
+
+def test_max_delta_action_is_the_largest_step_at_the_policy_rate_in_the_window():
+    trace = [(t / 100, [0.0, 0.0]) for t in range(0, 40)] + [(t / 100, [0.3, 0.0]) for t in range(40, 200)]
+    assert R.max_delta_action(trace, 0.0) == pytest.approx(0.3)           # one jump between two 30 Hz steps
+    assert R.max_delta_action(trace, 0.5) == 0.0                          # settled after it
+    assert R.max_delta_action(trace, 0.0, window_s=0.2) == 0.0            # the jump is outside the window
+    assert R.max_delta_action([], 0.0) is None and R.max_delta_action([(5.0, [0.0])], 0.0) is None
+
+
+# ------------------------------------------------------------------ resuming the experts on the fake robot
+def resumed(task, robot, situation, **kw):
+    S, f = fake_robot(task, robot, **kw)
+    f.articulation = situation.articulation or None
+    f.hand = situation.gripper
+    cls = experts.EXPERTS[task]
+    e = cls(S)
+    notes = e.resume(situation)
+    return S, f, e, notes
+
+
+@needs_assets
+def test_resuming_at_the_pre_grasp_holds_the_pose_and_reaches_without_folding_or_driving():
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", R.Situation(0.10, 0.04, 0.0), arm_error=0.3)
+    assert f.calls[0] == ("arm", experts.SETTLE_S) and ("arm", 3.0) not in f.calls                 # held, never folded
+    assert not [c for c in f.calls if c[0] == "drive_to"]
+    assert plans(f) == ["ompl_rrtc", "pilz_lin", "pilz_lin", "pilz_circ"] and ("hand", S.case["hand_squeeze"]) in f.calls
+    assert f.calls[1] == ("hand", 0.04) and ("scene", S.handle.name) in f.calls                      # the hand as found; the bar skipped
+    assert '"entry": "grasp"' in notes and '"orbit_done"' in notes and '"first_second"' in notes
+
+
+@needs_assets
+def test_resuming_far_from_the_handle_folds_if_needed_drives_and_does_the_whole_task():
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", R.Situation(0.9, 0.04, 0.0), arm_error=0.3)
+    assert [c[0] for c in f.calls[:3]] == ["arm", "hand", "arm"] and f.calls[2] == ("arm", 3.0)       # hold, hand, fold
+    assert f.calls[3][0] == "drive_to" and plans(f) == ["ompl_rrtc", "pilz_lin", "pilz_lin", "pilz_circ"]
+
+
+@needs_assets
+def test_resuming_with_the_bar_held_opens_from_the_doors_angle_without_planning_a_reach():
+    held = R.Situation(0.0, 0.006, 0.3, "grasp")
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", held)
+    assert plans(f) == ["pilz_circ"] and ("hand", S.case["hand_squeeze"]) in f.calls                # keeps squeezing, no reach
+    assert "open_hand" not in notes and "squeeze" not in notes and not [c for c in f.calls if c[0] == "drive_to"]
+    seg = f.calls[-1]
+    assert seg[0] == "segment" and seg[2] == pytest.approx(experts.OpenFridgeDoor.ARC_TOTAL - experts.OpenFridgeDoor.ARC_ARM)
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", R.Situation(0.0, 0.006, 0.5, "open"))   # past the arc already
+    assert plans(f) == [] and f.calls[-1][2] == pytest.approx(experts.OpenFridgeDoor.ARC_TOTAL - 0.5)
+
+
+@needs_assets
+def test_resuming_with_the_door_ajar_and_the_hand_off_the_bar_reaches_for_the_moved_handle():
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", R.Situation(0.9, 0.04, 0.3))
+    closed = G.stand_off(S.T_handle, experts.OpenFridgeDoor.DIST, experts.OpenFridgeDoor.SIDE, experts.OpenFridgeDoor.YAW_OFF)
+    x, y, yaw = G.stand_off(e.handle_now(), experts.OpenFridgeDoor.DIST, experts.OpenFridgeDoor.SIDE,
+                            experts.OpenFridgeDoor.YAW_OFF)
+    drive = next(c for c in f.calls if c[0] == "drive_to")
+    assert drive[1] == pytest.approx((x, y), abs=1e-3) and drive[1] != pytest.approx(closed[:2], abs=0.05)
+    assert e.T_cur is not e.T_h and '"ajar": true' in notes
+
+
+@needs_assets
+def test_a_closed_hand_off_the_bar_is_opened_before_the_reach():
+    S, f, e, notes = resumed("open_fridge_door", "mobile_panda", R.Situation(0.1, 0.006, 0.0, "approach"))
+    assert ("hand", S.case["hand_open"]) in f.calls and f.calls.index(("hand", S.case["hand_open"])) < f.calls.index(("ik",))
+    assert f.calls[1] == ("hand", S.case["hand_squeeze"])                                           # held closed for the first tick
+
+
+@needs_assets
+def test_the_drawer_resumes_its_pull_from_the_slide_it_has():
+    S, f, e, notes = resumed("open_drawer", "mobile_so101_xl", R.Situation(0.0, -0.2, 0.12, "open"), bias=[0.0, 0.0, 0.005])
+    assert plans(f) == [] and f.calls[-1][2] == pytest.approx(experts.OpenDrawer.PULL - 0.12)
+    S, f, e, notes = resumed("open_drawer", "mobile_so101_xl", R.Situation(0.0, -0.2, 0.2, "open"))   # pulled already
+    assert not [c for c in f.calls if c[0] == "segment"] and '"pull_done"' in notes
+
+
+@needs_assets
+def test_resume_reads_the_situation_from_the_robot_when_none_is_given():
+    S, f = fake_robot("open_fridge_door", "mobile_panda")
+    f.tcp = np.append(S.T_handle[:3, 3] + 0.10 * S.T_handle[:3, 0], 1.0)                              # the pre-grasp
+    e = experts.OpenFridgeDoor(S)
+    s = e.observe()
+    assert s.tcp_to_handle == pytest.approx(0.10 - 0.006, abs=1e-3) and s.gripper == 0.04 and s.articulation == 0.0
+    assert R.entry_for(s, S.case) == R.GRASP
+
+
+@needs_assets
+def test_run_is_the_scenes_start_and_does_not_resume():
+    S, f = fake_robot("open_fridge_door", "mobile_panda")
+    notes = experts.OpenFridgeDoor(S).run()
+    assert '"resume"' not in notes and f.calls[0][0] == "drive_to"           # no hold, no entry choice
+
+
+def test_the_generator_resumes_only_when_asked(monkeypatch):
+    class Expert:
+        def __init__(self, s): ...
+        def run(self): return "ran"
+        def resume(self): return "resumed"
+
+    monkeypatch.setitem(experts.EXPERTS, "open_drawer", Expert)
+    monkeypatch.setattr(setup, "build", lambda client, instance, task, robot, repo: None)
+    assert MoveItGenerator(None, {}).drive(None, "i", "open_drawer", "r")["notes"] == "ran"
+    assert MoveItGenerator(None, {"resume": True}).drive(None, "i", "open_drawer", "r")["notes"] == "resumed"

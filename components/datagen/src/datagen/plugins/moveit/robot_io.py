@@ -32,6 +32,7 @@ class RobotIO:
         self._rclpy, self._twist_type, self._goal_type = rclpy, TwistStamped, FollowJointTrajectory
         self._lock = threading.Lock()
         self._pose, self._joints, self.articulation = None, {}, None
+        self.arm_trace, self._trace_until = [], 0.0      # (sim time, arm joints) while `record_arm` runs
         self._seen = set(client.results)           # results already there: the episode being driven is a new one
         model, joint = joint_topic
         self.node.create_subscription(TFMessage, f"/model/{robot}/pose", self._on_pose, 50)
@@ -53,6 +54,8 @@ class RobotIO:
     def _on_joints(self, m) -> None:
         with self._lock:
             self._joints = dict(zip(m.name, m.position))
+            if (t := self.client.now()) <= self._trace_until:
+                self.arm_trace.append((t, [self._joints[j] for j in self.case["arm_joints"] if j in self._joints]))
 
     def _on_articulation(self, joint, m) -> None:
         if joint in m.name:
@@ -62,6 +65,11 @@ class RobotIO:
     def begin_episode(self) -> None:
         """Results of earlier episodes no longer end this one."""
         self._seen = set(self.client.results)
+
+    def record_arm(self, window_s: float) -> None:
+        """Keep the arm's joint states of the next `window_s` sim seconds in `arm_trace` (a new trace)."""
+        with self._lock:
+            self.arm_trace, self._trace_until = [], self.client.now() + window_s
 
     def check(self) -> None:
         """EpisodeOver once the evaluator published the result of the episode being driven."""

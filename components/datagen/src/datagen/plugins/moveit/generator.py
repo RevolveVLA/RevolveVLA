@@ -2,7 +2,8 @@
 ROS 2 client of one sim, and does the task of the scene instance through the controllers' interfaces only. `prepare` starts
 the planner once per sim launch (off the episode's clock); `drive` runs one episode.
 
-Params (generator block of the spec): `repo` (the repo as the container sees it, default the one `revolve_common` is in)."""
+Params (generator block of the spec): `repo` (the repo as the container sees it, default the one `revolve_common` is in),
+`resume` (default false: the expert takes the task over from the robot's current state instead of from the scene's start)."""
 from __future__ import annotations
 
 import sys
@@ -24,6 +25,7 @@ class MoveItGenerator(Generator):
         if spec is not None and spec.task not in EXPERTS:
             raise DatagenError(f"the moveit generator has an expert for {sorted(EXPERTS)}, not for task {spec.task!r}")
         self.repo = Path(params["repo"]) if "repo" in params else None
+        self.resume = bool(params.get("resume", False))
         self._expert = None
 
     def _repo(self) -> Path:
@@ -38,7 +40,7 @@ class MoveItGenerator(Generator):
         if self._expert is None:
             self.prepare(client, instance, task, robot)
         try:
-            notes = self._expert.run()
+            notes = self._expert.resume() if self.resume else self._expert.run()
         except Exception:                       # a failed step ends the try (the evaluator times it out), not the scene
             traceback.print_exc(file=sys.stderr)
             notes = f"error: {traceback.format_exc(limit=-1).strip().splitlines()[-1]}"

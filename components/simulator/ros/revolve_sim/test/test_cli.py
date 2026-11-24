@@ -4,6 +4,7 @@ the CLI applies them. A `revolve sim` that passes its checks needs the scene's a
 reach docker): those cases are skipped without them."""
 import os
 import subprocess
+import time
 
 import pytest
 from host_cases import REPO, SCENE_SPEC, pose, write_instance, snapshot
@@ -32,6 +33,8 @@ def revolve(tmp_path):
                            cwd=cwd, env=env, timeout=120)
         return r, (log.read_text().splitlines() if log.exists() else [])
 
+    run.popen = lambda *args: subprocess.Popen([str(REPO / "revolve"), *map(str, args)], stdout=subprocess.PIPE,
+                                               stderr=subprocess.PIPE, text=True, cwd=REPO, env=env)
     return run
 
 
@@ -48,6 +51,38 @@ def test_sim_task_only_flags_need_task(revolve, tmp_path, extra):
     r, calls = revolve("sim", *BASE, *extra)
     assert r.returncode == 1 and r.stderr.startswith(f"revolve sim: {extra[0]} needs --task"), r.stderr
     assert calls == [] and snapshot(tmp_path) == before        # nothing ran, --out not created
+
+
+def test_sim_makes_out_before_it_reads_the_scene(revolve, tmp_path):
+    """--out exists, owned by the user, while the scene is still being read: datagen and evaluation (sim_session.py)
+    start a client container that mounts it right after the launch, and docker makes a missing mount source as root.
+    The scene file is a FIFO, so revolve sim blocks reading it until the test writes the scene."""
+    fifo, out = tmp_path / "inst" / "scene.yaml", tmp_path / "out"
+    fifo.parent.mkdir()
+    os.mkfifo(fifo)
+    p = revolve.popen("sim", "--scene", fifo, *BASE[2:], "--task", "open_fridge_door", "--no-autostart", "--out", out)
+    try:
+        for _ in range(200):
+            if out.exists() or p.poll() is not None:
+                break
+            time.sleep(0.05)
+        reading, owner = p.poll() is None, out.stat().st_uid if out.exists() else None
+    finally:
+        while p.poll() is None:         # write the scene once revolve sim has the FIFO open for reading
+            try:
+                fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError:             # ENXIO: not open for reading yet
+                time.sleep(0.05)
+                continue
+            os.write(fd, SCENE_SPEC.read_bytes())
+            os.close(fd)
+            break
+        try:
+            p.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            raise
+    assert reading and owner == os.getuid(), (reading, owner)
 
 
 def duplicate_name(d):

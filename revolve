@@ -162,6 +162,10 @@ def cmd_sim(a):
     for flag, given in (("--out", a.out), ("--record", a.record), ("--no-autostart", a.no_autostart)):
         if given and not a.task:
             sys.exit(f"revolve sim: {flag} needs --task (without a task there are no episodes)")
+    out = None
+    if a.out:       # first: a client started beside the sim (sim_session.py) mounts it too, and docker makes it as root
+        out = Path(a.out).resolve()
+        out.mkdir(parents=True, exist_ok=True)
     from revolve_common import gpu, specs
     errs = specs.check_run(a.scene, a.robot, a.task)     # what the launch would refuse, before docker
     if errs:
@@ -170,10 +174,6 @@ def cmd_sim(a):
         gpu.launch_check()
     except gpu.GpuError as e:
         sys.exit(f"revolve sim: {e}")
-    out = None
-    if a.out:
-        out = Path(a.out).resolve()
-        out.mkdir(parents=True, exist_ok=True)      # by the user, before docker would create it as root
     p, mounts = specs.scene_file(a.scene, REPO / "specs").resolve(), []      # the launch gets the scene file
     if p.is_relative_to(REPO):
         scene = f"/repo/{p.relative_to(REPO)}"

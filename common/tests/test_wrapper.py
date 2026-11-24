@@ -59,7 +59,8 @@ def test_progress_result_and_files(tmp_path):
             seen.append(st["progress"].get("step"))
             if st["state"] not in ("pending", "running"):
                 break
-            assert httpx.get(url + "/result").status_code == 409
+            r = httpx.get(url + "/result")      # the job may finish between the two requests
+            assert r.status_code == 409 or r.json()["state"] == "succeeded"
             time.sleep(0.15)
         mid = [s for s in seen if s is not None and s < 10]
         assert mid, f"no intermediate progress seen: {seen}"

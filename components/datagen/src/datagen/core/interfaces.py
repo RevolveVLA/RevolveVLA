@@ -117,6 +117,7 @@ class Generator(ABC):
     """The expert: commands the robot of a started episode through the sim's contract topics (DATAGEN-v2.md 5). It does
     not randomise anything (the scene instance is the variation), does not record (the sim does) and does not judge
     (the evaluator does)."""
+    supports_resume = False         # True: a `resume` param makes `drive` take the task over from the robot's current state
 
     def plan(self, instance: Path, task: str, robot: str) -> Result:
         """Called on the host once per scene instance, before its sim is launched (and not when the scene is finished): make what

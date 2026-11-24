@@ -21,6 +21,8 @@ EXPERT = "moveit_ompl_pilz_v1"
 
 @register("generator", "moveit")
 class MoveItGenerator(Generator):
+    supports_resume = True
+
     def __init__(self, spec, params):
         if spec is not None and spec.task not in EXPERTS:
             raise DatagenError(f"the moveit generator has an expert for {sorted(EXPERTS)}, not for task {spec.task!r}")

@@ -4,8 +4,9 @@ interventions). Item phase = the phase it recovers (phase kind) or where the tak
 scene it came from (`recovery.from_rollout.scene`), so it splits and is guarded like the rollouts of that scene.
 
 `segment: interventions` keeps, of a dagger episode, only the expert's span: the manifest's `recovery.segment` [t0, t1] when the
-recorder set it, else the `expert` entries of `segments` in the episode's sidecar `interventions.json` (in the result file's folder:
-{takeover_t, ..., segments: [[t0, t1, "policy" | "expert"], ...]}; one item per expert span). Seconds from the episode's start.
+recorder set it, else the `expert` entries of `segments` in the episode's sidecar (`<result stem>.interventions.json` next to the result file, e.g.
+`episode_3.interventions.json`: {takeover_t, ..., segments: [[t0, t1, "policy" | "expert"], ...]}; one item per expert span).
+Seconds from the episode's start.
 A dagger episode with no such span is left out (`no_segment`). Phase-wise episodes are the expert's throughout: always whole."""
 from __future__ import annotations
 
@@ -20,14 +21,14 @@ from ...core.items import Item, Read
 from ...core.params import Params
 from ...core.registry import REGISTRY
 
-KINDS, SEGMENTS, SIDECAR = ("phase", "dagger"), ("full", "interventions"), "interventions.json"
+KINDS, SEGMENTS, SIDECAR = ("phase", "dagger"), ("full", "interventions"), ".interventions.json"
 
 
 def expert_spans(entry: Mapping, result: str) -> list[tuple[float, float]]:
     """The expert's [t0, t1] spans of a dagger episode: from its manifest entry, else its sidecar (none when neither says)."""
     if seg := entry["recovery"].get("segment"):
         return [(float(seg[0]), float(seg[1]))]
-    sidecar = os.path.join(os.path.dirname(result), SIDECAR)
+    sidecar = os.path.splitext(result)[0] + SIDECAR
     if not os.path.isfile(sidecar):
         return []
     try:

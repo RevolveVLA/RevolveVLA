@@ -26,7 +26,7 @@ Exit codes: 0 ok, 1 `on_short: error` and short / a broken invariant / an unread
 - `rollouts`: `run` (an evaluation out: `results.json`), `set`, `passed`. One item per try with a verdict and a bag.
 - `recovery`: `run` (a recovery out: `manifest.json`), `kind` (phase | dagger), `passed`, `segment` (full | interventions). A recovery item's
   scene is the evaluation scene it came from. `interventions` keeps the expert's span of a dagger episode: `recovery.segment` of the
-  manifest entry, else the `expert` entries of `segments` in `interventions.json` next to the episode's result file (bags are never cut).
+  manifest entry, else the `expert` entries of `segments` in `<result stem>.interventions.json` next to the episode's result file (bags are never cut).
 A new source (another run format) = one file in `plugins/sources/` or a module on `$RECIPE_PLUGIN_PATH`.
 
 ## Output (`plugins/outputs/`)

@@ -73,14 +73,24 @@ def test_dagger_interventions_use_the_manifest_segment_or_the_sidecar(root):
 
 
 def test_dagger_sidecar_with_several_expert_spans_makes_an_item_each(root):
-    side = root / "recovery/sims/0/d0/interventions.json"
+    side = root / "recovery/sims/0/d0/episode_0.interventions.json"
     side.write_text(json.dumps({"segments": [[0, 5, "policy"], [5, 9, "expert"], [9, 12, "policy"], [12, 40, "expert"]]}))
     items = source(root, "recovery", run="recovery", kind="dagger", segment="interventions").read().items
     assert sorted(i.segment for i in items if i.phase == "open") == [(5.0, 9.0), (12.0, 40.0)]
 
 
+def test_each_episode_of_a_shared_sim_folder_has_its_own_sidecar(tmp_path):
+    from recipe.plugins.sources.recovery import expert_spans
+    (tmp_path / "episode_0.interventions.json").write_text(json.dumps({"segments": [[0, 4, "policy"], [4, 9, "expert"]]}))
+    (tmp_path / "episode_1.interventions.json").write_text(json.dumps({"segments": [[0, 7, "policy"], [7, 12, "expert"]]}))
+    entry = {"recovery": {}}
+    assert expert_spans(entry, str(tmp_path / "episode_1.json")) == [(7.0, 12.0)]
+    assert expert_spans(entry, str(tmp_path / "episode_0.json")) == [(4.0, 9.0)]
+    assert expert_spans(entry, str(tmp_path / "episode_2.json")) == []
+
+
 def test_a_broken_sidecar_is_an_error(root):
-    (root / "recovery/sims/0/d0/interventions.json").write_text('{"segments": 3}')
+    (root / "recovery/sims/0/d0/episode_0.interventions.json").write_text('{"segments": 3}')
     with pytest.raises(RecipeError, match="expected segments"):
         source(root, "recovery", run="recovery", kind="dagger", segment="interventions").read()
 

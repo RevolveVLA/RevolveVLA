@@ -406,19 +406,26 @@ def assert_resumed(proc: subprocess.Popen, out: Path, before: dict, stamped: dic
     manifest_of(out)
 
 
+NEVER = {"plugin": "condition", "value": "approach.done[0]", "op": "gt", "threshold": 5, "for_s": 1.0}      # a trigger that never fires
+
+
 @pytest.fixture(scope="module")
 def failing(trained):
-    """An evaluation of `frozen` (it never moves: each rollout fails its approach) on 3 configs: what the phase recovery works on."""
+    """`frozen` (it never moves: each rollout fails its approach, but only under the live wrapper: a plain evaluation replays the
+    oracle) rolled out on 3 configs by a recorder that never takes over: an evaluation run (`failing_live/live`) for the phase recovery."""
     run = trained
-    assert eval_cli.main([run.evaluation("failing", {"plugin": "frozen"}, configs=3, rollouts=1, workers=2), "all", "--headless"],
-                         root=REPO) in (0, 1)
-    failed = Counter(json.loads(Path(r["result_file"]).read_text())["failed_phase"] for *_, r, _ in all_tries(run.dir / "failing"))
+    ev = run.evaluation("failing", {"plugin": "frozen"}, configs=3, rollouts=1, workers=2)
+    spec = run.write("failing_live", {**TASK, "from": {"eval": ev}, "live": {"plugin": "dagger", "triggers": [NEVER], "record": "full"},
+                                      "keep": "all", "seed": 0, "run": {"workers": 2, "reset": "relaunch", "headless": True},
+                                      "out": rel(run.dir / "failing_live")})
+    assert recovery_cli.main([str(REPO / spec), "live", "--headless"], root=REPO) == 0
+    failed = Counter(json.loads(Path(r["result_file"]).read_text())["failed_phase"] for *_, r, _ in all_tries(run.dir / "failing_live" / "live"))
     assert failed["approach"] == 3, failed
     return run
 
 
-def phase_spec(run: Run, name: str, eval_out: Path, out: Path, **phases) -> str:
-    return run.write(name, {**TASK, "from": {"eval": rel(eval_out)}, "triggers": [{"plugin": "verdict"}],
+def phase_spec(run: Run, name: str, eval_out: Path, out: Path, live: dict | None = None, **phases) -> str:
+    return run.write(name, {**TASK, "from": {"eval": rel(eval_out)}, "triggers": [{"plugin": "verdict"}], **({"live": live} if live else {}),
                             "phases": {"restart_from": "phase_start", "generator": {"plugin": "moveit", "attempts": 3, "record": "no-images"},
                                        "per_failure": 1, "quota": {"approach": 3}, **phases},
                             "keep": "successes", "seed": 0, "run": {"workers": 2, "reset": "relaunch", "headless": True}, "out": rel(out)})
@@ -426,7 +433,7 @@ def phase_spec(run: Run, name: str, eval_out: Path, out: Path, **phases) -> str:
 
 def test_sigint_stops_a_phase_recovery_cleanly_and_a_rerun_resumes(failing):
     run, out = failing, failing.dir / "abort_recovery"
-    spec, before = phase_spec(failing, "abort_recovery", failing.dir / "failing", out), held_leases()
+    spec, before = phase_spec(failing, "abort_recovery", failing.dir / "failing_live" / "live", out), held_leases()
     proc = start(run, "abort_recovery", "recover", spec, "all", "--headless")
     wait_for(proc, lambda: committed_jobs(out) and any(n.startswith("rc-") for n in sims()), 900, "a committed job and a running one")
     abort(proc, signal.SIGINT, before)
@@ -440,7 +447,7 @@ def test_sigint_stops_a_phase_recovery_cleanly_and_a_rerun_resumes(failing):
 
 def test_sigterm_stops_a_coupled_evaluation_cleanly_and_a_rerun_resumes(trained):
     run, out = trained, trained.dir / "abort_coupled"
-    recovery = phase_spec(run, "abort_coupled_recovery", out, out / "recovery")
+    recovery = phase_spec(run, "abort_coupled_recovery", out, out / "recovery", live={"plugin": "dagger", "triggers": [NEVER], "record": "full"})
     spec = run.evaluation("abort_coupled", {"plugin": "frozen"}, configs=3, rollouts=1, workers=2, recovery={"spec": recovery, "enabled": True})
     before = held_leases()
     proc = start(run, "abort_coupled", "evaluate", spec, "all", "--headless")
@@ -475,7 +482,7 @@ def test_two_processes_started_together_lease_different_ros_domains(trained):
         domains[name] = {int(d) for log in logs for d in re.findall(r"--domain-id (\d+)", log.read_text(errors="replace"))}
         assert domains[name], f"no sim launch found in the logs of {name}"
         assert manifest_of(run.dir / f"{name}_live")["episodes"]
-        bag_contract(run.dir / f"{name}_live", "no-images")
+        bag_contract(run.dir / f"{name}_live", "no-images", mounts=[run.dir / "train"])
     assert domains["domain_a"].isdisjoint(domains["domain_b"]), domains
     assert not leftovers()
     NUMBERS["domains"] = {k: sorted(v) for k, v in domains.items()}

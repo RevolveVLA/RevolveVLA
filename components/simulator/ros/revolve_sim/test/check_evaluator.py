@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 import numpy as np
 import rclpy
@@ -55,6 +56,15 @@ class EvalProbe(Probe):
         while not pred() and time.time() - w0 < wall_timeout:
             time.sleep(0.02)
         return pred()
+
+    def final_result(self, wall_timeout=30):
+        """The last episode result, once its result file exists: the evaluator publishes the result, then closes the
+        bag, then writes the file (the client contract: only then are the episode's files complete)."""
+        with self.lock:
+            res = self.result
+        if res is not None:
+            self.wait_for(Path(res['result_file']).is_file, wall_timeout)
+        return res
 
     def start(self):
         assert self.start_cli.wait_for_service(timeout_sec=30), 'no /evaluator/start'
@@ -181,8 +191,8 @@ def main():
                                      st['values'].get('sanity.robot_contacts')) for st in sts][::5]
     else:
         n.wait_for(lambda: n.result is not None, 120)
+    out['result'] = n.final_result()
     with n.lock:
-        out['result'] = n.result
         sts = list(n.states)
     if len(sts) > 1:
         out['state_rate_hz'] = round((len(sts) - 1) / (sts[-1]['t'] - sts[0]['t']), 2) if sts[-1]['t'] > sts[0]['t'] \

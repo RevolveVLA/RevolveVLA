@@ -68,29 +68,20 @@ JOINT_STATES = """      <plugin filename="gz-sim-joint-state-publisher-system" n
 """
 
 
-def scene_path(scene, repo):
-    p = Path(scene)
-    return p if p.suffix == ".yaml" else Path(repo) / "specs" / "scenes" / scene / "scene.yaml"
-
-
 def make_world(scene, repo, robot=None):
     """(world SDF text, scene, [absolute asset dirs] for GZ_SIM_RESOURCE_PATH, [articulated model entities]).
     robot: (model name, URDF file) to include at robot_start."""
     repo = Path(repo).resolve()
-    path = scene_path(scene, repo)
+    path = specs.scene_file(scene, repo / "specs")
     sc = specs.load(path)
     models, errors = specs.scene_models(sc, repo)
+    errors += specs.check_sim_support(sc)        # nonzero initial joint positions
     if errors:
         raise specs.SpecError("\n".join([f"{path}:", *errors]))
     articulated = []
     out = [HEADER.format(src=escape(str(path.relative_to(repo) if path.is_relative_to(repo) else path)),
                          name=sc.name)]
     for ent, m in sc.models.items():
-        nonzero = {j: q for j, q in m.joints.items() if q != 0.0}
-        if nonzero:
-            # gz-sim has no upstream way to start a joint away from its SDF zero (only position-holding controllers)
-            raise specs.SpecError(f"{path}: models.{ent}.joints {nonzero}: nonzero initial joint positions are not "
-                                  f"supported by the simulator yet")
         x, y, z, yaw = m.pose
         movable = any(t not in ("fixed", None) for t, _, _ in models[ent].joints.values())
         if movable:

@@ -13,8 +13,10 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
      ramped TwistStamped segments (test code only): open_fridge_door (mobile_panda, check_open_door.py) and
      open_drawer (mobile_so101_xl, check_open_drawer.py) pass approach, grasp and open.
   Reset (test_reset.py) and the datagen contract (test_contract.py: a client in its own container, two episodes,
-     the recorded files).
-  Unit tests of the evaluator logic without a sim: test_episode_unit.py.
+     the recorded files). A relaunch into an --out dir a killed run left (test_out_dir.py).
+  A scene instance through the launch, without the `sim` fixture (test_launch_refusals.py).
+Host only, no sim and no `robot` argument (helpers: host_cases.py): the evaluator logic (test_episode_unit.py), the
+episode numbering (test_episode_numbers.py), the `./revolve sim` and `validate` CLI (test_cli.py).
 A launch whose controller manager logs "No clock received" once a second (it never gets /clock; rare, cause not
 pinned) fails at once with that message, before the test runs (no retry).
 A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot

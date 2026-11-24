@@ -17,10 +17,12 @@ Values are SI: m, rad, s, m/s. Entities (the metric parameters that name things)
   <model>::<link>::<collision>  one collision of that link (e.g. a handle)
   <target>                    a task target alias (targets: {handle: fridge::top_door::top_door_handle})
   any, any_except_targets     contacts `to` only: every body except the robot itself and the ground (and the targets)
-Unknown keys are errors everywhere.
+Unknown keys, duplicate keys and non-finite numbers (.nan, .inf) are errors everywhere. The scene name, the scene's
+model names and the robot name are parts of ROS 2 topic names: letters, digits and _, not starting with a digit.
 """
 from __future__ import annotations
 
+import math
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -88,7 +90,7 @@ class SpecError(ValueError):
 
 
 class Strict(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)   # every number finite
 
 
 # ------------------------------------------------------------------ conditions
@@ -120,6 +122,12 @@ class Condition(Strict):
         value = v.pop(ops[0])
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"metric {name}: {ops[0]} needs a number, got {value!r}")
+        try:
+            finite = math.isfinite(value)
+        except OverflowError:        # an int too large for a float
+            finite = False
+        if not finite:
+            raise ValueError(f"metric {name}: {ops[0]} needs a finite number, got {value!r}")
         out = {"metric": name, "op": ops[0], "value": value}
         for k in ("for_s", *cls.EXTRA_KEYS):
             if k in v:
@@ -178,6 +186,7 @@ def _param(metric, key, p, v):
 
 # ------------------------------------------------------------------ entities
 NAME = re.compile(r"^[A-Za-z0-9_.\-]+$")
+TOPIC_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")   # a ROS 2 topic name token (no - or ., no leading digit)
 RESERVED = ("robot", *ANY_NAMES)
 
 
@@ -269,6 +278,15 @@ def _name(v):
     return v
 
 
+def _topic_name(v):
+    """The scene name, a scene model's entity name and the robot name are parts of ROS 2 topic names
+    (/world/<scene>/..., /model/<model>/pose, /model/<robot>/pose)."""
+    if not TOPIC_NAME.match(v):
+        raise ValueError(f"{v!r}: this name is part of ROS 2 topic names: letters, digits and _, not starting "
+                         f"with a digit")
+    return v
+
+
 class SceneModel(Strict):
     model: str                                   # model:// name (the folder in the asset search path)
     pose: list[float] = Field(default=[0.0, 0.0, 0.0, 0.0], min_length=4, max_length=4)   # x, y, z [m], yaw [rad]
@@ -294,11 +312,16 @@ class Scene(Strict):
     models: dict[str, SceneModel] = Field(min_length=1)
     robot_start: RobotStart
 
+    @field_validator("name")
+    @classmethod
+    def _scene_name(cls, v):
+        return _topic_name(v)
+
     @field_validator("models")
     @classmethod
     def _names(cls, v):
         for k in v:
-            _name(k)
+            _topic_name(_name(k))
         return v
 
 
@@ -364,6 +387,14 @@ def scene_models(scene, repo, assets=True):
     return models, errors
 
 
+def check_sim_support(scene):
+    """Errors for what a valid scene may hold but the simulator cannot start yet (`./revolve validate` and the
+    simulator's world generator both refuse it): a nonzero initial joint position (gz-sim has no upstream way to
+    start a joint away from its SDF zero; only position-holding controllers)."""
+    return [f"models.{ent}.joints {nonzero}: nonzero initial joint positions are not supported by the simulator yet"
+            for ent, m in scene.models.items() if (nonzero := {j: q for j, q in m.joints.items() if q != 0.0})]
+
+
 # ------------------------------------------------------------------ robot
 class Robot(Strict):
     name: str
@@ -372,6 +403,11 @@ class Robot(Strict):
     poses: dict[str, list[float]] = Field(min_length=1)   # named arm poses [rad], arm joint order
     frames: dict[str, str] = {}      # alias -> link (robot::<alias>, e.g. tcp, hand, base)
     groups: dict[str, list[str]] = {}   # alias -> links (e.g. fingers)
+
+    @field_validator("name")
+    @classmethod
+    def _robot_name(cls, v):
+        return _topic_name(v)
 
     @model_validator(mode="after")
     def _check(self):
@@ -423,7 +459,7 @@ def check_robot_files(robot, folder):
 class Phase(Strict):
     """Ordered: all `done` conditions true -> the next phase; a `while` condition false, or timeout_s passed in this
     phase -> the task fails in this phase."""
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(populate_by_name=True)
     name: str
     done: list[Condition] = Field(min_length=1)
     while_: list[Condition] = Field(default=[], alias="while")
@@ -490,16 +526,24 @@ def check_task(task, models, sanity, robot=None):
     return errors
 
 
+def arm_errors(arm, robot):
+    """Errors when the arm start (a robot.yaml pose name or joint positions) does not fit this robot."""
+    if isinstance(arm, str) and arm not in robot.poses:
+        return [f"robot_start.arm {arm!r} is not a pose of robot {robot.name} (poses: {', '.join(robot.poses)})"]
+    if isinstance(arm, list) and len(arm) != robot.arm_dof:
+        return [f"robot_start.arm has {len(arm)} joints, robot {robot.name} {robot.arm_dof}"]
+    return []
+
+
+def check_robot_start(scene, robot):
+    """Errors when the scene's robot_start does not fit this robot."""
+    return [f"scene {scene.name}: {e}" for e in arm_errors(scene.robot_start.arm, robot)]
+
+
 def check_robot_refs(task, scene, models, sanity, robot):
     """Errors when the task + scene run with this robot: robot::<alias> entities, the robot_start arm pose."""
     errors = check_task(task, models, sanity, robot)    # the task passed without a robot: only robot errors left
-    arm = scene.robot_start.arm
-    if isinstance(arm, str) and arm not in robot.poses:
-        errors.append(f"scene {scene.name}: robot_start.arm {arm!r} is not a pose of robot {robot.name} "
-                      f"(poses: {', '.join(robot.poses)})")
-    if isinstance(arm, list) and len(arm) != robot.arm_dof:
-        errors.append(f"scene {scene.name}: robot_start.arm has {len(arm)} joints, robot {robot.name} {robot.arm_dof}")
-    return errors
+    return errors + check_robot_start(scene, robot)
 
 
 # ------------------------------------------------------------------ loader
@@ -518,9 +562,34 @@ class Resolved:
     robot: Robot | None = None
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """yaml.safe_load, but a duplicate key is an error (safe_load keeps the last value without a word).
+    Merge keys (<<: *anchor) stay legal, and an explicit key may override a merged one."""
+
+    def construct_mapping(self, node, deep=False):
+        self._check_unique(node)
+        return super().construct_mapping(node, deep)
+
+    def _check_unique(self, node):
+        seen = set()
+        for k, v in node.value:
+            if k.tag == "tag:yaml.org,2002:merge":       # its mapping(s): their own keys must be unique too
+                for m in v.value if isinstance(v, yaml.SequenceNode) else [v]:
+                    if isinstance(m, yaml.MappingNode):
+                        self._check_unique(m)
+                continue
+            key = self.construct_object(k, deep=True)
+            try:
+                if (type(key), key) in seen:              # 1 and true are different YAML keys
+                    raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", k.start_mark)
+                seen.add((type(key), key))
+            except TypeError:        # an unhashable key: SafeLoader's own error below
+                pass
+
+
 def read_yaml(path):
     try:
-        data = yaml.safe_load(Path(path).read_text())
+        data = yaml.load(Path(path).read_text(), Loader=_UniqueKeyLoader)
     except (OSError, yaml.YAMLError) as e:
         raise SpecError(f"{path}: {e}") from None
     if not isinstance(data, dict):
@@ -529,12 +598,13 @@ def read_yaml(path):
 
 
 def find_root(path):
-    """The specs/ dir that holds path."""
+    """The specs/ dir that holds path: the nearest parent named specs that holds tasks/sanity.yaml (a folder named
+    specs without it is not a specs root, e.g. one in a run directory)."""
     p = Path(path).resolve()
     for d in [p, *p.parents]:
-        if d.is_dir() and d.name == "specs":
+        if d.name == "specs" and (d / "tasks" / SANITY_FILE).is_file():
             return d
-    raise SpecError(f"{path}: not under a specs/ directory")
+    raise SpecError(f"{path}: not under a specs/ directory (one that holds tasks/{SANITY_FILE})")
 
 
 def _fail(path, what, lines):
@@ -577,7 +647,8 @@ def load_sanity(root):
     return out
 
 
-def _load(path, root, kind, assets, instance=False):
+def _load(path, root, kind, assets, instance=False, scene=None):
+    """scene (a task): run it on this Scene (e.g. a scene instance) instead of its own scene file."""
     spec = parse(KINDS[kind], path)
     if not instance and spec.name != Path(path).parent.name:
         raise SpecError(f"{path}: name {spec.name!r} != its folder {Path(path).parent.name!r}")
@@ -586,11 +657,18 @@ def _load(path, root, kind, assets, instance=False):
         if errs:
             _fail(path, "robot", errs)
         return spec, None
-    scene_file = path if kind == "scenes" else spec_path(root, "scenes", spec.scene)
-    scene = spec if kind == "scenes" else parse(Scene, scene_file)
+    if kind == "scenes":
+        scene, where = spec, path
+    elif scene is not None:
+        if scene.name != spec.scene:
+            raise SpecError(f"{path}: task {spec.name} is on scene {spec.scene}, not {scene.name}")
+        where = f"scene {scene.name}"           # a given Scene has no file here
+    else:
+        where = spec_path(root, "scenes", spec.scene)
+        scene = parse(Scene, where)
     models, errs = scene_models(scene, root.parent, assets)
     if errs:
-        _fail(scene_file, "scene", errs)
+        _fail(where, "scene", errs)
     if kind == "scenes":
         return spec, None
     sanity = merge_sanity(load_sanity(root), spec.sanity)
@@ -604,15 +682,16 @@ def load(path, assets=True, root=None):
     """Load and validate one spec file -> Scene, Robot, Task, or {key: SanityCheck} for tasks/sanity.yaml.
     A scene's model:// names and joints, and a task's entities, are checked against the model SDFs
     (assets=False: names only, no asset files read). Raises SpecError with every problem found.
-    A scene.yaml outside any specs/ directory is a scene instance (e.g. one a randomizer wrote for a seed): a scene
-    like any other, named like the scene it was made from (not after its folder), its `assets` relative to the repo
-    of `root` (a specs/ directory; default the repo's own, REPO_SPECS)."""
+    A file named scene.yaml outside any specs/ directory (find_root) is a scene instance (e.g. one a randomizer wrote
+    for a seed): a scene like any other, named like the scene it was made from (not after its folder), its `assets`
+    relative to the repo of `root` (a specs/ directory; default the repo's own, REPO_SPECS)."""
     path = Path(path)
     try:
         root = find_root(path)
     except SpecError:
         if path.name != FILES["scenes"]:
-            raise
+            raise SpecError(f"{path}: not under a specs/ directory (one that holds tasks/{SANITY_FILE}), and not a "
+                            f"scene instance (a scene instance file is named {FILES['scenes']})") from None
         return _load(path, Path(root or REPO_SPECS), "scenes", assets, instance=True)[0]
     if path.resolve() == (root / "tasks" / SANITY_FILE).resolve():
         return load_sanity(root)
@@ -622,17 +701,48 @@ def load(path, assets=True, root=None):
     return _load(path, root, rel[0], assets)[0]
 
 
-def resolve(root, task, robot=None, assets=True):
+def resolve(root, task, robot=None, assets=True, scene=None):
     """Task `task` (name) with its scene, merged sanity checks and, if `robot` (name) is given, the robot, with
-    every robot::<alias> and the robot start checked against it -> Resolved."""
+    every robot::<alias> and the robot start checked against it -> Resolved. scene: a loaded Scene to run the task
+    on instead of its own scene file (a scene instance: it must carry the task's scene name)."""
     root = Path(root)
-    _, r = _load(spec_path(root, "tasks", task), root, "tasks", assets)
+    _, r = _load(spec_path(root, "tasks", task), root, "tasks", assets, scene=scene)
     if robot is not None:
         r.robot = _load(spec_path(root, "robots", robot), root, "robots", assets)[0]
         errs = check_robot_refs(r.task, r.scene, r.models, r.sanity, r.robot)
         if errs:
             _fail(spec_path(root, "tasks", task), f"task with robot {robot}", errs)
     return r
+
+
+def scene_file(scene, root=REPO_SPECS):
+    """A scene name -> root/scenes/<name>/scene.yaml; a path ending in .yaml or .yml -> that file (load checks it)."""
+    p = Path(scene)
+    return p if p.suffix in (".yaml", ".yml") else Path(root) / "scenes" / str(scene) / FILES["scenes"]
+
+
+def check_run(scene, robot=None, task=None, assets=True, root=REPO_SPECS):
+    """What a simulator run of `scene` (a name or a file, scene_file) with `robot` and `task` (names) would refuse
+    -> error lines naming the scene file, [] if none: the scene spec, what the simulator supports, robot_start against
+    the robot, the task on this scene with the robot."""
+    root = Path(root)
+    path = scene_file(scene, root)
+    try:
+        sc = load(path, assets=assets, root=root)
+    except SpecError as e:
+        return str(e).splitlines()      # names the file
+    if not isinstance(sc, Scene):
+        return [f"{path}: not a scene file"]
+    try:
+        errs = check_sim_support(sc)
+        if robot is not None:
+            errs += check_robot_start(sc, load(spec_path(root, "robots", robot), assets=assets))
+        if task is not None and not errs:
+            resolve(root, task, robot=robot, assets=assets, scene=sc)
+    except SpecError as e:
+        errs = str(e).splitlines()
+    what = f"{path}: scene" + (f" with robot {robot}" if robot else "") + (f" and task {task}" if task else "")
+    return [f"{what} invalid", *(f"  {x}" for x in errs)] if errs else []
 
 
 def all_specs(root):

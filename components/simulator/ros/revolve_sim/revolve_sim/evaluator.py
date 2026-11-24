@@ -5,7 +5,8 @@
   scene joints     gz JointStatePublisher (/world/<w>/model/<m>/joint_state)
   contacts         gz Contact sensors on the robot links (/world/<w>/model/<robot>/link/<l>/sensor/contact/contact)
   commands         the controllers' command topics (<omni>/cmd_vel, <jtc>/joint_trajectory): non-finite messages
-  gz log           the gz server's console log (~/.gz/sim/log/<time>/server_console.log): [error] / [critical] lines
+  gz log           the gz server's console log (~/.gz/sim/log/<time>/server_console.log in the container): [error] /
+                   [critical] lines
 An episode counts the non-finite commands and gz log lines since its start (bring-up errors are not its own).
 Poses and contacts are taken at one common stamp per tick, the oldest of the newest gz pose and tf data (tf
 interpolated, gz poses from a short history, contacts within CONTACT_WINDOW_S before it): the inputs reach this node
@@ -17,10 +18,12 @@ Each episode is recorded into its own bag, <run_dir>/episode_<n>_bag/ (the rosba
 rosbag2_recorder: its record service with that uri at the start, stop at the end; a fresh recording subscribes anew,
 so it gets the transient-local /tf_static and /robot_description). At the end the result (JSON) is published on
 ~/result (std_msgs/String, transient local), the bag is closed (metadata.yaml written), then the result is written to
-<run_dir>/episode_<n>.json: once that file exists, the episode's files are complete. Episode numbers continue after
-the highest episode_<n>.json already in run_dir (a relaunch into the same run_dir overwrites nothing). ~/state
-(std_msgs/String JSON, 10 Hz): the sim time, the active phase and every condition's current value (also between
-episodes).
+<run_dir>/episode_<n>.json: once that file exists, the episode's files are complete (with the gz log copied first to
+<run_dir>/episode_<n>_gz.log: the log itself is in the container). Episode numbers continue after the highest n of
+any episode_<n> file already in run_dir, a bag without a result too (a relaunch into the same run_dir after a killed
+episode overwrites nothing; an existing bag dir is never recorded into). ~/state (std_msgs/String JSON, 10 Hz): the
+sim time, the active phase and every condition's current value (also between episodes; null when not computable,
+e.g. a slip condition outside its phase).
 A world reset (/simulator/reset, revolve_sim/reset.py: sim time jumps back) re-arms it: a running episode ends with
 reason `reset`, every input is dropped for SETTLE_S, then it is ready again once its inputs are live (~/start).
 ~/state `resets` counts the resets it has seen.
@@ -32,6 +35,7 @@ import json
 import math
 import os
 import re
+import shutil
 import threading
 import time
 from collections import deque
@@ -55,7 +59,7 @@ from tf2_msgs.msg import TFMessage
 from tf2_ros import Buffer, TransformListener
 from trajectory_msgs.msg import JointTrajectory
 
-from revolve_sim.episode import Episode
+from revolve_sim.episode import Episode, next_episode
 from revolve_sim.metrics import GROUND, Metrics, Snapshot, collision_geometry, pose_matrix
 from revolve_sim.robot import command_topics, describe, robot_dir
 from revolve_sim.world import make_world
@@ -104,7 +108,7 @@ class Evaluator(Node):
             ('run_dir', ''), ('autostart', True), ('rate_hz', 100.0), ('gz_log', ''), ('bag', True))}
         repo = Path(p['repo']).resolve()
         _, scene, _, articulated = make_world(p['scene'], repo)
-        self.res = specs.resolve(repo / 'specs', p['task'], robot=p['robot'])
+        self.res = specs.resolve(repo / 'specs', p['task'], robot=p['robot'], scene=scene)   # on this scene (instance)
         robot, urdf, _, contact_links = describe(repo, p['robot'], arm=scene.robot_start.arm)
         self.robot, self.world = robot.name, scene.name
         self.root, links = urdf_links(urdf)
@@ -124,8 +128,8 @@ class Evaluator(Node):
         self.contacts = {}                  # topic -> (stamp, [(c1, c2, depth)])
         self.bad_commands, self.gz_lines, self.gz_offset = 0, [], 0
         self.counted_from = (0, 0)          # (commands, gz lines) before the episode: it counts only its own
-        done = [int(f.stem.split('_')[1]) for f in self.run_dir.glob('episode_*.json') if f.stem.split('_')[1].isdigit()]
-        self.episode, self.n_episodes, self.ticks = None, max(done, default=-1) + 1, 0
+        self.gz_start = 0                   # the gz log's byte offset at the episode's start: its copy starts there
+        self.episode, self.n_episodes, self.ticks = None, next_episode(self.run_dir), 0
         self.started, self.bag_path = False, None
         self.values, self.ready = {}, False
         self.tf_links = []                  # the robot links tf has (not the passive rollers: no joint states)
@@ -327,18 +331,39 @@ class Evaluator(Node):
         self.t_start, self.ticks, self.tick_wall = t, 0, []
         with self.lock:
             self.counted_from = (self.bad_commands, len(self.gz_lines))
+        self.gz_start = self.gz_offset      # read_gz_log runs in this callback group: not meanwhile
         self.started = True
         self.bag_path = None
+        self.n_episodes = max(self.n_episodes, next_episode(self.run_dir))   # files another writer left meanwhile
         if self.bag:
             if not self.bag_idle:    # the launch's recording (paused, a scratch bag): stopped, unpaused for good
                 self.bag_idle = self.bag_call('stop') is not None and self.bag_call('resume') is not None
             uri = self.run_dir / f'episode_{self.n_episodes}_bag'
-            r = self.bag_call('record', uri=str(uri))
+            if uri.exists():    # rosbag2 would record into "<uri>(1)" and still answer success: never ask it to
+                r, why = None, f'{uri} exists'
+            else:
+                r = self.bag_call('record', uri=str(uri))
+                why = r.error_string if r else 'no reply'
             if r is not None and r.return_code == 0:
                 self.bag_path = str(uri)
             else:
-                self.get_logger().error(f'rosbag2 recorder: episode not recorded ({r.error_string if r else "no reply"})')
+                self.get_logger().error(f'rosbag2 recorder: episode not recorded ({why})')
         self.get_logger().info(f'episode {self.n_episodes} started at t={t:.3f}')
+
+    def gz_log_copy(self, n):
+        """The episode's part of the gz server's console log (from its start to now) into the run dir,
+        <run_dir>/episode_<n>_gz.log (the log itself is in the container) -> its path, None without a log."""
+        if not self.gz_log_path:
+            return None
+        dst = self.run_dir / f'episode_{n}_gz.log'
+        try:
+            with open(self.gz_log_path, 'rb') as src, open(dst, 'wb') as out:
+                src.seek(self.gz_start)
+                shutil.copyfileobj(src, out)
+        except OSError as e:
+            self.get_logger().warning(f'gz log not copied: {e}')
+            return None
+        return str(dst)
 
     def finish(self, t, result):
         n = self.n_episodes
@@ -351,7 +376,7 @@ class Evaluator(Node):
                # the contacts at the end (not with the ground), for a contact / penetration failure
                'contacts': sorted({(a, b, round(d, 5)) for a, b, d in self.snap.contacts
                                    if not any(x.startswith(GROUND + '::') for x in (a, b))}),
-               'gz_log': self.gz_log_path or None,
+               'gz_log': self.gz_log_copy(n),
                'result_file': str(self.run_dir / f'episode_{n}.json'),
                'bag': self.bag_path}
         self.result_pub.publish(String(data=json.dumps(out)))
@@ -397,9 +422,11 @@ class Evaluator(Node):
         if t > 0.0:
             self.check_reset(t)
         ep = self.episode
+        # every condition, null when not computable (e.g. a slip outside its phase, or before the inputs are live)
+        values = {k: self.values.get(k) for k, _ in self.conditions}
         state = {'t': round(t, 4), 'ready': self.ready, 'resets': self.resets,
                  'episode': self.n_episodes if ep is not None else None, 'phase': ep.phase if ep else None,
-                 'values': {k: (round(v, 6) if math.isfinite(v) else None) for k, v in self.values.items()}}
+                 'values': {k: (round(v, 6) if v is not None and math.isfinite(v) else None) for k, v in values.items()}}
         self.state_pub.publish(String(data=json.dumps(state)))
 
 

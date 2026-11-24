@@ -13,9 +13,13 @@ def robot_dir(repo, name):
 
 def describe(repo, name, arm=None):
     """(Robot spec, URDF text, [camera names], [links with a contact sensor]). arm: a pose name or joint list for
-    the ros2_control initial positions (default: the description's own default)."""
+    the ros2_control initial positions (default: the description's own default); specs.SpecError if it does not fit
+    the robot (xacro would index the list by joint: extra values would become the gripper's start; `revolve sim`
+    refuses such a scene before docker, specs.check_run)."""
     d = robot_dir(repo, name)
     robot = specs.load(d / 'robot.yaml')
+    if arm is not None and (errs := specs.arm_errors(arm, robot)):
+        raise specs.SpecError('\n'.join(errs))
     import xacro
     mappings = {'controllers': str(d / robot.controllers)}
     if arm is not None:

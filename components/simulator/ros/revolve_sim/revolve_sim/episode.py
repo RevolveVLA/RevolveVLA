@@ -11,12 +11,24 @@ A value that is None or NaN (not computable yet) is never true and never a viola
 sanity condition is the time the violation has to last.
 """
 import math
+import re
+from pathlib import Path
 
 from revolve_common import specs
 
 from revolve_sim.metrics import compare
 
 EPS = 1e-9
+# the files of episode n in a run dir: its result, its gz log copy, its bag (also a copy rosbag2 renamed: _bag(1))
+EPISODE_FILE = re.compile(r'episode_(\d+)(\.json|_gz\.log|_bag.*)')
+
+
+def next_episode(run_dir):
+    """The number of the next episode in run_dir: one past the highest n of any episode_<n> file (0 if none). A bag
+    without a result (a run killed mid-episode) counts too, so a relaunch into the same dir overwrites nothing."""
+    p = Path(run_dir)
+    found = [int(m.group(1)) for f in (p.iterdir() if p.is_dir() else []) if (m := EPISODE_FILE.fullmatch(f.name))]
+    return max(found, default=-1) + 1
 
 
 def describe(c):

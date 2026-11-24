@@ -128,6 +128,23 @@ def test_record_interventions_puts_the_expert_span_in_the_manifest(tmp_path, cap
         assert e["recovery"]["segment"] == [t0, 3.0]
 
 
+def test_a_handback_run_has_several_spans_per_episode_in_sidecar_manifest_and_summary(tmp_path, capsys):
+    SCRIPTS[200] = Script(passes_alone=True, end_s=8.0)                    # the policy finishes it after the hand-back
+    live = {"expert": {"plugin": "fake_takeover", "drives": True}, "handback": {"when": "after_s", "after_s": 0.5},
+            "max_interventions": 1, "record": "interventions"}
+    code, out, err = recover(tmp_path, write_spec(tmp_path, live=live, keep="all"), "live", capsys=capsys)
+    assert code == 0, err
+    summary = json.loads((out_of(tmp_path) / "live" / "summary.json").read_text())
+    assert (summary["takeovers"], summary["interventions"], summary["handbacks"], summary["policy_success_after_handback"]) == (3, 3, 3, 1)
+    assert '"handbacks": 3' in out
+    for e in manifest(tmp_path)["episodes"]:
+        r = e["recovery"]
+        side = flags.read(out_of(tmp_path) / e["result"])
+        assert r["segments"] == side["kept"] == [side["segments"][1][:2]] and r["segment"] == r["segments"][0]
+        assert r["interventions"] == side["interventions"] and r["interventions"][0]["handback_reason"].startswith("after_s")
+    assert sum(flags.tally(out_of(tmp_path)).values()) == 3
+
+
 def test_keep_successes_leaves_out_a_failed_expert_and_keep_all_keeps_it(tmp_path, capsys):
     SCRIPTS[201] = Script(expert_works=False)
     recover(tmp_path, write_spec(tmp_path), "live", capsys=capsys)

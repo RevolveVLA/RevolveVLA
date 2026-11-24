@@ -79,6 +79,14 @@ def test_dagger_sidecar_with_several_expert_spans_makes_an_item_each(root):
     assert sorted(i.segment for i in items if i.phase == "open") == [(5.0, 9.0), (12.0, 40.0)]
 
 
+def test_the_manifests_segments_list_every_expert_span_and_wins_over_segment_and_sidecar(tmp_path):
+    from recipe.plugins.sources.recovery import expert_spans
+    (tmp_path / "episode_0.interventions.json").write_text(json.dumps({"segments": [[0, 4, "policy"], [4, 9, "expert"]]}))
+    entry = {"recovery": {"segments": [[2, 4], [6, 9.5]], "segment": [2, 4]}}
+    assert expert_spans(entry, str(tmp_path / "episode_0.json")) == [(2.0, 4.0), (6.0, 9.5)]
+    assert expert_spans({"recovery": {"segment": [2, 4]}}, str(tmp_path / "episode_0.json")) == [(2.0, 4.0)]
+
+
 def test_each_episode_of_a_shared_sim_folder_has_its_own_sidecar(tmp_path):
     from recipe.plugins.sources.recovery import expert_spans
     (tmp_path / "episode_0.interventions.json").write_text(json.dumps({"segments": [[0, 4, "policy"], [4, 9, "expert"]]}))

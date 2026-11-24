@@ -18,6 +18,10 @@ class EpisodeOver(Exception):
     """The evaluator ended the episode (its result is out): nothing left to command."""
 
 
+class Stopped(Exception):
+    """The caller asked the expert to stop (a live recorder handing control back): halt cleanly where it is."""
+
+
 class RobotIO:
     def __init__(self, client, robot: str, world: str, case: dict, joint_topic: tuple):
         """`case`: {arm_controller, arm_joints, hand_controller, hand_joint}; `joint_topic` = (model, joint) of the door /
@@ -33,6 +37,7 @@ class RobotIO:
         self._lock = threading.Lock()
         self._pose, self._joints, self.articulation = None, {}, None
         self.arm_trace, self._trace_until = [], 0.0      # (sim time, arm joints) while `record_arm` runs
+        self.stop = lambda: False                  # polled with the episode's result: True -> Stopped
         self._seen = set(client.results)           # results already there: the episode being driven is a new one
         model, joint = joint_topic
         self.node.create_subscription(TFMessage, f"/model/{robot}/pose", self._on_pose, 50)
@@ -72,9 +77,11 @@ class RobotIO:
             self.arm_trace, self._trace_until = [], self.client.now() + window_s
 
     def check(self) -> None:
-        """EpisodeOver once the evaluator published the result of the episode being driven."""
+        """EpisodeOver once the evaluator published the result of the episode being driven; Stopped when `stop()` says so."""
         if set(self.client.results) - self._seen:
             raise EpisodeOver()
+        if self.stop():
+            raise Stopped()
 
     def phase(self):
         s = self.client.state()
@@ -133,7 +140,7 @@ class RobotIO:
             for _ in range(5):
                 self.twist((0.0, 0.0, 0.0))
                 self.wait(1.0 / motion.RATE_HZ)
-        except EpisodeOver:
+        except (EpisodeOver, Stopped):
             self.twist((0.0, 0.0, 0.0))
             raise
 

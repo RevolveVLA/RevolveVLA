@@ -88,10 +88,11 @@ class StateStub:
 
 
 class FakeExpert:
-    """expert fake_takeover: finishes the episode at once (the result is out; passed) unless its `fail` param says it cannot."""
+    """expert fake_takeover: finishes the episode at once (the result is out; passed) unless its `fail` param says it cannot.
+    With `drives` it drives until `ctx.stop()` says to hand back (then it returns, the episode runs on) or the result is out."""
 
     def __init__(self, spec, params):
-        self.fail, self.raises = params.get("fail", False), params.get("raises", False)
+        self.fail, self.raises, self.drives = params.get("fail", False), params.get("raises", False), params.get("drives", False)
 
     def prepare(self, ctx):
         LOG.append(("prepare", ctx.task))
@@ -100,6 +101,13 @@ class FakeExpert:
         LOG.append(("takeover", why))
         if self.raises:
             raise RuntimeError("planner died")
+        if self.drives:
+            while not ctx.stop() and not ctx.client.has_result(0):
+                ctx.client.now()
+            if ctx.stop():
+                LOG.append(("stopped", round(ctx.client.t - ctx.client.t0, 1)))
+                return {"expert": "fake_v1", "notes": "stopped", "max_delta_action": 0.02}
+            return {"expert": "fake_v1", "notes": "ok", "max_delta_action": 0.02}
         ctx.client.finished = not self.fail and ctx.client.script.expert_works
         return {"expert": "fake_v1", "notes": "ok", "max_delta_action": 0.02}
 

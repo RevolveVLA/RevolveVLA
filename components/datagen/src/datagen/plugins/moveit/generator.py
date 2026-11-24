@@ -3,7 +3,8 @@ ROS 2 client of one sim, and does the task of the scene instance through the con
 the planner once per sim launch (off the episode's clock); `drive` runs one episode.
 
 Params (generator block of the spec): `repo` (the repo as the container sees it, default the one `revolve_common` is in),
-`resume` (default false: the expert takes the task over from the robot's current state instead of from the scene's start)."""
+`resume` (default false: the expert takes the task over from the robot's current state instead of from the scene's start; then
+`drive(..., stop=)` may pass a `stop()` callable that makes it halt cleanly where it is)."""
 from __future__ import annotations
 
 import sys
@@ -38,11 +39,11 @@ class MoveItGenerator(Generator):
         from .setup import build
         self._expert = EXPERTS[task](build(client, instance, task, robot, self._repo()))
 
-    def drive(self, client, instance, task, robot):
+    def drive(self, client, instance, task, robot, stop=None):
         if self._expert is None:
             self.prepare(client, instance, task, robot)
         try:
-            notes = self._expert.resume() if self.resume else self._expert.run()
+            notes = self._expert.resume(**({"stop": stop} if stop else {})) if self.resume else self._expert.run()
         except Exception:                       # a failed step ends the try (the evaluator times it out), not the scene
             traceback.print_exc(file=sys.stderr)
             notes = f"error: {traceback.format_exc(limit=-1).strip().splitlines()[-1]}"

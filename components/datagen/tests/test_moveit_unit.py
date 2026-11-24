@@ -11,7 +11,7 @@ from datagen.core import registry
 from datagen.core.errors import DatagenError
 from datagen.plugins.moveit import experts, geometry as G, motion, resume as R, setup
 from datagen.plugins.moveit.generator import EXPERT, MoveItGenerator
-from datagen.plugins.moveit.robot_io import EpisodeOver
+from datagen.plugins.moveit.robot_io import EpisodeOver, Stopped
 
 REPO = Path(__file__).resolve().parents[3]
 BASE = REPO / "specs" / "scenes" / "kitchen_partnet" / "scene.yaml"
@@ -159,13 +159,15 @@ class FakeRobot:
     def __init__(self, base, bias, arm_error=0.0):
         self.client, self.articulation, self.pose, self.bias, self.calls = FakeClient(), None, base, bias, []
         self.tcp, self.arm_error, self.over_after = np.array([0.0, 0.0, 1.0, 1.0]), arm_error, None
-        self.hand, self.arm_trace = 0.04, []
+        self.hand, self.arm_trace, self.stop = 0.04, [], lambda: False
 
     # RobotIO
     def begin_episode(self): ...
     def check(self):
         if self.over_after is not None and len(self.calls) >= self.over_after:
             raise EpisodeOver()
+        if self.stop():
+            raise Stopped()
     def phase(self): return "approach"
     def wait(self, s): self.check()
     def wait_for(self, pred, wall_s): return True
@@ -412,6 +414,42 @@ def test_run_is_the_scenes_start_and_does_not_resume():
     S, f = fake_robot("open_fridge_door", "mobile_panda")
     notes = experts.OpenFridgeDoor(S).run()
     assert '"resume"' not in notes and f.calls[0][0] == "drive_to"           # no hold, no entry choice
+
+
+@needs_assets
+def test_a_stop_halts_the_resume_cleanly_with_the_pose_held_and_the_hand_kept():
+    S, f = fake_robot("open_fridge_door", "mobile_panda")
+    f.hand = 0.0                                                          # closed on the bar
+    e = experts.OpenFridgeDoor(S)
+    notes = e.resume(R.Situation(0.9, 0.0, 0.0), stop=lambda: len(plans(f)) >= 1)       # after the first plan
+    assert '"what": "stopped"' in notes and '"what": "first_second"' in notes and len(plans(f)) == 1
+    assert f.calls[-2:] == [("arm", experts.SETTLE_S), ("hand", S.case["hand_squeeze"])]       # measured pose held, squeeze kept
+
+
+@needs_assets
+def test_a_stop_is_forgotten_after_the_resume_and_a_second_resume_starts_clean():
+    S, f = fake_robot("open_fridge_door", "mobile_panda")
+    e = experts.OpenFridgeDoor(S)
+    e.resume(R.Situation(0.10, 0.04, 0.0), stop=lambda: len(plans(f)) >= 1)
+    assert e.io.stop() is False
+    f.calls.clear()
+    notes = e.resume(R.Situation(0.9, 0.04, 0.0))
+    assert '"stopped"' not in notes and plans(f)[0] == "ompl_rrtc" and e.skip_link is None and f.calls[0] == ("arm", experts.SETTLE_S)
+
+
+def test_the_generator_passes_a_stop_to_the_resume_only_when_given(monkeypatch):
+    seen = []
+
+    class Expert:
+        def __init__(self, s): ...
+        def resume(self, stop=None): seen.append(stop); return "resumed"
+
+    monkeypatch.setitem(experts.EXPERTS, "open_drawer", Expert)
+    monkeypatch.setattr(setup, "build", lambda client, instance, task, robot, repo: None)
+    g = MoveItGenerator(None, {"resume": True})
+    g.drive(None, "i", "open_drawer", "r")
+    g.drive(None, "i", "open_drawer", "r", stop=len)
+    assert seen == [None, len]
 
 
 def test_the_generator_resumes_only_when_asked(monkeypatch):

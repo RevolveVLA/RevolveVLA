@@ -7,7 +7,9 @@ a `recovery` block per entry:
 `result` / `bag` are the sim's files (under `<out>/sims/<slot>/`, relative to `out`; `from_rollout.scene` / `bag` relative to the repo); `reset`: `{mode: warm, ok: true, ...the
 reset report}`, `{mode: relaunch}` (the sim was launched at the restart) or `{mode: relaunch, fallback: <the warm report that
 missed>}`; `segment` is for recorders that keep only a span of the episode (a live episode's `kind` is "dagger": its `phase` is
-where the takeover happened, `restart_from` "takeover", `t_restart` its time, plus `policy`, `expert_failure`, `max_delta_action`). `keep: successes` leaves out the tries the evaluator
+where the (first) takeover happened, `restart_from` "takeover", `t_restart` its time, plus `policy`, `expert_failure`, `max_delta_action`;
+with a hand-back also `segments` [[t0, t1], ...] (every expert span, when only those are kept; `segment` is then set only when there is one) and
+`interventions`, the sidecar's list). `keep: successes` leaves out the tries the evaluator
 failed. Derived from the job logs, never read back."""
 from __future__ import annotations
 

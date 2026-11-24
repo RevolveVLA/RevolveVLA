@@ -60,6 +60,7 @@ class LiveContext:
     out: Path                   # where the episode's sidecar files go (the sim's out: next to the episode's result file)
     gate: Gate = field(default_factory=Gate)                # the policy's stop switch
     closed: frozenset[str] = frozenset()                    # phases where no takeover is wanted (see LiveRecorder.closed)
+    stop: Gate = field(default_factory=Gate)                # the expert's: True = halt where you are (a hand-back; the default never says it)
 
 
 class LiveRecorder(Protocol):
@@ -76,7 +77,9 @@ class LiveRecorder(Protocol):
     def driver(self, policy_drive: Drive, ctx: LiveContext) -> Drive:
         """The drive of the episode: `policy_drive` supervised by this recorder (it may hand over to an expert). Called
         before the episode starts, so it may start what is slow; it sets `ctx.gate.check`, polled before every action of the
-        policy, and takes over (the policy's drive has returned by then) when that said stop."""
+        policy, and takes over (the policy's drive has returned by then) when that said stop. With a hand-back it calls
+        `policy_drive` again afterwards, so a policy's drive must be re-enterable: each call starts from the current observation
+        (a fresh chunk, no stale queue). It sets `ctx.stop.check` to tell the expert when to hand back."""
 
     def finish(self, episode: Mapping[str, Any]) -> Mapping[str, Any]:
         """The flags of the finished episode (`episode`: its episode.json), JSON-able: they go into the sidecar file."""
@@ -89,5 +92,6 @@ class Expert(Protocol):
         """Before the episode starts: start what is slow (a planner), so it does not run on the episode's clock."""
 
     def takeover(self, ctx: LiveContext, why: str) -> Mapping[str, Any]:
-        """Drive until the episode's result is out -> {"expert": a name that identifies the expert version, "notes": ..., "max_delta_action": the largest
+        """Drive until the episode's result is out, or until `ctx.stop()` says True (halt cleanly: base stopped, pose held; the
+        policy continues from there) -> {"expert": a name that identifies the expert version, "notes": ..., "max_delta_action": the largest
         action step of its first second (rad) when it measures it}."""

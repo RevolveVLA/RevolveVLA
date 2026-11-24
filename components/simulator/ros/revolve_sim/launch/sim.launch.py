@@ -107,11 +107,15 @@ def setup(context):
             topics = fill(rec['topics'] + (rec['images'] if record == 'images' else []), scene.name, robot.name,
                           lists)
             (tmp / 'record_qos.yaml').write_text(yaml.safe_dump(rec['qos_overrides']))
+            # the prompt also in each bag's metadata, under the key Rosetta's porter reads as the task of the frames
+            # before the first /task/prompt message
+            prompt = specs.load(specs.spec_path(repo / 'specs', 'tasks', task), assets=False).prompt
             # mcap with zstd chunk compression (the 1 kHz controller / odometry / tf streams shrink ~4.5x)
             actions.append(ExecuteProcess(cmd=['ros2', 'bag', 'record', '--start-paused', '--use-sim-time',
                                                '--disable-keyboard-controls', '-o', str(tmp / 'idle_bag'),
                                                '--storage-preset-profile', 'zstd_fast',
                                                '--qos-profile-overrides-path', str(tmp / 'record_qos.yaml'),
+                                               '--custom-data', f'lerobot.operator_prompt={prompt}',
                                                '--topics', *topics], output='screen'))
     if arg('gui') == 'true':
         actions.append(ExecuteProcess(cmd=['gz', 'sim', '-g', '-v', '2'], output='screen', additional_env={

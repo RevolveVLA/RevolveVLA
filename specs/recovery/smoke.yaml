@@ -1,0 +1,16 @@
+# The smallest recovery run, on fakes (no docker, no GPU, no sim): the fake runner (a sim in this process, real warm/relaunch
+# logic) and the local scanner over the fake bags of the CPU tests. Point `from.eval` at a fake eval run and put the tests'
+# fakes on the plugin paths:
+#   RECOVERY_PLUGIN_PATH=components/recovery/tests DATAGEN_PLUGIN_PATH=components/recovery/tests
+#   ./revolve recover specs/recovery/smoke.yaml --dry-run
+# (fridge.yaml is the real thing.)
+task: open_fridge_door
+robot: mobile_panda
+from: {eval: runs/eval/smoke_fake}
+phases:
+  restart_from: phase_start
+  generator: {plugin: fake_recovery, attempts: 2}
+  quota: {approach: 1, grasp: 1}
+scanner: {plugin: local, reader: "fake_recovery:read_messages"}
+runner: {plugin: fake}
+out: runs/recovery/smoke

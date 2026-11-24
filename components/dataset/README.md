@@ -1,4 +1,7 @@
 # dataset
+> **Being replaced:** the code below predates the new simulator and cannot convert its bags. Dataset v2 (interfaces,
+> contract, inputs, outputs, checks, definition of done): [DATASET-v2.md](DATASET-v2.md).
+
 MCAP bags -> LeRobot v3.0 dataset with Rosetta's `rosetta_port` (ThirdParty/rosetta), and merging datasets
 (previous turn + this turn's episodes) with LeRobot 0.6.1's `aggregate_datasets`. Episode labels ride along
 as meta/episodes columns.

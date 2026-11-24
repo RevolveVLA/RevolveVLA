@@ -23,7 +23,8 @@
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
                                      robot and task under specs/, and tasks/sanity.yaml; or scene instance files,
                                      components/simulator/README.md), against the model SDFs in the scene's asset
-                                     search path;
+                                     search path; a robot with its Rosetta contract (specs/robots/<r>/contract.yaml:
+                                     topics vs the simulator's record.yaml, joints vs its controllers);
                                      --robot: also check the tasks and the scenes' robot_start with robot R;
                                      --no-assets: names and syntax only (no asset files read)
 
@@ -66,6 +67,10 @@ def cmd_validate(a):
         except specs.SpecError as e:
             print(e, file=sys.stderr)
             return 1
+        errs = specs.check_contract(robot, root / "robots" / a.robot)
+        if errs:
+            print("\n".join([f"{root / 'robots' / a.robot / specs.CONTRACT_FILE}: invalid", *errs]), file=sys.stderr)
+            return 1
     rc = 0
     for path in paths:
         path = path.resolve()        # load the absolute path (the caller's cwd may be anywhere); print it repo-relative
@@ -86,7 +91,11 @@ def cmd_validate(a):
                 print(f"OK {p}: scene {r.name}, models {', '.join(r.models)}"
                       + (f"; robot_start fits robot {robot.name}" if robot else ""))
             elif isinstance(r, specs.Robot):
-                print(f"OK {p}: robot {r.name}, poses {', '.join(r.poses)}")
+                # its Rosetta contract (checked above already for --robot)
+                errs = [] if robot and r.name == robot.name else specs.check_contract(r, path.parent)
+                if errs:
+                    raise specs.SpecError("\n".join([f"{p.parent / specs.CONTRACT_FILE}: invalid", *errs]))
+                print(f"OK {p}: robot {r.name}, poses {', '.join(r.poses)}, contract {specs.CONTRACT_FILE}")
             else:
                 print(f"OK {p}: sanity base, checks {', '.join(r)}")
         except specs.SpecError as e:
@@ -280,7 +289,7 @@ def main():
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="*")
     v.add_argument("--robot", help="also check the tasks and the scenes' robot_start with this robot "
-                   "(specs/robots/<robot>)")
+                   "(specs/robots/<robot>, its contract.yaml too)")
     v.add_argument("--no-assets", action="store_true", help="names and syntax only: no asset files read")
     if sys.argv[1:2] == ["assets"]:
         return subprocess.call(["bash", str(REPO / "assets_pipeline" / "make_assets.sh"), *sys.argv[2:]], cwd=REPO)

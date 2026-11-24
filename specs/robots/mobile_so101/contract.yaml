@@ -1,0 +1,60 @@
+# mobile_so101's Rosetta contract (ThirdParty/rosetta, docs/reference/contract.md): how the dataset component turns
+# the simulator's episode bags into LeRobot frames, and how a policy runner feeds and commands the robot. Every topic
+# is one of the simulator's recorded topics (components/simulator/ros/revolve_sim/config/record.yaml); `./revolve
+# validate` checks it against this robot. Format and choices: components/dataset/DATASET-v2.md.
+# Timelines: observations on `header` (the sensor's sim-time stamp); actions on `receive` (the bag's sim-time receive
+# stamp), because a streamed JointTrajectory may carry a zero stamp ("start now"), which the header timeline drops.
+robot_type: mobile_so101
+robot_interface: ros2
+fps: 30
+
+x-image: &image
+  type: sensor_msgs/msg/CompressedImage
+  qos: {reliability: best_effort, history: keep_last, depth: 10}   # matches any publisher
+
+observations:
+  observation.images.wrist:
+    channel: {topic: /wrist_cam/image/compressed, <<: *image}
+    align: {strategy: hold, timeline: header}
+    apply: [resize: [480, 480]]                                     # the native size
+  observation.images.overhead_left:
+    channel: {topic: /overhead_left_cam/image/compressed, <<: *image}
+    align: {strategy: hold, timeline: header}
+    apply: [resize: [480, 480]]
+  observation.images.overhead_right:
+    channel: {topic: /overhead_right_cam/image/compressed, <<: *image}
+    align: {strategy: hold, timeline: header}
+    apply: [resize: [480, 480]]
+  # 9 wide: base twist (wheel odometry, robot frame) [m/s, m/s, rad/s], arm [rad], moving jaw [rad]
+  observation.state:
+    - channel: {topic: /omni_wheel_drive_controller/odom, type: nav_msgs/msg/Odometry}
+      align: {strategy: hold, timeline: header}
+      select: [twist.twist.linear.x, twist.twist.linear.y, twist.twist.angular.z]
+    - channel: {topic: /joint_states, type: sensor_msgs/msg/JointState}
+      align: {strategy: hold, timeline: header}
+      select: [position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+               position.wrist_roll, position.gripper]
+
+actions:
+  # 9 wide, the state's units per dimension: base twist, arm targets, jaw target (single-point trajectories)
+  action:
+    # zeros = stop; the controller also stops after its 0.5 s cmd_vel_timeout
+    - channel: {topic: /omni_wheel_drive_controller/cmd_vel, type: geometry_msgs/msg/TwistStamped, safety: zeros}
+      align: {strategy: hold, timeline: receive}
+      select: [twist.linear.x, twist.linear.y, twist.angular.z]
+    # none: the trajectory controller holds its last target by itself; zeros would drive the arm to the all-zero
+    # pose, and hold sends zeros before the first command (Rosetta's warning)
+    - channel: {topic: /arm_controller/joint_trajectory, type: trajectory_msgs/msg/JointTrajectory,
+                safety: none}
+      align: {strategy: hold, timeline: receive}
+      select: [position.shoulder_pan, position.shoulder_lift, position.elbow_flex, position.wrist_flex,
+               position.wrist_roll]
+    - channel: {topic: /gripper_controller/joint_trajectory, type: trajectory_msgs/msg/JointTrajectory,
+                safety: none}
+      align: {strategy: hold, timeline: receive}
+      select: [position.gripper]
+
+tasks:
+  task:
+    channel: {topic: /task/prompt, type: std_msgs/msg/String,
+              qos: {reliability: reliable, durability: transient_local, history: keep_last, depth: 1}}

@@ -3,6 +3,7 @@
 specs/ layout (every name = its folder name):
   scenes/<s>/scene.yaml     one fixed scene: the models (model:// names in the asset search path) and the robot start
   robots/<r>/robot.yaml     the robot: description (xacro), controllers, named poses, frame and link-group aliases
+  robots/<r>/contract.yaml  the robot's Rosetta contract (dataset / policy I/O; check_contract)
   tasks/<t>/task.yaml       the task on a scene: prompt, targets, ordered phases, budget, sanity overrides
   tasks/sanity.yaml         the sanity checks every task gets (a keyed map of checks, nothing else)
 
@@ -452,6 +453,144 @@ def check_robot_files(robot, folder):
             errors.append(f"frames.{k}: no link {link!r} in the description")
     for k, ls in robot.groups.items():
         errors += [f"groups.{k}: no link {lk!r} in the description" for lk in ls if lk not in links]
+    return errors
+
+
+# ------------------------------------------------------------------ robot contract (Rosetta)
+# specs/robots/<r>/contract.yaml: the robot's Rosetta contract (ThirdParty/rosetta docs/reference/contract.md), hand
+# written; the dataset component and a policy runner load it with Rosetta itself. Checked here without Rosetta: its
+# topics against the simulator's recorded topics, its joints against the robot's controllers, the fixed image keys
+# and frame rate (components/dataset/DATASET-v2.md).
+CONTRACT_FILE = "contract.yaml"
+CONTRACT_FPS = 30
+CONTRACT_IMAGES = ("observation.images.wrist", "observation.images.overhead_left", "observation.images.overhead_right")
+CONTRACT_TASK_TOPIC = "/task/prompt"
+CONTRACT_SECTIONS = ("observations", "actions", "rewards", "signals", "info", "complementary_data")
+RECORD_YAML = Path("components") / "simulator" / "ros" / "revolve_sim" / "config" / "record.yaml"
+JTC = "joint_trajectory_controller/JointTrajectoryController"
+OMNI = "omni_wheel_drive_controller/OmniWheelDriveController"
+JOINT_MSGS = ("sensor_msgs/msg/JointState", "trajectory_msgs/msg/JointTrajectory")
+
+
+def robot_controllers(robot, folder):
+    """{controller: (type, [joints])} of the robot's controllers.yaml (JTC joints; omni base wheel_names)."""
+    data = yaml.safe_load((Path(folder) / robot.controllers).read_text())
+    cm = data["controller_manager"]["ros__parameters"]
+    out = {}
+    for name, v in cm.items():
+        if isinstance(v, dict) and "type" in v:
+            p = (data.get(name) or {}).get("ros__parameters", {})
+            out[name] = (v["type"], list(p.get("joints") or p.get("wheel_names") or []))
+    return out
+
+
+def robot_cameras(robot, folder):
+    """The robot's camera sensor names from its description, or None without xacro (e.g. the host venv)."""
+    try:
+        import xacro
+    except ImportError:
+        return None
+    urdf = xacro.process_file(str(Path(folder) / robot.description)).toxml()
+    return [s.get("name") for g in ET.fromstring(urdf).findall("gazebo") for s in g.findall("sensor")
+            if s.get("type") == "camera"]
+
+
+def recorded_topics(record, robot, controllers, cameras=None):
+    """record.yaml's topics (+ images) as regexes, filled in for this robot: {robot}, {jtc}, {omni}, {camera} (any one
+    name when cameras is None); the scene's templates ({world}, {scene_model}, {model}, {contact_link}) match any."""
+    fill = {"robot": [robot.name], "jtc": [n for n, (t, _) in controllers.items() if t == JTC],
+            "omni": [n for n, (t, _) in controllers.items() if t == OMNI], "camera": cameras}
+    rec = yaml.safe_load(Path(record).read_text())
+    out = []
+    for entry in rec["topics"] + rec.get("images", []):
+        parts = re.split(r"\{(\w+)\}", entry)          # literal, name, literal, ...
+        rx = "".join(re.escape(p) if i % 2 == 0 else
+                     ("(" + "|".join(map(re.escape, fill[p])) + ")" if fill.get(p) is not None else "[^/]+")
+                     for i, p in enumerate(parts))
+        out.append(re.compile(rx))
+    return out
+
+
+def _sources(data):
+    """[(where, source)] of every frame source of a contract (a key holds one source or a list)."""
+    out = []
+    for sec in CONTRACT_SECTIONS:
+        for key, spec in (data.get(sec) or {}).items():
+            srcs = spec if isinstance(spec, list) else [spec]
+            out += [(f"{sec}.{key}" + (f"[{i}]" if isinstance(spec, list) else ""), s) for i, s in enumerate(srcs)]
+    return out
+
+
+def _joints(select):
+    """A JointState / JointTrajectory select -> joint names (`<field>.<joint>`, or a bare joint)."""
+    return [s.split(".", 1)[1] if "." in s else s for s in select or []]
+
+
+def check_contract(robot, folder, record=None, cameras=False):
+    """Errors of the robot's contract.yaml: it exists and parses; robot_type = the robot, robot_interface ros2, fps
+    CONTRACT_FPS; the image keys are exactly CONTRACT_IMAGES; a `tasks` channel on CONTRACT_TASK_TOPIC; every topic is
+    one the simulator records (record: record.yaml, default the repo's of the specs/ dir holding folder); every
+    joint selected from /joint_states or a joint_trajectory topic is a controller joint; each /<jtc>/joint_trajectory selects exactly that
+    controller's joints in order, every JTC has one, and /joint_states selects the same joints in the same order (the
+    state mirrors the action). cameras: the robot's camera names (False: from the description if xacro is importable,
+    None: any name)."""
+    folder = Path(folder)
+    path = folder / CONTRACT_FILE
+    if not path.is_file():
+        return [f"contract: no file {path}"]
+    try:
+        data = {k: v for k, v in read_yaml(path).items() if not str(k).startswith("x-")}
+    except SpecError as e:
+        return [f"contract: {e}"]
+    record = Path(record) if record else find_root(folder).parent / RECORD_YAML
+    controllers = robot_controllers(robot, folder)
+    if cameras is False:
+        cameras = robot_cameras(robot, folder)
+    errors = []
+    for k, want in (("robot_type", robot.name), ("robot_interface", "ros2"), ("fps", CONTRACT_FPS)):
+        if data.get(k) != want:
+            errors.append(f"contract: {k} {data.get(k)!r}, want {want!r}")
+    try:
+        images = sorted(k for k in data.get("observations") or {} if str(k).startswith("observation.images."))
+        if images != sorted(CONTRACT_IMAGES):
+            errors.append(f"contract: image keys {images}, want exactly {sorted(CONTRACT_IMAGES)}")
+        sources = _sources(data)
+        channels = [(w, s["channel"]) for w, s in sources] + \
+            [(f"tasks.{k}", t["channel"]) for k, t in (data.get("tasks") or {}).items()] + \
+            [(f"adjunct[{i}]", a["channel"]) for i, a in enumerate(data.get("adjunct") or [])]
+        if not any(ch["topic"] == CONTRACT_TASK_TOPIC for w, ch in channels if w.startswith("tasks.")):
+            errors.append(f"contract: no tasks channel on {CONTRACT_TASK_TOPIC}")
+        topics = recorded_topics(record, robot, controllers, cameras)
+        errors += [f"contract: {w}: topic {ch['topic']} is not recorded by the simulator ({record.name})"
+                   for w, ch in channels if not any(rx.fullmatch(ch["topic"]) for rx in topics)]
+        robot_joints = {j for _, js in controllers.values() for j in js}
+        state, action, acted = [], [], set()
+        for w, s in sources:
+            ch = s["channel"]
+            if ch["type"] not in JOINT_MSGS or not (ch["topic"] == "/joint_states" or
+                                                    ch["topic"].endswith("/joint_trajectory")):
+                continue                            # e.g. a scene's joint states (record-only)
+            joints = _joints(s.get("select"))
+            errors += [f"contract: {w}: {j!r} is not a joint of robot {robot.name}'s controllers"
+                       for j in joints if j not in robot_joints]
+            if ch["topic"] == "/joint_states" and w.startswith("observations."):
+                state += joints
+            name = ch["topic"].strip("/").split("/")[0]
+            if ch["topic"].endswith("/joint_trajectory") and w.startswith("actions."):
+                if controllers.get(name, (None,))[0] != JTC:
+                    errors.append(f"contract: {w}: {ch['topic']}: {name} is not a joint trajectory controller")
+                    continue
+                if joints != controllers[name][1]:
+                    errors.append(f"contract: {w}: selects {joints}, controller {name} has {controllers[name][1]}")
+                action += joints
+                acted.add(name)
+        missing = sorted(n for n, (t, _) in controllers.items() if t == JTC and n not in acted)
+        if missing:
+            errors.append(f"contract: no action on the joint_trajectory of {missing}")
+        if state != action:
+            errors.append(f"contract: /joint_states state joints {state} != the action joints {action}")
+    except (KeyError, TypeError, AttributeError) as e:
+        errors.append(f"contract: malformed ({type(e).__name__}: {e}); Rosetta's loader gives the details")
     return errors
 
 

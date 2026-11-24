@@ -10,7 +10,9 @@ from recovery.core.failures import Failure
 from recovery.core.restart import Restart
 from recovery.core.robot import Arm
 from revolve_common import specs
+from revolve_common.sim_client import WarmResetMissed
 from revolve_common.sim_fake import FakeSession
+from revolve_common.warm_reset import ResetTarget
 
 ARM = Arm("panda_arm_controller", tuple(F.ARM))
 RESTART = Restart(10.0, (-1.5, 1.7, 1.5), tuple(0.1 * i for i in range(7)), 0.0)
@@ -36,7 +38,7 @@ def test_make_writes_the_scene_at_the_restart(tmp_path, scene):
     written = yaml.safe_load(job.scene.read_text())
     assert written["robot_start"] == {"base": [-1.5, 1.7, 1.5], "arm": [round(0.1 * i, 6) for i in range(7)]}
     assert written["models"] == yaml.safe_load(scene.read_text())["models"] and written["name"] == "kitchen_partnet"
-    assert job.target == J.Target("mobile_panda", (-1.5, 1.7, 1.5), RESTART.arm, ARM.joints, "panda_arm_controller")
+    assert job.target == ResetTarget("mobile_panda", (-1.5, 1.7, 1.5), RESTART.arm, ARM.joints, "panda_arm_controller")
     assert specs.load(job.scene, assets=False).robot_start.base == [-1.5, 1.7, 1.5]          # a scene the specs accept
 
 
@@ -49,14 +51,6 @@ def test_make_with_an_unreadable_scene(tmp_path, scene):
 def test_job_json_round_trip(tmp_path, scene):
     job = J.make(1, failure(scene), tmp_path / "out", "mobile_panda", ARM)
     assert J.Job.from_json(job.to_json()) == job
-
-
-class Report:
-    def __init__(self, ok):
-        self.ok, self.reason = ok, None if ok else "off by 0.5 m"
-
-    def to_dict(self):
-        return {"ok": self.ok, "reason": self.reason}
 
 
 def session(tmp_path, scene, **kw):
@@ -79,23 +73,17 @@ def test_relaunch_job_runs_the_generator_and_logs_the_sim_folder(tmp_path, scene
 
 def test_warm_job_resets_to_the_restart_before_every_try_the_first_included(tmp_path, scene):
     job = J.make(0, failure(scene), tmp_path / "out", "mobile_panda", ARM)
-    s, targets = session(tmp_path, job.scene, passes=lambda n: n >= 1), []
-
-    def resetter(target):
-        targets.append(target)
-        s.connect().reset()
-        return Report(True)
-    log = J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(3, 1), s.out, resetter)
-    assert [t["passed"] for t in log["tries"]] == [False, True] and targets == [job.target, job.target]
+    s = session(tmp_path, job.scene, passes=lambda n: n >= 1)
+    log = J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(3, 1), s.out, True)
+    assert [t["passed"] for t in log["tries"]] == [False, True] and s.warm_targets == [job.target, job.target]
     assert [(r["attempt"], r["mode"], r["ok"]) for r in J.resets(job.dir)] == [(0, "warm", True), (1, "warm", True)]
 
 
 def test_a_missed_warm_reset_stops_the_job_with_its_report(tmp_path, scene):
     job = J.make(0, failure(scene), tmp_path / "out", "mobile_panda", ARM)
-    s = session(tmp_path, job.scene)
-    with pytest.raises(J.ResetMissed, match="off by 0.5 m"):
-        J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out,
-                  lambda t: Report(False))
+    s = session(tmp_path, job.scene, reaches=lambda target: False)
+    with pytest.raises(WarmResetMissed, match="missed the target"):
+        J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out, True)
     assert episodes.read(job.dir)["tries"] == [] and J.resets(job.dir)[0]["ok"] is False and not list(s.out.glob("episode_*.json"))
 
 
@@ -106,25 +94,3 @@ def test_a_finished_job_is_not_run_again(tmp_path, scene):
     F.CALLS.clear()
     J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out)
     assert F.CALLS == [] and len(episodes.read(job.dir)["tries"]) == 1
-
-
-def test_the_generator_seam_is_the_drive_of_the_generator():
-    calls = []
-
-    class G(F.FakeGenerator):
-        def prepare(self, *a):
-            calls.append("prepare")
-
-        def drive(self, *a):
-            calls.append("drive")
-            return {"expert": "x"}
-    g = J.Recovering(G(None, {}))
-    g.prepare(1, 2, 3, 4)
-    assert g.drive(1, 2, 3, 4) == {"expert": "x"} and calls == ["prepare", "drive"]
-
-
-def test_exit_after_miss_flushes_and_exits_with_the_miss_code(monkeypatch, capsys):
-    codes = []
-    monkeypatch.setattr(J.os, "_exit", codes.append)
-    J.exit_after_miss(J.ResetMissed(Report(False)))
-    assert codes == [J.MISS_EXIT] and "warm reset missed: off by 0.5 m" in capsys.readouterr().err

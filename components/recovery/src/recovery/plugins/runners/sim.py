@@ -1,7 +1,7 @@
 """runner sim: the real thing. A slot is a sim launched by `./revolve sim` for a job's scene instance (SimSession,
 `--no-autostart`, the slot's folder as `--out`, a leased name + ROS domain); the job's episodes run in a client container
 beside it (`python3 -m recovery.client`, ROS 2 Lyrical inside the simulator image) on datagen's episode loop and the spec's
-generator. A client that exits with MISS_EXIT missed its warm reset: the sim is relaunched at the restart.
+generator. A client that exits with warm_reset.MISS_EXIT missed its warm reset: the sim is relaunched at the restart.
 
 Params: `infra_retries` (3), `wall_s_per_attempt` (600): the client's wall budget per try. Logs: <out>/logs/<slot>.{sim,
 client}.log (kept across relaunches). Interrupt: `stop()` removes this run's containers and no sim is launched afterwards."""
@@ -10,10 +10,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from revolve_common.sim_client import WarmResetMissed
 from revolve_common.sim_session import SimSession, stop_sims
+from revolve_common.warm_reset import MISS_EXIT, ResetReport
 
 from ...core.errors import JobError
-from ...core.jobs import MISS_EXIT, ResetMissed
 from ...core.registry import REGISTRY
 from ...core.runner import RunnerStopped, SlotRunner
 
@@ -59,7 +60,7 @@ class SimRunner(SlotRunner):
         if self.stopped.is_set():
             raise RunnerStopped("run interrupted")
         if rc == MISS_EXIT:
-            raise ResetMissed(None)
+            raise WarmResetMissed(ResetReport(False, reason="the client exited with the warm reset miss code"))
         if rc != 0:
             raise JobError(f"the job's client exited with {rc}; see {log}")
 

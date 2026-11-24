@@ -12,7 +12,9 @@ from recovery.core.errors import JobError
 from recovery.core.runner import RunnerStopped
 from recovery.plugins.runners import fake as FK
 from recovery.plugins.runners import sim as SIM
+from revolve_common.sim_fake import FakeSession
 from revolve_common.sim_session import DomainPool, SimFault
+from revolve_common.warm_reset import MISS_EXIT
 from test_runner_unit import jobs, spec  # noqa: F401  (fixtures + the spec helper)
 
 
@@ -32,7 +34,7 @@ class Container:
         return self.s.run_client(self.command)
 
 
-class Sess(FK.WarmFakeSession):
+class Sess(FakeSession):
     calls, script, stopped, patch = [], [], None, None
 
     def __init__(self, *a, **kw):
@@ -49,7 +51,6 @@ class Sess(FK.WarmFakeSession):
 
     def run_client(self, command):
         self.patch.setattr(CL, "run_client", lambda fn, out: fn(self.connect()))
-        self.patch.setattr(CL, "warm_resetter", lambda client: client.reset_to)       # the real one needs revolve_common.warm_reset
         CL.main(command[3:])
         return 0
 
@@ -96,7 +97,7 @@ def test_the_next_job_on_the_sim_is_warm(runner, jobs):
 
 def test_exit_79_relaunches_the_sim_at_the_restart(runner, jobs):
     run(runner, jobs[0])
-    Sess.script[:] = [J.MISS_EXIT]
+    Sess.script[:] = [MISS_EXIT]
     run(runner, jobs[1])
     warm = ["--warm" in c["command"] for c in Sess.calls]
     assert warm == [False, True, False] and len(runner.slots) == 1       # the miss, then the same job again on a relaunched sim

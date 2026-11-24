@@ -16,14 +16,14 @@ from pathlib import Path
 
 from datagen.core import episodes
 from datagen.core.interfaces import Generator
-from revolve_common.sim_session import DomainPool, RelaunchPolicy, SimFault, SimInfraError
+from revolve_common.sim_client import WarmResetMissed
+from revolve_common.sim_session import DomainPool, RelaunchPolicy, SimFault, SimInfraError, same_world
 
 from .errors import JobError
 from .interfaces import Runner
-from .jobs import Job, ResetMissed
+from .jobs import Job
 from .naming import prefix
 from .spec import RecoverySpec
-from .world import same_world
 
 
 class RunnerStopped(Exception):
@@ -65,7 +65,7 @@ class SlotRunner(Runner):
     @abstractmethod
     def work(self, slot: Slot, job: Job, warm: bool, generator: Generator) -> None:
         """The job's episode loop on the slot's started sim (`core.jobs.run_job`); `warm`: reach the restart by a warm reset.
-        A SimFault out of it relaunches the sim, a ResetMissed relaunches it at the restart."""
+        A SimFault out of it relaunches the sim, a WarmResetMissed relaunches it at the restart."""
 
     # ---- slots
     def _take(self, job: Job) -> Slot:
@@ -119,7 +119,7 @@ class SlotRunner(Runner):
                 self._launch(slot, job.scene)               # a sim at the restart: plain resets reach it again
             try:
                 return self.work(slot, job, warm, generator)
-            except ResetMissed as e:
+            except WarmResetMissed as e:
                 say(f"job {job.key}: warm reset missed ({e}): relaunch at the restart")
                 allowed = False
             except SimFault as fault:

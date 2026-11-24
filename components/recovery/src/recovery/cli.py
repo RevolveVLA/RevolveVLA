@@ -15,12 +15,12 @@ import os
 import sys
 from pathlib import Path
 
-from datagen.core import registry as datagen_registry
 from datagen.core.errors import DatagenError
 from datagen.core.interrupt import Interrupted, interruptible
 from datagen.core.spec import SpecError
 from revolve_common import specs
 
+from .core.generator import create as create_generator
 from .core.pipeline import STAGES, Pipeline, PluginSet
 from .core.registry import REGISTRY
 from .core.robot import arm_of
@@ -33,8 +33,7 @@ def build_plugins(spec: RecoverySpec, stages) -> PluginSet:
     if "collect" in stages or "run" in stages:
         p.scanner = REGISTRY.create("scanner", spec.scanner.plugin, spec, spec.scanner.params)
     if "run" in stages:
-        g = spec.phases.generator
-        p.generator = datagen_registry.create("generator", g.plugin, spec.datagen_spec(), g.params)
+        p.generator = create_generator(spec)
         p.runner = REGISTRY.create("runner", spec.runner.plugin, spec, spec.runner.params)
     return p
 

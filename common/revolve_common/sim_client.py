@@ -13,14 +13,25 @@ import threading
 import time
 from collections import deque
 
+from . import warm_reset
 from .sim_session import READY_TIMEOUT, READY_TIMEOUT_S, RESET_FAILED, RESULT_TIMEOUT, SimFault, wait_files
+from .warm_reset import MISS_EXIT, ResetReport, ResetTarget, Tolerance
 
 RESET_TIMEOUT_S = 60.0          # the service answers in ~2 s; it waits at most 20 s per step
+RESET_TO_TIMEOUT_S = 30.0       # sim s for the drive to the target (a 0.3 m move takes ~3)
 RESULT_TIMEOUT_S = 120.0        # wall: a task's budget_s is 45 s of sim time at real-time factor 1
 
 
 class EpisodeRefused(RuntimeError):
     """/evaluator/start said no (inputs not ready, or an episode is running)."""
+
+
+class WarmResetMissed(RuntimeError):
+    """`reset_to` did not reach its target: the host relaunches the sim with that start instead."""
+
+    def __init__(self, report: ResetReport):
+        self.report = report
+        super().__init__(report.reason)
 
 
 class SimClient:
@@ -32,7 +43,7 @@ class SimClient:
         self.states, self.results = deque(maxlen=200), {}       # /evaluator/state (10 Hz), results by episode
         self.tf = self._tf_listener = None
         self._lock = threading.Lock()
-        self._clients, self._executor = {}, None
+        self._clients, self._executor, self._plants = {}, None, {}
         if node is not None:
             self._wire()
 
@@ -125,6 +136,21 @@ class SimClient:
         if self.node is not None:
             self.new_tf()
 
+    def reset_to(self, target: ResetTarget, tol: Tolerance = Tolerance(),
+                 timeout_s: float = RESET_TO_TIMEOUT_S) -> ResetReport:
+        """`reset()`, then drive the robot from the scene's start to `target` (warm_reset.py). Call it before the episode
+        starts. Never raises for a miss: `report.ok` / `report.reason` say. SimFault(reset_failed) as `reset()`."""
+        w0 = time.monotonic()
+        self.reset()
+        report = warm_reset.run(self._plant(target), target, tol, timeout_s)
+        return report.with_times(time.monotonic() - w0, report.sim_s)
+
+    def _plant(self, target: ResetTarget):
+        key = (target.robot, target.arm_controller, target.arm_joints)
+        if key not in self._plants:
+            self._plants[key] = warm_reset.RosPlant(self, target)
+        return self._plants[key]
+
     def new_tf(self) -> None:
         """A fresh tf Buffer + listener: `Buffer.clear()` would also drop /tf_static."""
         from tf2_ros import Buffer, TransformListener
@@ -160,8 +186,8 @@ class SimClient:
 
 
 def run_client(fn, out, *args) -> None:
-    """Connect, `fn(client, *args)`, then end the process: exit 0, or the exit code of a SimFault (the host relaunches
-    the sim on those). os._exit: moveit_py segfaults at interpreter shutdown, so flush and leave."""
+    """Connect, `fn(client, *args)`, then end the process: exit 0, the exit code of a SimFault (the host relaunches
+    the sim on those) or MISS_EXIT for a warm reset that missed (the host relaunches with that start). os._exit: moveit_py segfaults at interpreter shutdown, so flush and leave."""
     code = 0
     try:
         client = SimClient.connect(out)
@@ -169,6 +195,9 @@ def run_client(fn, out, *args) -> None:
     except SimFault as e:
         print(f"SimFault {e}", file=sys.stderr)
         code = e.exit_code
+    except WarmResetMissed as e:
+        print(f"warm reset missed: {e}", file=sys.stderr)
+        code = MISS_EXIT
     except BaseException:
         import traceback
         traceback.print_exc()

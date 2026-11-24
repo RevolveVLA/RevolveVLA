@@ -16,7 +16,8 @@ Required: `train` (the training datagen spec), `out` (inside runs/), `sets` (`he
 `policy` (`oracle` replays a training bag's actions, `expert` runs the training spec's generator closed loop, `smolvla` serves a
 checkpoint: blocked until the new bags have a Rosetta contract), `ckpt` (`local` path or `hf` repo[@revision][/subfolder]),
 `judge: {criterion: c0}`, `rollout` (`sim`, or `fake` for tests; params `record`, `wall_s`, `ready_s`, `infra_retries`, `lead_s`),
-`rollouts` per config, `retries` (new episode from the start), `runner` (policy runner chunking), `run: {workers, headless}`.
+`rollouts` per config, `retries` (new episode from the start), `runner` (policy runner chunking), `run: {workers, headless, reset}` (`reset: relaunch` = a sim per config, the default; `warm` = one sim per world, the
+robot is driven to each config's `robot_start` after the reset, a miss falls back to a sim of its own; the record's `reset` says which).
 Plugins live under `src/evaluation/plugins/<kinds>/`.
 
 ## Outputs (`<out>/`)

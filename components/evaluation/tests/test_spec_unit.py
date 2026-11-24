@@ -175,3 +175,11 @@ def test_unreadable_yaml(tmp_path):
     (tmp_path / "bad.yaml").write_text("a: [")
     with pytest.raises(SpecError, match="cannot read"):
         S.load(tmp_path / "bad.yaml")
+
+
+def test_run_reset_is_relaunch_or_warm_and_not_hashed(root):
+    assert parse(root).run.reset == "relaunch"
+    warm = parse(root, run={"reset": "warm", "workers": 2})
+    assert warm.run == S.RunSpec(2, True, "warm") and warm.hash == parse(root).hash
+    with pytest.raises(SpecError, match=r"run.reset: must be one of \['relaunch', 'warm'\], got 'hot'"):
+        parse(root, run={"reset": "hot"})

@@ -96,6 +96,9 @@ class Rollout(ABC):
     def validate(self, policy: Policy) -> None:
         """Raise a SpecError when this rollout cannot run `policy` (checked before anything runs)."""
 
+    def begin(self, items: Sequence[EvalItem]) -> None:
+        """The configs about to run (before the first `run`): a rollout that shares one sim between configs counts them."""
+
     def release(self, item: EvalItem) -> None:
         """The rollouts of the config `item` are over: free what `run` kept for it (the sim of its scene instance)."""
 

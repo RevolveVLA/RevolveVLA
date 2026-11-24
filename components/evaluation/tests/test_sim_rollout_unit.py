@@ -16,13 +16,15 @@ from evaluation.core.errors import EvalError
 from evaluation.core.interfaces import EvalItem
 from evaluation.core.registry import REGISTRY
 from evaluation.core.sims import sim_prefix
-from evaluation.core.spec import RunnerSpec
+from evaluation.core.spec import RunnerSpec, RunSpec
 from evaluation.plugins.rollouts import sim as S
 from revolve_common.sim_fake import FakeClient, FakeSession
+from revolve_common.sim_client import WarmResetMissed
 from revolve_common.sim_session import REPO, DomainPool, SimFault
+from revolve_common.warm_reset import MISS_EXIT, ResetTarget
 
 spec = SimpleNamespace(train=SimpleNamespace(task="open_fridge_door", robot="mobile_panda", raw={"task": "open_fridge_door"}),
-                       out="runs/eval/x")
+                       out="runs/eval/x", run=RunSpec())
 smolvla, oracle, expert = (REGISTRY.create("policy", n, spec, {}) for n in ("smolvla", "oracle", "expert"))
 
 
@@ -337,3 +339,134 @@ def test_the_client_container_command(item, tmp_path):
     r.run_client(Session(), tmp_path / "r0", [], False, tmp_path / "c.log")
     assert seen["fault"] is None and "--reset" not in seen["command"]            # a stopped run does not relaunch sims
     assert S.in_container("/elsewhere/x") == "/elsewhere/x" and S.in_container("--bag") == "--bag"
+
+
+# ------------------------------------------------------------------ run.reset: warm
+class WarmInProcess(InProcess):
+    """`run.reset: warm` over FakeSessions; the client in this process takes `--reset-to` as the container's client does."""
+    reaches = staticmethod(lambda target: True)
+
+    def __init__(self, params=None, **attrs):
+        super().__init__(params, **attrs)
+        self.warm = True
+
+    def session(self, item, sim_out, name, domain, gui):
+        s = super().session(item, sim_out, name, domain, gui)
+        s.reaches = self.reaches
+        return s
+
+    def run_client(self, session, rollout, args, reset, log):
+        self.client_calls.append((args, reset))
+        target = ResetTarget.from_json(args[args.index("--reset-to") + 1]) if "--reset-to" in args else None
+        try:
+            C.play(session.connect(), rollout, series(), lambda *a: None, reset, target=target)
+        except WarmResetMissed:
+            return MISS_EXIT
+        return 0
+
+
+def instance(tmp_path, name, base, fridge_x=1.0):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "scene.yaml").write_text(f"name: kitchen\nassets: [a]\nmodels:\n  fridge: {{model: fridge, pose: [{fridge_x}, 0, 0, 0]}}\n"
+                                  f"robot_start: {{base: {base}, arm: folded}}\n")
+    return EvalItem(Config("heldout", int(name)), d / "scene.yaml", ({"passed": True, "bag": "/b/0"},))
+
+
+@pytest.fixture
+def worlds(tmp_path):
+    return instance(tmp_path, "1", "[0, 0, 0]"), instance(tmp_path, "2", "[0.2, -0.1, 0.3]"), \
+        instance(tmp_path, "3", "[0, 0, 0]", fridge_x=2.0)
+
+
+def test_warm_one_sim_per_world_the_other_start_is_reset_to_and_the_world_goes_with_its_last_config(worlds, tmp_path):
+    a, b, c = worlds
+    r = WarmInProcess()
+    r.begin([a, b, c])
+    ra0, ra1 = run(r, a, tmp_path, "1_r0"), run(r, a, tmp_path, "1_r1")
+    rb, rc = run(r, b, tmp_path, "2_r0"), run(r, c, tmp_path, "3_r0")
+    ab, other = r.sessions
+    assert len(r.sessions) == 2 and ab.launches == 1 and ab.out == (tmp_path / "set" / "1_sim").resolve() and rb["passed"]
+    assert [x[1] for x in r.client_calls] == [False, True, True, False]             # the sim ran before: reset (b: the warm reset replaces it)
+    assert ["--reset-to" in x[0] for x in r.client_calls] == [False, False, True, False]
+    target = ResetTarget.from_json(r.client_calls[2][0][r.client_calls[2][0].index("--reset-to") + 1])
+    assert target.base == (0.2, -0.1, 0.3) and target.arm_controller == "panda_arm_controller" and len(target.arm) == 7
+    assert target.arm == (0.0, -1.10, 0.0, -2.95, 0.0, 1.85, 0.785) and ab.warm_targets == [target]
+    assert ra0["reset"] == ra1["reset"] == rc["reset"] == {"mode": "warm", "report": None}
+    assert rb["reset"]["mode"] == "warm" and rb["reset"]["report"]["ok"] and "fallback" not in rb["reset"]
+    assert rb["episode"] == 2 and rb["resets"] == 2 and json.loads((tmp_path / "set" / "2_r0" / "rollout.json").read_text()) == rb
+    r.release(a)
+    assert ab.closed == 0                                                           # b still has to run
+    r.release(b)
+    assert ab.closed == 1 and other.closed == 0 and len(r.scenes) == 1
+    r.release(c)
+    assert other.closed == 1 and not r.scenes and r.pool._leased == {}
+
+
+def test_warm_miss_runs_the_config_on_a_sim_of_its_own_and_records_the_report(worlds, tmp_path, capsys):
+    a, b, _ = worlds
+    r = WarmInProcess(reaches=lambda target: False)
+    r.begin([a, b])
+    run(r, a, tmp_path, "1_r0")
+    rb = run(r, b, tmp_path, "2_r0")
+    shared, own = r.sessions
+    assert rb["passed"] and rb["reset"]["mode"] == "relaunch" and rb["reset"]["report"] is None
+    assert rb["reset"]["fallback"]["ok"] is False and "missed" in rb["reset"]["fallback"]["reason"]
+    assert own.scene == str(b.scene) and own.launches == 1 and own.out == (tmp_path / "set" / "2_sim").resolve()
+    assert [("--reset-to" in x[0], x[1]) for x in r.client_calls] == [(False, False), (True, True), (False, False)]
+    assert "warm reset of" in capsys.readouterr().err
+    run(r, b, tmp_path, "2_r1")                                                     # later rollouts of b: its own sim
+    assert len(r.sessions) == 2 and r.client_calls[-1][1] is True and "--reset-to" not in r.client_calls[-1][0]
+    r.release(b)
+    assert own.closed == 1 and shared.closed == 0
+    r.release(a)
+    assert shared.closed == 1 and not r.scenes
+
+
+def test_warm_without_a_reset_target_is_a_sim_of_its_own(worlds, tmp_path):
+    a, b, _ = worlds
+    r = WarmInProcess()
+    r.target = lambda item: None
+    r.begin([a, b])
+    ra, rb = run(r, a, tmp_path, "1_r0"), run(r, b, tmp_path, "2_r0")
+    assert len(r.sessions) == 2 and all("--reset-to" not in c[0] for c in r.client_calls)
+    assert ra["reset"] == rb["reset"] == {"mode": "relaunch", "report": None}
+
+
+def test_relaunch_keeps_one_sim_per_config_and_adds_nothing_to_the_record(worlds, tmp_path):
+    a, b, _ = worlds
+    r = InProcess()
+    r.begin([a, b])
+    ra, rb = run(r, a, tmp_path, "1_r0"), run(r, b, tmp_path, "2_r0")
+    assert len(r.sessions) == 2 and "reset" not in ra and "reset" not in rb
+    assert all("--reset-to" not in c[0] for c in r.client_calls)
+    r.release(a)
+    assert r.sessions[0].closed == 1 and len(r.scenes) == 1
+
+
+def test_a_missing_warm_report_is_still_a_fallback(worlds, tmp_path):
+    a, b, _ = worlds
+    r = WarmInProcess()
+    r.run_client = lambda session, rollout, args, reset, log: MISS_EXIT if "--reset-to" in args else \
+        WarmInProcess.run_client(r, session, rollout, args, reset, log)
+    run(r, a, tmp_path, "1_r0")
+    rb = run(r, b, tmp_path, "2_r0")
+    assert rb["reset"]["fallback"] == {"ok": False, "reason": "warm reset missed (no report)"}
+
+
+def test_a_walk_with_workers_shares_one_sim_per_world_and_closes_it_after_its_last_config(worlds, tmp_path):
+    from evaluation.core.interfaces import Built, Verdict
+    from evaluation.core.walk import RetryPolicy, Walk
+
+    class Judge:
+        def score(self, record, rollout_dir, task):
+            return Verdict(record["passed"])
+    r = WarmInProcess()
+    walk = Walk(r, oracle, Judge(), RetryPolicy(0), RunnerSpec(), None, None, tmp_path, 3, False, lambda m: None)
+    got = {}
+    walk.run("set", Built(list(worlds)), 2, {}, got.__setitem__)
+    assert sorted(got) == ["1_r0", "1_r1", "2_r0", "2_r1", "3_r0", "3_r1"] and all(e["passed"] for e in got.values())
+    assert len(r.sessions) == 2 and sorted(s.launches for s in r.sessions) == [1, 1]            # configs 1 + 2 shared one
+    assert all(s.closed == 1 for s in r.sessions) and not r.scenes
+    modes = {k: e["tries"][0]["record"]["reset"]["mode"] for k, e in got.items()}
+    assert set(modes.values()) == {"warm"}

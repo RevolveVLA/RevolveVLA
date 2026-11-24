@@ -24,6 +24,9 @@ AGGREGATE_FNS = ("weighted_average", "latest_only", "average", "conservative")
 DEFAULT_AGGREGATE = "weighted_average"                  # Rosetta's, used when `aggregate` is absent
 
 
+RESET_MODES = ("relaunch", "warm")
+
+
 @dataclass(frozen=True)
 class CkptSpec:
     source: str                                         # the ckpt plugin: local | hf | ...
@@ -63,9 +66,12 @@ class RunnerSpec:
 
 @dataclass(frozen=True)
 class RunSpec:
-    """How the run executes, not what it evaluates (so not in the hash): rollouts in parallel (None: by free GPU memory)."""
+    """How the run executes, not what it evaluates (so not in the hash): rollouts in parallel (None: by free GPU memory),
+    and how a config's sim gets its start: `relaunch` (a sim per scene instance) or `warm` (one sim per world, the robot is
+    driven to each instance's start after a reset; a miss falls back to a relaunch)."""
     workers: int | None = None
     headless: bool = True
+    reset: str = "relaunch"
 
 
 @dataclass(frozen=True)
@@ -147,11 +153,14 @@ def _runner(v, at) -> RunnerSpec:
 
 
 def _run(v, at) -> RunSpec:
-    d = _mapping(v, at, optional=("workers", "headless"))
+    d = _mapping(v, at, optional=("workers", "headless", "reset"))
     headless = d.get("headless", True)
     if not isinstance(headless, bool):
         _fail(f"{at}.headless", f"expected true/false, got {headless!r}")
-    return RunSpec(_int(d["workers"], f"{at}.workers", 1) if d.get("workers") is not None else None, headless)
+    reset = _str(d.get("reset", RunSpec.reset), f"{at}.reset")
+    if reset not in RESET_MODES:
+        _fail(f"{at}.reset", f"must be one of {list(RESET_MODES)}, got {reset!r}")
+    return RunSpec(_int(d["workers"], f"{at}.workers", 1) if d.get("workers") is not None else None, headless, reset)
 
 
 def _pool(v, count, at) -> PoolSpec:

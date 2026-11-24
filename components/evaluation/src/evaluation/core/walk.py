@@ -78,6 +78,7 @@ class Walk:
         """Every item of `built` x `rollouts` not in `done` (entries by key); `commit(key, entry)` in order."""
         todo = [(it, [i for i in range(rollouts) if key(it, i) not in done]) for it in built.items]
         todo = [(it, idx) for it, idx in todo if idx]
+        self.rollout.begin([it for it, _ in todo])
         progress = Progress(name, [key(it, i) for it in built.items for i in range(rollouts)], self.log)
         for k, e in done.items():
             progress.state[k], progress.first[k] = "pass" if e["passed"] else "fail", e["tries"][0]["passed"]

@@ -5,6 +5,7 @@ docker CLI through `Docker`, so the datagen and evaluation hosts import it freel
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
@@ -13,6 +14,8 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+
+import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 SIM_IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
@@ -104,6 +107,24 @@ def stop_sims(prefix: str, docker: Docker | None = None) -> int:
     for n in names:
         docker.rm(n)
     return len(names)
+
+
+def world_key(scene) -> str | None:
+    """The scene instance without its `robot_start` (hashed): what a sim launched with it keeps for any instance with the
+    same key. None when the file cannot be read."""
+    try:
+        d = yaml.safe_load(Path(scene).read_text()) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    d.pop("robot_start", None)
+    return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def same_world(a, b) -> bool:
+    """Two scene instances share the world and models and differ at most in `robot_start`: one sim launched with `a` can
+    serve `b` after a warm reset (warm_reset.py)."""
+    key = world_key(a)
+    return key is not None and key == world_key(b)
 
 
 def wait_files(out, n: int, timeout_s: float = 30.0) -> dict:

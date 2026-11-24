@@ -1,7 +1,8 @@
 """RecoverySpec: the recovery yaml as frozen dataclasses, validated here (datagen's spec helpers: every error names the yaml
-path of the offending key). `from.eval` is a finished evaluation run (its `out`); `phases` is the built-in phase-wise
-recovery; `live` is an optional live recorder plugin; plugin refs are the only free-form blocks. `hash` fingerprints the
-settings (not `out`, not `run`)."""
+path of the offending key). `from.eval` is a finished evaluation run (its `out`: for `phases`) or an evaluation spec (a
+.yaml file: for `live`, which runs its sets, optionally named by `from.sets`, with its policy); `phases` is the built-in
+phase-wise recovery; `live` is an optional live recorder plugin (a spec has `phases`, `live` or both); plugin refs are the
+only free-form blocks. `hash` fingerprints the settings (not `out`, not `run`)."""
 from __future__ import annotations
 
 import hashlib
@@ -52,11 +53,13 @@ class RunSpec:
 class RecoverySpec:
     task: str
     robot: str
-    eval_run: str                                       # yaml `from: {eval: <dir>}`
-    phases: PhasesSpec
+    eval_run: str                                       # yaml `from: {eval: <dir | eval spec .yaml>}`
     out: str
+    phases: PhasesSpec | None = None
     triggers: tuple[Mapping[str, Any], ...] = ({"plugin": "verdict"},)
     live: PluginRef | None = None
+    eval_sets: tuple[str, ...] | None = None            # yaml `from: {sets: [..]}`: the eval sets a live run rolls out (default: all but the held-out ones)
+    heldout: tuple[str, ...] | None = None              # yaml `from: {heldout: [..]}`: the sets that must stay unseen (default: the held-out kind)
     keep: str = "successes"
     seed: int = 0
     run: RunSpec = RunSpec()
@@ -65,10 +68,18 @@ class RecoverySpec:
     raw: Mapping[str, Any] = field(default_factory=dict, compare=False, repr=False)    # the parsed yaml (re-parsed in a container)
 
     @property
+    def eval_spec(self) -> bool:
+        """`from.eval` names an evaluation spec (what a live run rolls out), not a finished run."""
+        return self.eval_run.endswith((".yaml", ".yml"))
+
+    @property
     def hash(self) -> str:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self)
         d.pop("out"), d.pop("run"), d.pop("raw")
+        for k in ("eval_sets", "heldout"):                  # as before the fields existed (an existing out keeps its hash)
+            if d[k] is None:
+                del d[k]
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
 
     def datagen_spec(self) -> DatagenSpec:
@@ -122,17 +133,29 @@ def _triggers(v, at) -> tuple[Mapping[str, Any], ...]:
     return tuple(dict(_mapping(x, f"{at}[{i}]", required=("plugin",), free=True)) for i, x in enumerate(v))
 
 
+def _list(v, at) -> list:
+    if not isinstance(v, list):
+        _fail(at, f"expected a list, got {v!r}")
+    return v
+
+
 def parse(raw: Any, source: str = "<spec>") -> RecoverySpec:
-    d = _mapping(raw, source, required=("task", "robot", "from", "phases", "out"),
-                 optional=("triggers", "live", "keep", "seed", "run", "runner", "scanner"))
+    d = _mapping(raw, source, required=("task", "robot", "from", "out"),
+                 optional=("phases", "triggers", "live", "keep", "seed", "run", "runner", "scanner"))
+    if "phases" not in d and "live" not in d:
+        _fail(source, "needs `phases` (phase-wise recovery), `live` (a live recorder) or both")
+    origin = _mapping(d["from"], f"{source}.from", required=("eval",), optional=("sets", "heldout"))
+    names = {k: tuple(_str(x, f"{source}.from.{k}[{i}]") for i, x in enumerate(_list(origin[k], f"{source}.from.{k}")))
+             for k in ("sets", "heldout") if k in origin}
     keep = _str(d.get("keep", RecoverySpec.keep), f"{source}.keep")
     if keep not in KEEPS:
         _fail(f"{source}.keep", f"expected one of {KEEPS}, got {keep!r}")
     fields = {k: _plugin(d[k], f"{source}.{k}") for k in ("live", "runner", "scanner") if k in d}
     return RecoverySpec(
         task=_str(d["task"], f"{source}.task"), robot=_str(d["robot"], f"{source}.robot"),
-        eval_run=_str(_mapping(d["from"], f"{source}.from", required=("eval",))["eval"], f"{source}.from.eval"),
-        phases=_phases(d["phases"], f"{source}.phases"), out=_str(d["out"], f"{source}.out"),
+        eval_run=_str(origin["eval"], f"{source}.from.eval"), out=_str(d["out"], f"{source}.out"),
+        phases=_phases(d["phases"], f"{source}.phases") if "phases" in d else None,
+        eval_sets=names.get("sets"), heldout=names.get("heldout"),
         triggers=_triggers(d["triggers"], f"{source}.triggers") if "triggers" in d else RecoverySpec.triggers,
         keep=keep, seed=_int(d.get("seed", 0), f"{source}.seed"), run=_run(d.get("run", {}), f"{source}.run"),
         raw=raw, **fields)
@@ -149,5 +172,7 @@ def load(path: str | Path) -> RecoverySpec:
 
 def check_task(spec: RecoverySpec, phases) -> None:
     """The quota's phases are phases of the task."""
+    if spec.phases is None:
+        return
     if unknown := [p for p in spec.phases.quota if p not in phases]:
         raise SpecError(f"phases.quota: unknown phase {unknown} (phases of {spec.task}: {', '.join(phases)})")

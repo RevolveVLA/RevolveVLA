@@ -1,12 +1,13 @@
 """<out>/manifest.json: datagen's DATAGEN-v2.md 8.4 episode list (one entry per try of every job, merged in job order) with
 a `recovery` block per entry:
 
-  recovery = {kind: "phase", from_rollout: {run, set, rollout, try, scene, bag}, phase, trigger, reason, t_restart,
+  recovery = {kind: "phase" | "dagger", from_rollout: {run, set, rollout, try, scene, bag}, phase, trigger, reason, t_restart,
               restart_from, restart_state: {base, arm, object_joint}, reset: {mode, ...}, segment: null}
 
 `result` / `bag` are the sim's files (under `<out>/sims/<slot>/`, relative to `out`); `reset`: `{mode: warm, ok: true, ...the
 reset report}`, `{mode: relaunch}` (the sim was launched at the restart) or `{mode: relaunch, fallback: <the warm report that
-missed>}`; `segment` is for recorders that keep only a span of the episode. `keep: successes` leaves out the tries the evaluator
+missed>}`; `segment` is for recorders that keep only a span of the episode (a live episode's `kind` is "dagger": its `phase` is
+where the takeover happened, `restart_from` "takeover", `t_restart` its time, plus `policy`, `expert_failure`, `max_delta_action`). `keep: successes` leaves out the tries the evaluator
 failed. Derived from the job logs, never read back."""
 from __future__ import annotations
 
@@ -59,9 +60,11 @@ def entries(out: Path, job_dir: Path, failure: Failure, spec: RecoverySpec) -> l
     return found
 
 
-def build(out: Path, spec: RecoverySpec, jobs: Sequence[tuple[Failure, Path]], created: str | None = None) -> dict:
-    """The manifest of the jobs `(failure, job dir)`, in this order (the caller makes it deterministic)."""
-    found = [e for f, d in jobs for e in entries(out, d, f, spec)]
+def build(out: Path, spec: RecoverySpec, jobs: Sequence[tuple[Failure, Path]], created: str | None = None,
+          live: Sequence[dict] = ()) -> dict:
+    """The manifest of the jobs `(failure, job dir)`, in this order (the caller makes it deterministic), then the `live`
+    entries (core/live.py: `recovery.kind` "dagger")."""
+    found = [e for f, d in jobs for e in entries(out, d, f, spec)] + list(live)
     return {"task": spec.task, "robot": spec.robot,
             "created": created or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "episodes": found,
             "counts": {"jobs": len(jobs), "attempted": len(found), "passed": sum(e["passed"] for e in found)}}

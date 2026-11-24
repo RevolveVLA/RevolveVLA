@@ -4,7 +4,7 @@ episode is datagen's own plugin (`phases.generator`)."""
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
 
@@ -39,6 +39,17 @@ class Runner(ABC):
         """The run is over: free what the runner kept (the sims of its slots)."""
 
 
+class Gate:
+    """The per-action stop switch of a policy's loop (it polls `gate()` before each action; True: stop acting). A live
+    recorder's driver sets `check`; the default never stops."""
+
+    def __init__(self):
+        self.check: Callable[[], bool] = lambda: False
+
+    def __call__(self) -> bool:
+        return self.check()
+
+
 @dataclass(frozen=True)
 class LiveContext:
     """What a live recorder gets of the episode it supervises (in the rollout's client container)."""
@@ -46,7 +57,9 @@ class LiveContext:
     task: str
     robot: str
     instance: Path              # the episode's scene.yaml
-    out: Path                   # where the episode's sidecar files go
+    out: Path                   # where the episode's sidecar files go (the sim's out: next to the episode's result file)
+    gate: Gate = field(default_factory=Gate)                # the policy's stop switch
+    closed: frozenset[str] = frozenset()                    # phases where no takeover is wanted (see LiveRecorder.closed)
 
 
 class LiveRecorder(Protocol):
@@ -56,8 +69,14 @@ class LiveRecorder(Protocol):
     def validate(self, spec) -> None:
         """Raise a SpecError when this recorder cannot work with `spec` (a RecoverySpec); checked before anything runs."""
 
+    def closed(self, taken: Mapping[str, int]) -> frozenset[str]:
+        """The phases in which it wants no more takeovers, given the `taken` per phase so far (e.g. their quota is full): the
+        evaluator's verdict stands there. The host asks before each episode and hands the answer on as `LiveContext.closed`."""
+
     def driver(self, policy_drive: Drive, ctx: LiveContext) -> Drive:
-        """The drive of the episode: `policy_drive` supervised by this recorder (it may hand over to an expert)."""
+        """The drive of the episode: `policy_drive` supervised by this recorder (it may hand over to an expert). Called
+        before the episode starts, so it may start what is slow; it sets `ctx.gate.check`, polled before every action of the
+        policy, and takes over (the policy's drive has returned by then) when that said stop."""
 
     def finish(self, episode: Mapping[str, Any]) -> Mapping[str, Any]:
         """The flags of the finished episode (`episode`: its episode.json), JSON-able: they go into the sidecar file."""
@@ -66,5 +85,9 @@ class LiveRecorder(Protocol):
 class Expert(Protocol):
     """Takes the robot over from where it is and finishes the task (a live recorder's expert; registry kind `expert`)."""
 
+    def prepare(self, ctx: LiveContext) -> None:
+        """Before the episode starts: start what is slow (a planner), so it does not run on the episode's clock."""
+
     def takeover(self, ctx: LiveContext, why: str) -> Mapping[str, Any]:
-        """Drive until the episode's result is out -> {"expert": a name that identifies the expert version, "notes": ...}."""
+        """Drive until the episode's result is out -> {"expert": a name that identifies the expert version, "notes": ..., "max_delta_action": the largest
+        action step of its first second (rad) when it measures it}."""

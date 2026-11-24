@@ -1,6 +1,6 @@
 """collect -> run -> check over injected plugins; `report.md` + `manifest.json` after every run.
 
-`collect` reads the failures of the spec's eval run (the scanner: bags are read where rosbag2_py is) and keeps them in
+`live` rolls out an evaluation spec under the live recorder (core/live.py). `collect` reads the failures of the spec's eval run (the scanner: bags are read where rosbag2_py is) and keeps them in
 state.json, so a resumed run works on the same failures. `run` picks the failures to recover (core/quota.py; also kept),
 makes a job of each (core/jobs.py: its scene instance at the restart state), has the generator plan it (`Generator.plan`: a
 planner that works offline per scene instance) and runs them on `spec.run.workers` slots
@@ -20,6 +20,7 @@ from datagen.core.interfaces import Generator
 from datagen.core.state import State
 
 from . import jobs as jb
+from . import live as lv
 from . import manifest as mf
 from . import quota, report
 from .errors import JobError, RecoveryError
@@ -28,7 +29,8 @@ from .interfaces import LiveRecorder, Runner, Scanner
 from .robot import Arm
 from .spec import RecoverySpec
 
-STAGES = ("collect", "run", "check")
+STAGES = ("collect", "run", "check")            # phase-wise recovery
+LIVE = "live"                                   # the live recorder's stage (after the phase stages: its own run)
 
 
 class PipelineError(RecoveryError):
@@ -41,6 +43,7 @@ class PluginSet:
     runner: Runner | None = None
     generator: Generator | None = None
     live: LiveRecorder | None = None
+    live_run: lv.LiveRun | None = None
 
 
 class Pipeline:
@@ -57,6 +60,8 @@ class Pipeline:
         if self.dry_run:
             self._plan(stages)
             return True
+        if self.spec.phases is None and (bad := [s for s in stages if s in STAGES]):
+            raise PipelineError(f"stage {bad[0]}: this spec has no `phases` (phase-wise recovery)")
         self.out.mkdir(parents=True, exist_ok=True)
         ok = True
         try:
@@ -70,6 +75,12 @@ class Pipeline:
         s, say = self.spec, lambda m: self.log(f"[dry-run] {m}")
         p = s.phases
         say(f"stages: {', '.join(stages)}; out {self.out}")
+        if LIVE in stages:
+            say(f"live: sets {', '.join(s.eval_sets) if s.eval_sets else '(not held-out)'} of {s.eval_run} under {s.live.plugin}"
+                f" (unseen: {', '.join(s.heldout) if s.heldout else 'its held-out sets'}), keep {s.keep}, into {self.out / lv.LIVE}")
+        if p is None:
+            say(f"workers: {self.workers}, reset {s.run.reset}, {'headless' if s.run.headless else 'gui'}")
+            return
         say(f"collect: failures of the eval run {s.eval_run}, triggers {', '.join(t['plugin'] for t in s.triggers)}")
         say(f"restart: {p.restart_from}" + (f", {p.back_s} s before the failure" if p.restart_from == "before_failure" else "")
             + f"; unreproducible when a scene joint is beyond {p.max_object_joint}")
@@ -145,6 +156,9 @@ class Pipeline:
         finally:
             runner.close()
 
+    def _live(self):
+        return self._need("live_run", self.plugins.live_run).run()
+
     def _check(self):
         jobs = self.state.data.get("jobs", {})
         entries = self._entries()
@@ -172,7 +186,7 @@ class Pipeline:
         """state.json, manifest.json (merged from the job logs, in run order) and report.md."""
         self.state.save()
         data, path = self.state.data, self.out / "manifest.json"
-        manifest = mf.build(self.out, self.spec, self._job_dirs(), mf.created(path))
+        manifest = mf.build(self.out, self.spec, self._job_dirs(), mf.created(path), lv.entries(self.out, self.spec))
         mf.write(path, manifest)
         if "failures" in data:
             (self.out / "report.md").write_text(report.render(

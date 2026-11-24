@@ -19,8 +19,9 @@
   ./revolve datagen --list-randomisers --task T --robot R   what a task + robot can vary (dims, ranges)
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
-  ./revolve recover <spec.yaml> [collect|run|check|all] [--dry-run] [--workers N] [--gui|--headless]
-                                     phase-wise recovery of a finished evaluation run (spec: specs/recovery/)
+  ./revolve recover <spec.yaml> [collect|run|check|live|all] [--dry-run] [--workers N] [--gui|--headless]
+                                     phase-wise recovery of a finished evaluation run, or a live recorder (DAgger) over an
+                                     evaluation spec's rollouts (spec: specs/recovery/)
   ./revolve recipe <recipe.yaml> [resolve|check|materialise] [--dry-run]
                                      picks the data of a training round from finished runs (spec: specs/recipes/)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
@@ -226,7 +227,7 @@ def cmd_evaluate(args):
 
 
 def cmd_recover(args):
-    sys.path[:0] = [str(REPO / "components" / "datagen" / "src"), str(REPO / "components" / "recovery" / "src")]
+    sys.path[:0] = [str(REPO / "components" / c / "src") for c in ("datagen", "evaluation", "recovery")]
     from recovery import cli
     return cli.main(args, root=REPO)
 

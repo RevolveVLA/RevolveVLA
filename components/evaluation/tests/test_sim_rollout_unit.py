@@ -108,6 +108,47 @@ def test_the_stream_gives_up_when_no_result_comes():
         C.stream(clock, 0, series(), lambda *a: None, timeout_s=0.05, sleep=lambda dt: clock.sleep(dt) or __import__("time").sleep(0.001))
 
 
+def test_the_stream_stops_acting_when_halted_and_asks_before_each_action():
+    clock, sent, polls = Clock(end_s=2.0), [], []
+
+    def halt():
+        polls.append(len(sent))                                              # asked before the action of this loop pass
+        return len(sent) == 5
+    n = C.stream(clock, 0, series(), lambda pos, base: sent.append(pos["arm"][0]), sleep=clock.sleep, halt=halt)
+    assert n == 5 == len(sent) and sent == [0.0, 1.0, 2.0, 3.0, 4.0] and polls[-1] == 5 and polls[0] == 0
+
+
+def test_a_live_wrapper_drives_the_episode_and_gets_its_file(tmp_path):
+    sess = FakeSession(tmp_path / "scene.yaml", "mobile_panda", "open_fridge_door", tmp_path / "sim", "n", 100)
+    sess.start()
+    seen, sent = [], []
+
+    class Live(C.Live):
+        def series(self, s):
+            seen.append("series")
+            return O.ActionSeries(s.joints, {k: v + 100 for k, v in s.positions.items()}, s.base)
+
+        def driver(self, drive):
+            seen.append("driver")
+            return lambda n: {**drive(n), "live": True}
+
+        def finish(self, episode):
+            seen.append(("finish", episode["episode"], (tmp_path / "r" / "episode.json").is_file()))
+    ep = C.play(FakeClient(sess), tmp_path / "r", series(), lambda pos, base: sent.append(pos["arm"][0]), reset=False, live=Live())
+    assert seen == ["series", "driver", ("finish", 0, True)] and ep["live"] is True
+    assert C.play(FakeClient(sess), tmp_path / "r1", series(), lambda *a: None, reset=True)["episode"] == 1      # no wrapper: as before
+
+
+def test_the_driver_is_built_by_its_module_and_needs_the_oracle(monkeypatch, tmp_path):
+    (tmp_path / "live_mod.py").write_text("def make(client, args, instance, rollout):\n    return (client, args, instance, rollout)\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    a = SimpleNamespace(driver="live_mod:make", driver_args='{"k": 1}', instance="/i/scene.yaml", rollout="/r")
+    assert C.load_live(a, "c") == ("c", {"k": 1}, Path("/i/scene.yaml"), Path("/r"))
+    monkeypatch.setattr(C, "run_client", lambda fn, out: None)
+    with pytest.raises(SystemExit):
+        C.main(["--sim-out", "s", "--rollout", "r", "--spec", "{}", "--instance", "i", "--driver", "m:f"])
+
+
 def test_play_resets_only_when_asked_and_writes_the_episode(tmp_path):
     sess = FakeSession(tmp_path / "scene.yaml", "mobile_panda", "open_fridge_door", tmp_path / "sim", "n", 100)
     sess.start()
@@ -338,6 +379,9 @@ def test_the_client_container_command(item, tmp_path):
     r.stopped.set()
     r.run_client(Session(), tmp_path / "r0", [], False, tmp_path / "c.log")
     assert seen["fault"] is None and "--reset" not in seen["command"]            # a stopped run does not relaunch sims
+    r.client_src = (*S.CLIENT_SRC, "/repo/more")                                  # a wrapper of the policy may add what it imports
+    r.run_client(Session(), tmp_path / "r0", [], False, tmp_path / "c.log")
+    assert seen["pythonpath"] == (*S.CLIENT_SRC, "/repo/more")
     assert S.in_container("/elsewhere/x") == "/elsewhere/x" and S.in_container("--bag") == "--bag"
 
 

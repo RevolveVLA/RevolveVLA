@@ -87,6 +87,8 @@ class Scene:
 
 @REGISTRY.register("rollout", "sim")
 class SimRollout(Rollout):
+    client_src = CLIENT_SRC                                          # the client container's PYTHONPATH (a wrapper may add to it)
+
     def __init__(self, spec, params):
         if unknown := sorted(set(params) - set(PARAMS)):
             raise EvalError(f"rollout sim: unknown parameters {unknown} (known: {list(PARAMS)})")
@@ -120,7 +122,7 @@ class SimRollout(Rollout):
         command = ["python3", "-m", "evaluation.rollout_client", "--sim-out", str(session.out), "--rollout", str(rollout),
                    *map(in_container, args), "--ready-s", str(self.ready_s), "--lead-s", str(self.lead_s),
                    *(["--reset"] if reset else [])]
-        client = session.client(command, pythonpath=CLIENT_SRC, mounts=[rollout])
+        client = session.client(command, pythonpath=self.client_src, mounts=[rollout])
         return client.run(log, timeout=self.wall_s, watch=lambda: None if self.stopped.is_set() else session.check())
 
     # ---- Rollout

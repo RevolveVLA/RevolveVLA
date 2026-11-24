@@ -55,7 +55,7 @@ class FakeSession:
         self.close()
         self.out.mkdir(parents=True, exist_ok=True)
         self.started, self.launches = True, self.launches + 1
-        done = [int(f.stem.split("_")[1]) for f in self.out.glob("episode_*.json")]
+        done = [int(f.stem.split("_")[1]) for f in self.out.glob("episode_*.json") if f.stem.split("_")[1].isdigit()]    # as the evaluator's
         self.client_state = {"resets": 0, "next": max(done) + 1 if done else 0}
 
     def check(self) -> SimFault | None:

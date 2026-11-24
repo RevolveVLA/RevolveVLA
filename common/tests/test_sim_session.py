@@ -120,20 +120,53 @@ def test_a_relaunch_forgets_the_clock_lines_of_the_launch_before(tmp_path):
     assert s.check() is None
 
 
-def test_domain_pool_distinct_names_and_domains():
-    p = DomainPool("run1", range(10, 14))
+def test_domain_pool_distinct_names_and_domains(tmp_path):
+    p = DomainPool("run1", range(10, 14), lease_dir=tmp_path)
     got = [p.lease() for _ in range(3)]
     assert [n for n, _ in got] == ["run1-0", "run1-1", "run1-2"] and len({d for _, d in got}) == 3
     p.release("run1-1")
     assert p.lease()[0] == "run1-1"
 
 
-def test_domain_pool_skips_running_containers_and_runs_out():
-    p = DomainPool("r", range(10, 13), FakeDocker(names=["r-0", "r-1-client"], domains={10}))
+def test_domain_pool_skips_running_containers_and_runs_out(tmp_path):
+    p = DomainPool("r", range(10, 13), FakeDocker(names=["r-0", "r-1-client"], domains={10}),
+                   tmp_path)
     assert p.lease() == ("r-2", 11)
     assert p.lease()[1] == 12
     with pytest.raises(SimInfraError):
         p.lease()
+
+
+def test_domain_pools_of_two_processes_never_share_a_domain(tmp_path):
+    """Two `./revolve` processes started together: separate pools (as separate processes hold them), one lease dir."""
+    a, b = DomainPool("a", range(10, 14), FakeDocker(), tmp_path), DomainPool("b", range(10, 14), FakeDocker(), tmp_path)
+    got = [a.lease()[1], b.lease()[1], a.lease()[1], b.lease()[1]]
+    assert sorted(got) == [10, 11, 12, 13]
+    with pytest.raises(SimInfraError):
+        b.lease()
+    a.release("a-0")
+    assert b.lease()[1] == got[0]
+
+
+def test_domain_lease_of_a_dead_process_is_free_again(tmp_path):
+    code = ("import sys; from revolve_common.sim_session import DomainPool; "
+            "print(DomainPool('x', range(10, 12), lease_dir=sys.argv[1]).lease()[1], flush=True); "
+            "import os; os._exit(0)")
+    r = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=True)
+    assert r.stdout.split() == ["10"]               # the pool was never released: the process died holding it
+    assert DomainPool("y", range(10, 12), FakeDocker(), tmp_path).lease()[1] == 10
+
+
+def test_domain_lease_held_by_a_live_process_is_skipped(tmp_path):
+    code = ("import sys; from revolve_common.sim_session import DomainPool; "
+            "p = DomainPool('x', range(10, 12), lease_dir=sys.argv[1]); print(p.lease()[1], flush=True); sys.stdin.read()")
+    holder = subprocess.Popen([sys.executable, "-c", code, str(tmp_path)], stdin=subprocess.PIPE,
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "10"
+        assert DomainPool("y", range(10, 12), FakeDocker(), tmp_path).lease()[1] == 11
+    finally:
+        holder.communicate()
 
 
 def test_stop_sims_removes_the_prefix_only():

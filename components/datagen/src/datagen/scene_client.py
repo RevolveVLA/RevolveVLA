@@ -1,6 +1,6 @@
 """Client-container entry of the `sim` runner: `python3 -m datagen.scene_client --spec <spec json> --seed N --instance
 <scene.yaml>` runs the episode loop (core/episodes.py) of one scene instance against the sim on this container's ROS domain,
-with the spec's generator plugin. Exit code: 0 done, a SimFault's code (75-78: the host relaunches the sim), 1 anything else.
+with the spec's generator plugin. Exit code: 0 done, a SimFault's code (75-78, 80: the host relaunches the sim), 1 anything else.
 Runs in ROS 2 Lyrical (Python 3.14) from the simulator image with /repo on the path: only datagen's core and the generator
 plugin are imported."""
 from __future__ import annotations

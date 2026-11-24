@@ -223,6 +223,7 @@ class NoDocker:
 class InProcess(S.SimRollout):
     """The sim plugin over FakeSessions; the client container is the client loop in this process."""
     faults, passes, client_rc, client_error = None, staticmethod(lambda n: True), 0, None
+    bagless = staticmethod(lambda n: False)
 
     def __init__(self, params=None, **attrs):
         super().__init__(spec, params or {})
@@ -234,7 +235,7 @@ class InProcess(S.SimRollout):
 
     def session(self, item, sim_out, name, domain, gui):
         s = FakeSession(item.scene, "mobile_panda", "open_fridge_door", sim_out, name, domain, self.record, gui=gui,
-                        passes=self.passes, faults=self.faults)
+                        passes=self.passes, bagless=self.bagless, faults=self.faults)
         self.sessions.append(s)
         return s
 
@@ -276,6 +277,13 @@ def test_a_failed_episode_is_the_evaluators_verdict(item, tmp_path):
     rec = run(InProcess(passes=lambda n: False), item, tmp_path)
     assert (rec["passed"], rec["failed_phase"], rec["reason"], rec["error"]) == (False, "approach", "timeout_s", None)
     assert rec["phases"] == {"approach": "failed", "grasp": "not_reached", "open": "not_reached"}
+
+
+def test_a_passed_episode_without_a_bag_is_a_stack_error_not_a_verdict(item, tmp_path):
+    rec = run(InProcess(bagless=lambda n: True), item, tmp_path)
+    assert rec["passed"] is False and rec["phases"] is None and "without a bag" in rec["error"]
+    failed = run(InProcess(passes=lambda n: False, bagless=lambda n: True), item, tmp_path, "3_r1")
+    assert failed["error"] is None and failed["failed_phase"] == "approach"       # a failed episode needs no bag
 
 
 def test_a_sim_fault_relaunches_the_sim_and_runs_the_episode_again(item, tmp_path, capsys):

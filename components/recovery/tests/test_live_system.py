@@ -2,6 +2,7 @@
 out (the evaluation's Pipeline, its real policy client against a scripted client, fake sets) under the dagger recorder with a fake
 expert: the takeovers, the sidecars, the manifest, the summary, the quota, the leakage guard, resuming and the spec errors."""
 import json
+import os
 
 import fake_live as L
 import pytest
@@ -76,6 +77,18 @@ def test_the_policy_is_taken_over_and_every_takeover_is_a_manifest_entry(tmp_pat
         assert side["trigger"] == "phase_time" and side["segments"][-1][2] == "expert" and r["t_restart"] == side["takeover_t"]
     assert sorted(e["seed"] for e in m["episodes"]) == [200, 201, 202]
     assert "dagger" in (out_of(tmp_path) / "live" / "report.md").read_text()
+
+
+def test_dagger_entries_store_relative_paths(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr("recovery.core.manifest.REPO", tmp_path)           # the test's runs stand in for the repo's
+    recover(tmp_path, write_spec(tmp_path), "live", capsys=capsys)
+    entries = manifest(tmp_path)["episodes"]
+    assert len(entries) == 3
+    for e in entries:
+        r = e["recovery"]["from_rollout"]
+        assert not any(os.path.isabs(p) for p in (e["scene"], e["result"], e["bag"], r["scene"], r["bag"]))
+        assert (out_of(tmp_path) / e["scene"]).is_file() and (tmp_path / r["scene"]).is_file()    # out-relative / repo-relative
+        assert (tmp_path / r["bag"]).is_dir()
 
 
 def test_a_policy_that_passes_alone_is_no_takeover_and_no_manifest_entry(tmp_path, capsys):

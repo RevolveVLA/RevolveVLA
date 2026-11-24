@@ -23,6 +23,7 @@ from typing import Callable, Collection, Sequence
 from datagen.core.spec import SpecError
 
 from . import flags, leakage
+from .manifest import repo_rel
 from .spec import RecoverySpec
 
 LIVE = "live"
@@ -153,12 +154,12 @@ def entries(run: Path, out: Path, spec: RecoverySpec) -> list[dict]:
             continue
         bag = rec.get("bag")
         found.append({
-            "seed": rec["seed"], "scene": str(rec["scene"]), "robot": spec.robot, "task": spec.task, "episode": rec["episode"],
+            "seed": rec["seed"], "scene": rel(rec["scene"]), "robot": spec.robot, "task": spec.task, "episode": rec["episode"],
             "result": rel(rec["result_file"]), "bag": rel(bag) if bag and Path(bag).is_dir() else None,
             "passed": bool(rec["passed"]), "datagen": {"expert": f.get("expert"), "attempt": i, "wall_s": None},
             "recovery": {"kind": "dagger",
                          "from_rollout": {"run": spec.eval_run, "set": set_name, "rollout": key, "try": i,
-                                          "scene": str(rec["scene"]), "bag": bag},
+                                          "scene": repo_rel(rec["scene"]), "bag": repo_rel(bag)},
                          "phase": f["phase"], "trigger": f["trigger"], "reason": f["reason"], "t_restart": f["takeover_t"],
                          "restart_from": "takeover", "restart_state": None, "reset": rec.get("reset", {"mode": "relaunch"}),
                          "segment": f["segment"], "policy": {"plugin": rec["policy"], "ckpt": rec.get("ckpt")},

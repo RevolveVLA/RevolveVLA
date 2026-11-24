@@ -1,4 +1,5 @@
 """core/manifest.py: the DATAGEN-v2.md 8.4 entries of the job logs with the recovery block, `keep`, the reset records."""
+import dataclasses
 import json
 
 from recovery.core import manifest as M
@@ -45,6 +46,15 @@ def test_entry_shape(tmp_path):
         "phase": "grasp", "trigger": "verdict", "reason": "grasp:timeout_s", "t_restart": 10.0, "restart_from": "before_failure",
         "restart_state": {"base": (-1.5, 1.7, 1.5), "arm": (0.1,) * 7, "object_joint": 0.0},
         "reset": {"mode": "warm", "ok": True, "base_err_m": 0.01}, "segment": None}
+
+
+def test_repo_paths_of_the_failed_rollout_are_stored_relative_to_the_repo(tmp_path, monkeypatch):
+    monkeypatch.setattr(M, "REPO", tmp_path)
+    out, f, d = job(tmp_path, [(2, True)])
+    inside = dataclasses.replace(f, scene=str(tmp_path / "runs/eval/scene.yaml"), bag=str(tmp_path / "runs/eval/bag"))
+    (e,) = M.entries(out, d, inside, spec())
+    assert (e["recovery"]["from_rollout"]["scene"], e["recovery"]["from_rollout"]["bag"]) == ("runs/eval/scene.yaml", "runs/eval/bag")
+    assert M.repo_rel("/elsewhere/x") == "/elsewhere/x" and M.repo_rel("rel/x") == "rel/x" and M.repo_rel(None) is None
 
 
 def test_keep_successes_or_all(tmp_path):

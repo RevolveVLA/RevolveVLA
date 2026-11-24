@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from revolve_common.sim_session import NO_BAG, SimFault, has_bag
+
 from .errors import DatagenError
 from .interfaces import EpisodeClient, Generator, Result
 from .spec import EpisodeSpec
@@ -96,6 +98,8 @@ def run_episodes(client: EpisodeClient, generator: Generator, task: str, robot: 
         notes = generator.drive(client, instance, task, robot)
         client.wait_result(n)
         result = client.wait_files(n)
+        if result["passed"] and not has_bag(result):             # the recorder answered nothing: nothing to learn from
+            raise SimFault(NO_BAG, f"episode {n} passed without a bag ({result.get('bag')})")
         log["tries"].append({"attempt": len(log["tries"]), "episode": n, "passed": bool(result["passed"]),
                              "reason": result.get("reason"), "wall_s": round(clock() - t0, 1),
                              "expert": notes["expert"], "notes": notes.get("notes", ""), **(extra or {})})

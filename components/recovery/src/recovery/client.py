@@ -1,7 +1,7 @@
 """Job entry, run in a client container of the simulator image: `python3 -m recovery.client --spec <spec json> --job <job json>
 --sim-out <sim dir> [--warm]` runs the tries of one recovery job (core/jobs.py) against the sim on this container's ROS domain,
 with the spec's datagen generator. `--warm`: each try starts with a warm reset to the job's restart (`SimClient.reset_to`).
-Exit code (`run_client`): 0 done, a SimFault's code (75-78: the host relaunches the sim), warm_reset.MISS_EXIT (79: the warm
+Exit code (`run_client`): 0 done, a SimFault's code (75-78, 80: the host relaunches the sim), warm_reset.MISS_EXIT (79: the warm
 reset missed, the host relaunches the sim at the restart), 1 anything else."""
 from __future__ import annotations
 

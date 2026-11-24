@@ -161,3 +161,29 @@ def test_a_spec_yaml_is_not_a_job(tmp_path):
     assert not job.is_job({"task": "t", "episodes": [], "splits": {}}) and job.is_job(job_yaml(tmp_path))
     with pytest.raises(SpecError, match="cannot read"):
         job.load(tmp_path / "missing.yaml", tmp_path)
+
+
+def test_a_passed_episode_without_a_bag_is_a_sim_fault_that_relaunches_and_is_not_a_try(tmp_path):
+    from revolve_common.sim_session import RelaunchPolicy, run_with_relaunch
+    s, instance = session(tmp_path)
+    s.bagless = lambda n: n == 0                        # the recorder answered nothing for the first episode
+    policy = RelaunchPolicy()
+    log = run_with_relaunch(s, lambda sess: loop(sess, instance, EpisodeSpec(3, 1)), policy, log=lambda *_: None)
+    assert policy.faults == ["no_bag"] and s.launches == 2
+    assert [(t["episode"], t["passed"]) for t in log["tries"]] == [(1, True)]
+    assert [e["bag"] for e in manifest.entries(tmp_path, instance.parent, "t", "r")] == ["scene_0/episode_1_bag"]
+
+
+def test_a_passed_episode_without_a_bag_gives_up_after_the_retries(tmp_path):
+    from revolve_common.sim_session import RelaunchPolicy, SimInfraError, run_with_relaunch
+    s, instance = session(tmp_path)
+    s.bagless = lambda n: True
+    with pytest.raises(SimInfraError, match="no_bag"):
+        run_with_relaunch(s, lambda sess: loop(sess, instance, EpisodeSpec(3, 1)), RelaunchPolicy(2), log=lambda *_: None)
+
+
+def test_a_failed_episode_without_a_bag_is_still_a_try(tmp_path):
+    s, instance = session(tmp_path, passes=lambda n: False)
+    s.bagless = lambda n: True
+    s.start()
+    assert [t["passed"] for t in loop(s, instance, EpisodeSpec(2, 1))["tries"]] == [False, False]

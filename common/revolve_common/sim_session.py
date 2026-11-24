@@ -5,6 +5,7 @@ docker CLI through `Docker`, so the datagen and evaluation hosts import it freel
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import itertools
 import json
@@ -21,13 +22,15 @@ REPO = Path(__file__).resolve().parents[2]
 SIM_IMAGE = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
 READY_TIMEOUT_S = 180
 NO_CLOCK, NO_CLOCK_LINES = "No clock received", 3       # a broken launch (DATAGEN section 12); 1-2 lines are a race
+LEASE_DIR = REPO / "runs" / ".domain-leases"             # one flock-ed file per leased ROS domain, shared by all processes
 DOMAINS = range(102, 233)                               # revolve sim derives its own from container names in 1..101
 
 # Faults: the sim or its wiring is broken, not the episode. exit code of a client that hit one (host: SimFault.from_exit)
 READY_TIMEOUT, RESET_FAILED, RESULT_TIMEOUT, FILES_TIMEOUT = "ready_timeout", "reset_failed", "result_timeout", \
     "files_timeout"
+NO_BAG = "no_bag"                                       # a passed episode the recorder left without a bag
 SIM_EXIT, CLOCK_FAULT = "sim_exit", "clock_fault"       # seen by the host only
-EXIT_CODES = {READY_TIMEOUT: 75, RESET_FAILED: 76, RESULT_TIMEOUT: 77, FILES_TIMEOUT: 78}
+EXIT_CODES = {READY_TIMEOUT: 75, RESET_FAILED: 76, RESULT_TIMEOUT: 77, FILES_TIMEOUT: 78, NO_BAG: 80}
 
 
 class SimFault(Exception):
@@ -45,6 +48,11 @@ class SimFault(Exception):
     def from_exit(cls, rc: int, detail: str = "") -> SimFault | None:
         kind = next((k for k, c in EXIT_CODES.items() if c == rc), None)
         return cls(kind, detail) if kind else None
+
+
+def has_bag(result: dict) -> bool:
+    """The episode result names a bag directory that exists (the sim's recorder answers nothing under load)."""
+    return bool(result.get("bag")) and Path(result["bag"]).is_dir()
 
 
 class SimInfraError(RuntimeError):
@@ -76,27 +84,47 @@ class Docker:
 
 class DomainPool:
     """Distinct (container name, ROS domain) per worker: names `<prefix>-<k>`, domains from `domains`, skipping what is
-    leased here and what running containers use (a name or a domain). The prefix names the run."""
+    leased here, what another process leased and what running containers use (a name or a domain). The prefix names
+    the run. A domain is leased by an exclusive flock on `lease_dir/<domain>`: processes started at the same time never
+    share one, and a lease dies with its process (no stale files to clean)."""
 
-    def __init__(self, prefix: str, domains=DOMAINS, docker: Docker | None = None):
-        self.prefix, self.domains, self.docker = prefix, list(domains), docker or Docker()
-        self._leased: dict[str, int] = {}
+    def __init__(self, prefix: str, domains=DOMAINS, docker: Docker | None = None, lease_dir=LEASE_DIR):
+        self.prefix, self.domains, self.docker, self.lease_dir = prefix, list(domains), docker or Docker(), Path(lease_dir)
+        self._leased: dict[str, tuple[int, object]] = {}
         self._lock = threading.Lock()
+
+    def _flock(self, domain: int):
+        """The open lease file of `domain` holding its lock, or None when another holder has it."""
+        self.lease_dir.mkdir(parents=True, exist_ok=True)
+        f = open(self.lease_dir / str(domain), "a+")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            return None
+        f.seek(0)
+        f.truncate()
+        f.write(f"{os.getpid()}\n")
+        f.flush()
+        return f
 
     def lease(self) -> tuple[str, int]:
         with self._lock:
-            names, used = set(self.docker.names()), set(self.docker.domains()) | set(self._leased.values())
-            domain = next((d for d in self.domains if d not in used), None)
-            if domain is None:
+            names, used = set(self.docker.names()), set(self.docker.domains()) | {d for d, _ in self._leased.values()}
+            for domain in (d for d in self.domains if d not in used):
+                if (f := self._flock(domain)) is not None:
+                    break
+            else:
                 raise SimInfraError(f"no free ROS_DOMAIN_ID in {self.domains[0]}..{self.domains[-1]}")
             name = next(n for n in (f"{self.prefix}-{k}" for k in itertools.count())
                         if n not in self._leased and n not in names and f"{n}-client" not in names)
-            self._leased[name] = domain
+            self._leased[name] = domain, f
             return name, domain
 
     def release(self, name: str) -> None:
         with self._lock:
-            self._leased.pop(name, None)
+            if lease := self._leased.pop(name, None):
+                lease[1].close()
 
 
 def stop_sims(prefix: str, docker: Docker | None = None) -> int:

@@ -13,6 +13,7 @@ phases:
   restart_from: before_failure                 # phase_start | before_failure
   back_s: 1.0
   max_object_joint: 0.02                       # unreproducible when a scene joint is beyond this (the door must be closed)
+  # automoma, not moveit: moveit's resume cannot meet the 5 s grasp timer from a grasp phase_start (hold + planning take longer)
   generator: {plugin: automoma, attempts: 3, record: images}
   per_failure: 2                               # accepted episodes per failure
   quota: {approach: 20, grasp: 20, open: 0}    # episodes wanted per phase (a phase not listed is not recovered)

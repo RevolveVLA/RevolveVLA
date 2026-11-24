@@ -16,13 +16,14 @@ phases:
   restart_from: before_failure
   back_s: 1.0
   max_object_joint: 0.02
+  # automoma, not moveit: moveit's resume cannot meet the 5 s grasp timer from a grasp phase_start (hold + planning take longer)
   generator: {plugin: automoma, attempts: 3, record: images}
   per_failure: 2
   quota: {approach: 10, grasp: 10, open: 0}
 live:
   plugin: dagger
   triggers:                                    # supervise the policy: the first to fire hands over to the expert
-    - {plugin: phase_time, fraction: 0.7}
+    - {plugin: phase_time, fraction: 0.5}      # late takeovers leave the expert too little of the phase's time (0.7 did not)
     - {plugin: stall, window_s: 2, min_motion: 0.01}
   expert: {plugin: moveit_takeover}
   record: full                                 # the whole episode (the flags say where the expert took over); `interventions`: its span

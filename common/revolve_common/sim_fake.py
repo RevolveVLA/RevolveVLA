@@ -39,10 +39,12 @@ def scene_name(scene: str) -> str:
 
 class FakeSession:
     def __init__(self, scene, robot: str, task: str, out, name: str, domain_id: int, record: str = "images",
-                 gui: bool = False, *, passes=lambda n: True, faults: dict | None = None, reaches=lambda target: True, **_):
+                 gui: bool = False, *, passes=lambda n: True, bagless=lambda n: False,
+                 faults: dict | None = None, reaches=lambda target: True, **_):
         self.scene, self.robot, self.task, self.name, self.domain_id = str(scene), robot, task, name, domain_id
         self.out, self.record, self.gui = Path(out).resolve(), record, gui
-        self.passes, self.faults, self.reaches = passes, {k: list(v) for k, v in (faults or {}).items()}, reaches
+        self.passes, self.bagless, self.reaches = passes, bagless, reaches
+        self.faults = {k: list(v) for k, v in (faults or {}).items()}
         self.warm_targets = []
         self.started, self.launches, self.closed = False, 0, 0
         self.client_state = {"resets": 0, "next": 0}
@@ -111,7 +113,10 @@ class FakeClient:
         self.s.fault("wait_result")
         s = self.s
         res = fake_result(s.task, scene_name(s.scene), s.robot, n, bool(s.passes(n)), s.out)
-        (s.out / f"episode_{n}_bag").mkdir(exist_ok=True)
+        if s.bagless(n):                            # the recorder gave none
+            res["bag"] = None
+        else:
+            (s.out / f"episode_{n}_bag").mkdir(exist_ok=True)
         (s.out / f"episode_{n}.json").write_text(json.dumps(res))
         self._running = None
         return res

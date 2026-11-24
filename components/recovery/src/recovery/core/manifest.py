@@ -4,7 +4,7 @@ a `recovery` block per entry:
   recovery = {kind: "phase" | "dagger", from_rollout: {run, set, rollout, try, scene, bag}, phase, trigger, reason, t_restart,
               restart_from, restart_state: {base, arm, object_joint}, reset: {mode, ...}, segment: null}
 
-`result` / `bag` are the sim's files (under `<out>/sims/<slot>/`, relative to `out`); `reset`: `{mode: warm, ok: true, ...the
+`result` / `bag` are the sim's files (under `<out>/sims/<slot>/`, relative to `out`; `from_rollout.scene` / `bag` relative to the repo); `reset`: `{mode: warm, ok: true, ...the
 reset report}`, `{mode: relaunch}` (the sim was launched at the restart) or `{mode: relaunch, fallback: <the warm report that
 missed>}`; `segment` is for recorders that keep only a span of the episode (a live episode's `kind` is "dagger": its `phase` is
 where the takeover happened, `restart_from` "takeover", `t_restart` its time, plus `policy`, `expert_failure`, `max_delta_action`). `keep: successes` leaves out the tries the evaluator
@@ -19,10 +19,19 @@ from typing import Sequence
 
 from datagen.core import episodes
 from datagen.core import manifest as datagen_manifest
+from revolve_common.sim_session import REPO
 
 from .failures import Failure
 from .jobs import resets
 from .spec import RecoverySpec
+
+
+def repo_rel(path) -> str | None:
+    """`path` relative to the repo when it is inside it (the recipe resolves `from_rollout` paths against the repo), else as given."""
+    if path is None:
+        return None
+    p = Path(path)
+    return os.path.relpath(p, REPO) if p.is_absolute() and p.is_relative_to(REPO) else str(path)
 
 
 def reset_of(done: Sequence[dict], attempt: int) -> dict:
@@ -52,7 +61,7 @@ def entries(out: Path, job_dir: Path, failure: Failure, spec: RecoverySpec) -> l
             "datagen": {"expert": t["expert"], "attempt": t["attempt"], "wall_s": t["wall_s"]},
             "recovery": {"kind": "phase",
                          "from_rollout": {"run": spec.eval_run, "set": failure.set, "rollout": failure.rollout,
-                                          "try": failure.attempt, "scene": failure.scene, "bag": failure.bag},
+                                          "try": failure.attempt, "scene": repo_rel(failure.scene), "bag": repo_rel(failure.bag)},
                          "phase": failure.phase, "trigger": failure.trigger, "reason": failure.reason, "t_restart": r.t,
                          "restart_from": spec.phases.restart_from,
                          "restart_state": {"base": r.base, "arm": r.arm, "object_joint": r.object_joint},

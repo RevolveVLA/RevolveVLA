@@ -12,6 +12,7 @@ from recovery.core.robot import Arm
 from revolve_common import specs
 from revolve_common.sim_client import WarmResetMissed
 from revolve_common.sim_fake import FakeSession
+from revolve_common.sim_session import SimFault
 from revolve_common.warm_reset import ResetTarget
 
 ARM = Arm("panda_arm_controller", tuple(F.ARM))
@@ -94,3 +95,14 @@ def test_a_finished_job_is_not_run_again(tmp_path, scene):
     F.CALLS.clear()
     J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out)
     assert F.CALLS == [] and len(episodes.read(job.dir)["tries"]) == 1
+
+
+def test_a_passed_try_without_a_bag_is_a_sim_fault_not_a_recorded_try(tmp_path, scene):
+    job = J.make(0, failure(scene), tmp_path / "out", "mobile_panda", ARM)
+    s = session(tmp_path, job.scene, bagless=lambda n: n == 0)
+    with pytest.raises(SimFault, match="without a bag"):
+        J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out)
+    assert episodes.read(job.dir)["tries"] == []
+    s.start()                                                                       # the relaunch: the next episode has its bag
+    log = J.run_job(s.connect(), F.FakeGenerator(None, {}), job, "open_fridge_door", "mobile_panda", EpisodeSpec(2, 1), s.out)
+    assert [(t["episode"], t["passed"]) for t in log["tries"]] == [(1, True)]

@@ -29,7 +29,7 @@ from pathlib import Path
 
 from datagen.core.spec import SpecError
 from revolve_common.sim_session import (REPO, DomainPool, RelaunchPolicy, SimFault, SimInfraError, SimSession,
-                                        stop_sims, world_key)
+                                        has_bag, stop_sims, world_key)
 from revolve_common.warm_reset import MISS_EXIT
 
 from ...core.errors import EvalError
@@ -137,6 +137,8 @@ class SimRollout(Rollout):
         try:
             episode = self._episode(item, out, policy, gui)
             res = episode["result"]
+            if res["passed"] and not has_bag(res):
+                raise Failed(f"infrastructure: episode {episode['episode']} passed without a bag ({res.get('bag')})")
             record = dict(base, episode=episode["episode"], resets=episode["resets"], steps=episode.get("steps"),
                           phases={p["name"]: p["status"] for p in res["phases"]}, failed_phase=res["failed_phase"],
                           reason=res["reason"], check=res["check"], passed=bool(res["passed"]), duration_s=res["duration_s"],

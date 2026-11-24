@@ -7,6 +7,7 @@ COMP = Path(__file__).resolve().parents[1]
 REPO = COMP.parents[1]
 sys.path[:0] = [str(REPO / "common"), str(COMP / "src"), str(REPO / "components" / "datagen" / "src"),
                 str(REPO / "components" / "evaluation" / "src"), str(COMP / "tests")]
+sys.path.append(str(REPO / "components" / "recipe" / "src"))      # the GPU acceptance resolves a recipe over its outputs
 sys.path.append(str(REPO / "components" / "datagen" / "tests"))        # fake_datagen: the fake training generator of an eval's train spec
 
 

@@ -114,6 +114,14 @@ def test_the_policy_client_gets_the_driver_the_closed_phases_and_the_scene(tmp_p
     assert (p.name, p.needs_ckpt, p.client_only) == ("oracle", False, True)
 
 
+def test_closing_the_wrapper_closes_the_policy_it_wraps(tmp_path):
+    inner = EVAL.create("policy", "oracle", None, {})
+    closed = []
+    inner.close = lambda: closed.append(1)
+    live.LivePolicy(inner, parse(RAW), Recorder(), tmp_path).close()
+    assert closed == [1]
+
+
 def test_a_policy_is_wrapped_only_for_the_configs_of_the_live_pools(tmp_path):
     inner = EVAL.create("policy", "oracle", None, {})
     p = live.LivePolicy(inner, parse(RAW), Recorder(), tmp_path, [(5, 9), (20, 22)])

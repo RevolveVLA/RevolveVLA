@@ -3,10 +3,16 @@ out (the evaluation's Pipeline, its real policy client against a scripted client
 expert: the takeovers, the sidecars, the manifest, the summary, the quota, the leakage guard, resuming and the spec errors."""
 import json
 import os
+import threading
 
 import fake_live as L
+import numpy as np
 import pytest
 import yaml
+from evaluation import policy_service as PS
+from evaluation import served as S
+from evaluation.core.interfaces import Policy
+from evaluation.core.registry import REGISTRY as EVAL
 from fake_live import SCRIPTS, Script
 from recovery import cli
 from recovery.core import flags
@@ -22,6 +28,7 @@ PHASE_TIME = {"plugin": "phase_time", "phase": "approach", "after_s": 1.5}
 @pytest.fixture(autouse=True)
 def fakes(monkeypatch):
     L.LOG.clear()
+    L.STREAMED.clear()
     SCRIPTS.clear()
     monkeypatch.setattr(dagger, "RosState", L.StateStub)
 
@@ -202,3 +209,66 @@ def test_dry_run_prints_the_live_plan_and_touches_nothing(tmp_path, capsys):
     code, out, err = recover(tmp_path, write_spec(tmp_path), "--dry-run", capsys=capsys)
     assert code == 0, err
     assert "live: sets dagger of" in out and "under dagger" in out and "unseen: its held-out sets" in out and not out_of(tmp_path).exists()
+
+
+# ------------------------------------------------------------------ a served policy under the hand-back
+class Chunks:
+    """The policy service's fake model: chunk k is 50 actions whose first arm joint is 0.1 k + 0.001 i (i = the step in the chunk)."""
+
+    info = {"chunk": 50}
+
+    def __init__(self):
+        self.calls = 0
+
+    def __call__(self, images, state, task):
+        self.calls += 1
+        out = np.zeros((50, 11))
+        out[:, 3] = 0.1 * self.calls + 0.001 * np.arange(50)
+        return out
+
+
+@EVAL.register("policy", "fake_served")
+class FakeServed(Policy):
+    """What the smolvla policy hands the rollout client: `--serve` JSON for a service at `url`; `close()` is counted."""
+    name, needs_ckpt, client_only = "fake_served", False, True
+    closed = 0
+
+    def __init__(self, spec, params):
+        self.url = params["url"]
+
+    def client_args(self, item):
+        return ["--serve", json.dumps({"url": self.url, "prompt": "p", "robot": "mobile_panda", "actions_per_chunk": 20,
+                                       "image_size": None})]
+
+    def close(self):
+        FakeServed.closed += 1
+
+
+def test_a_handback_re_enters_the_served_drive_with_a_fresh_chunk_and_the_policy_is_closed(tmp_path, capsys, monkeypatch):
+    model = Chunks()
+    srv = PS.serve(PS.Service(model), 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    FakeServed.closed = 0
+
+    monkeypatch.setattr(S.Observer, "wire", lambda self, node: None)
+    monkeypatch.setattr(S.Observer, "wait_ready", lambda self, *a, **k: None)
+    monkeypatch.setattr(S.Observer, "observe", lambda self: ({"camera1": np.zeros((2, 2, 3), np.uint8)}, np.zeros(12, np.float32)))
+    SCRIPTS[200] = Script(passes_alone=True, end_s=12.0)
+    live = {"expert": {"plugin": "fake_takeover", "drives": True}, "handback": {"when": "phase_done"}, "max_interventions": 1}
+    sets = {"dagger": {"count": 1, "pool": {"initial": [200, 209]}, "plugin": "fake_set"}}
+    spec = write_spec(tmp_path, eval_spec=write_eval(tmp_path, sets, {"plugin": "fake_served", "url": f"http://127.0.0.1:{srv.server_address[1]}"}),
+                      live=live, keep="all")
+    try:
+        code, out, err = recover(tmp_path, spec, "live", capsys=capsys)
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert code == 0, err
+    sent = [round(float(pos["panda_arm_controller"][0]), 3) for pos, _ in L.STREAMED]
+    side = flags.read(out_of(tmp_path) / manifest(tmp_path)["episodes"][0]["result"])
+    assert side["interventions"][0]["handback_reason"] == "phase_done: approach -> grasp"
+    # the policy's chunk is abandoned where the expert took over: the next action is step 0 of a new chunk (not step k + 1 of the old)
+    steps = [(int(a * 10 + 1e-6), round(a * 1000) - 100 * int(a * 10 + 1e-6)) for a in sent]
+    cuts = [(x, y) for x, y in zip(steps, steps[1:]) if y[0] != x[0] and x[1] < 19]
+    assert len(cuts) == 1 and cuts[0][1] == (cuts[0][0][0] + 1, 0) and steps[-1][0] >= cuts[0][1][0]
+    assert FakeServed.closed == 1

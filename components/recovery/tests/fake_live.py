@@ -24,6 +24,20 @@ from revolve_common.sim_fake import FakeClient, FakeSession
 START = 3.9                             # the fake results' sim_time_start
 PHASES = (("approach", 0.0), ("grasp", 6.0), ("open", 9.0))
 LOG: list = []                          # what the fakes did, in order
+STREAMED: list = []                     # what a streaming policy's publisher was given: (joint targets, base twist)
+
+
+class Streamer:
+    """The publisher a policy client makes for its actions (instead of the ROS one): it logs what it is given."""
+
+    def __init__(self, node, series, lead_s):
+        pass
+
+    def wait_matched(self):
+        pass
+
+    def __call__(self, pos, base):
+        STREAMED.append((pos, base))
 
 
 @dataclass
@@ -152,7 +166,7 @@ class ClientRollout(Rollout):
         client = LiveClient(session, SCRIPTS.get(seed, Script()))
         session.passes = lambda n: client.finished
         with mock.patch.multiple(C, run_client=lambda fn, sim_out: fn(client), read_bag=lambda bag: SERIES,
-                                 RosStreamer=lambda node, series, lead: (lambda pos, base: None)):
+                                 RosStreamer=Streamer):
             C.main(["--sim-out", str(session.out), "--rollout", str(out), *policy.client_args(item), "--ready-s", "1"])
         ep = json.loads((out / "episode.json").read_text())
         res = ep["result"]

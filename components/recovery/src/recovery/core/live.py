@@ -54,6 +54,9 @@ it records in (default all): the configs of the others run the plain policy."""
         return [*self.inner.client_args(item), "--instance", str(item.scene), "--driver", DRIVER,
                 "--driver-args", json.dumps(payload)]
 
+    def close(self) -> None:
+        self.inner.close()
+
 
 def eval_plugins(spec: RecoverySpec, eval_spec, recorder, root: Path):
     """The evaluation's plugins for `eval_spec`, its policy under the recorder, its client container able to import this package."""

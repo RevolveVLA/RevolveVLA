@@ -8,7 +8,7 @@ from: {eval: specs/eval/fridge_smolvla_dagger.yaml}
 live:
   plugin: dagger
   triggers:                                    # the first to fire hands over to the expert
-    - {plugin: phase_time, fraction: 0.2}      # later takeovers leave the expert too little of the phase's time (0.5 and 0.7 did not)
+    - {plugin: phase_time, fraction: 0.1}      # later takeovers leave the expert too little of the phase's time (0.2, 0.5 and 0.7 did not)
     - {plugin: stall, window_s: 2, min_motion: 0.01}
     - {plugin: condition, phase: open, value: "open.while[1]", op: gt, threshold: 0.01, for_s: 0.2}     # the grasp slips
   expert: {plugin: moveit_takeover}

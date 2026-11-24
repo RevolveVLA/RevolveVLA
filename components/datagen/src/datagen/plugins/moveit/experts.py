@@ -17,7 +17,7 @@ import numpy as np
 from . import motion
 from .geometry import back_off, grasp_pose, rotation_about_z, stand_off, tcp_frame
 from . import resume as R
-from .robot_io import EpisodeOver
+from .robot_io import EpisodeOver, Stopped
 from .setup import Setup
 
 PRE = 0.10                          # pre-grasp: back along the approach [m]
@@ -64,11 +64,15 @@ class Expert:
         raise NotImplementedError
 
     # --- resuming
-    def resume(self, state: R.Situation | None = None) -> str:
+    def resume(self, state: R.Situation | None = None, stop=None) -> str:
         """Take the task over from the robot's current state (`state` for tests; live otherwise): hold the measured pose, then the
-        entry the state calls for and what follows it. Logs `max_delta_action` of the first second. -> the notes, as `run()`."""
+        entry the state calls for and what follows it. Logs `max_delta_action` of the first second. `stop()` (polled with the
+        episode's result, so between and during the motion segments) ends it cleanly: base stopped, measured pose held (a closed
+        hand keeps squeezing), mark `stopped`. -> the notes, as `run()`."""
         self.io.begin_episode()
+        self.io.stop = stop or (lambda: False)
         self.log, self.t0 = [], self.io.client.now()
+        self.T_cur, self.T_b, self.skip_link = self.T_h, None, None
         self.io.record_arm(1.0)
         try:
             s = state or self.observe()
@@ -92,7 +96,11 @@ class Expert:
             self.open()
         except EpisodeOver:
             self.mark("episode_over")
+        except Stopped:
+            self.mark("stopped")
+            self.settle()
         finally:
+            self.io.stop = lambda: False
             self.mark("first_second", max_delta_action=R.max_delta_action(self.io.arm_trace, self.t0))
         return json.dumps(self.log)
 

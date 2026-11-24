@@ -4,7 +4,8 @@ only the policy is wrapped (`LivePolicy`: its client gets the recorder's driver,
 warm resets and resumes are the evaluation's own.
 
 `<out>/live/` = an evaluation run (results.json, report.md, `<set>/<seed>_sim/` with every episode's result, bag and sidecar,
-see core/flags.py) + `summary.json`: {policy_only_success, takeovers, reasons, recovered, expert_frames_s, episodes, wall_s}
+see core/flags.py) + `summary.json`: {policy_only_success, takeovers, reasons, recovered, expert_frames_s, episodes, interventions (expert spans),
+handbacks, policy_success_after_handback (episodes the policy finished after a hand-back), wall_s}
 (a line of it is logged). The manifest entries (core/manifest.py shape, `recovery.kind` "dagger") are derived from that run,
 never read back: one per episode with a takeover (a policy-only success is the evaluation's rollout). A coupled evaluation
 (core/coupling.py) is the same run, in the evaluation's own out: `wrap` puts the recorder around its policy, the functions
@@ -128,7 +129,7 @@ def tries(run: Path):
 
 def summary(run: Path) -> dict:
     """The one-line health check of a live run (`run`: its dir)."""
-    n = taken = recovered = ok = 0
+    n = taken = recovered = ok = interventions = handbacks = after = 0
     reasons: Counter = Counter()
     expert_s = 0.0
     for *_, rec, f in tries(run):
@@ -139,9 +140,15 @@ def summary(run: Path) -> dict:
         taken += 1
         recovered += bool(rec["passed"])
         reasons[f["trigger"]] += 1
-        expert_s += sum(t1 - t0 for t0, t1, who in f["segments"] if who == "expert")
+        spans = [s for s in f["segments"] if s[2] == "expert"]
+        expert_s += sum(t1 - t0 for t0, t1, _ in spans)
+        interventions += len(spans)
+        back = sum(i["handback_t"] is not None for i in f.get("interventions", ()))
+        handbacks += back
+        after += bool(back and rec["passed"] and f["segments"][-1][2] == "policy")      # the policy finished it
     return {"policy_only_success": ok, "takeovers": taken, "reasons": dict(reasons), "recovered": recovered,
-            "expert_frames_s": round(expert_s, 2), "episodes": n}
+            "expert_frames_s": round(expert_s, 2), "episodes": n, "interventions": interventions, "handbacks": handbacks,
+            "policy_success_after_handback": after}
 
 
 def entries(run: Path, out: Path, spec: RecoverySpec) -> list[dict]:
@@ -163,5 +170,7 @@ def entries(run: Path, out: Path, spec: RecoverySpec) -> list[dict]:
                          "phase": f["phase"], "trigger": f["trigger"], "reason": f["reason"], "t_restart": f["takeover_t"],
                          "restart_from": "takeover", "restart_state": None, "reset": rec.get("reset", {"mode": "relaunch"}),
                          "segment": f["segment"], "policy": {"plugin": rec["policy"], "ckpt": rec.get("ckpt")},
-                         "expert_failure": f["expert_failure"], "max_delta_action": f["max_delta_action"]}})
+                         "expert_failure": f["expert_failure"], "max_delta_action": f["max_delta_action"],
+                         **({"segments": f["kept"]} if f.get("kept") else {}),
+                         **({"interventions": f["interventions"]} if "interventions" in f else {})}})
     return found

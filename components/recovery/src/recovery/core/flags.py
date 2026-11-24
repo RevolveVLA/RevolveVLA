@@ -4,6 +4,12 @@ next to the episode's `episode_<n>.json` in the sim's out (one sim holds several
   {takeover_t, takeover_sim_t, trigger, reason, phase, max_delta_action, expert, expert_failure,
    segments: [[t0, t1, "policy" | "expert"], ...], segment: [t0, t1] | null}
 
+With a hand-back (`live.handback`) the first intervention's data stays at the top level and the sidecar adds
+  kept: [[t0, t1], ...] | null     (every expert span when `record: interventions`; `segment` is then the span iff there is one)
+  interventions: [{trigger, reason, phase, takeover_t, handback_t | null, handback_reason | null,
+                   max_delta_action: {takeover, handback}, expert_failure}, ...]
+`segments` alternates policy / expert over the whole episode (several expert spans).
+
 Times are sim seconds since the episode's start (`takeover_sim_t`: the sim clock). Without a takeover `takeover_t` and the
 other takeover keys are null and `segments` is the policy's whole episode. `segment` is the span a recorder that keeps only
 the intervention asks for (the manifest copies it). The recipe reads the same name and `segments` (its plugin sources/recovery)."""
@@ -38,13 +44,14 @@ def read(result: str | Path) -> dict | None:
 
 
 def tally(root: Path) -> Counter:
-    """Takeovers per phase over every sidecar under `root`."""
+    """Takeovers per phase over every sidecar under `root` (each intervention of an episode counts)."""
     taken: Counter = Counter()
     for path in Path(root).rglob("episode_*" + SUFFIX):
         try:
-            phase = json.loads(path.read_text()).get("phase")
+            f = json.loads(path.read_text())
         except (OSError, ValueError):
             continue
-        if phase:
-            taken[phase] += 1
+        for phase in (i.get("phase") for i in f.get("interventions") or [f]):
+            if phase:
+                taken[phase] += 1
     return taken

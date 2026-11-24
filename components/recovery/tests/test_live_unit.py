@@ -222,3 +222,10 @@ def test_a_spec_has_phases_live_or_both_and_names_the_sets_it_rolls_out():
     with pytest.raises(SpecError, match="from.bogus: unknown key"):
         parse({**RAW, "from": {"eval": "e.yaml", "bogus": 1}})
     assert parse(RAW).hash == parse({**RAW, "out": "elsewhere"}).hash != parse({**RAW, "from": {"eval": "e.yaml", "sets": ["a"]}}).hash
+
+
+def test_the_quota_tally_counts_every_intervention_of_an_episode(tmp_path):
+    (tmp_path / "episode_0.interventions.json").write_text(json.dumps({"phase": "approach"}))
+    (tmp_path / "episode_1.interventions.json").write_text(json.dumps(
+        {"phase": "approach", "interventions": [{"phase": "approach"}, {"phase": "grasp"}, {"phase": "grasp"}]}))
+    assert flags.tally(tmp_path) == {"approach": 2, "grasp": 2}

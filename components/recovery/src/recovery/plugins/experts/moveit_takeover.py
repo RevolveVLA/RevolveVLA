@@ -34,5 +34,5 @@ class MoveItTakeover:
         self.generator.prepare(ctx.client, ctx.instance, ctx.task, ctx.robot)
 
     def takeover(self, ctx: LiveContext, why: str) -> Mapping[str, Any]:
-        done = self.generator.drive(ctx.client, ctx.instance, ctx.task, ctx.robot)
+        done = self.generator.drive(ctx.client, ctx.instance, ctx.task, ctx.robot, stop=ctx.stop)
         return {**done, "max_delta_action": max_delta_action(done.get("notes"))}

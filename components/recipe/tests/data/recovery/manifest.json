@@ -1,0 +1,271 @@
+{
+ "task": "open_fridge_door",
+ "robot": "mobile_panda",
+ "created": "2026-11-24T00:00:00Z",
+ "episodes": [
+  {
+   "seed": 0,
+   "scene": "phase/p0/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/p0/episode_0.json",
+   "bag": "sims/0/p0/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "phase",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_2/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "approach",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 1,
+   "scene": "phase/p1/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/p1/episode_0.json",
+   "bag": "sims/0/p1/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "phase",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_2/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "approach",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 2,
+   "scene": "phase/p2/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/p2/episode_0.json",
+   "bag": "sims/0/p2/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "phase",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_2/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "grasp",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 3,
+   "scene": "phase/p3/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/p3/episode_0.json",
+   "bag": "sims/0/p3/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "phase",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "eval/heldout/scene_501/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "approach",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 4,
+   "scene": "phase/p4/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/p4/episode_0.json",
+   "bag": "sims/0/p4/episode_0_bag",
+   "passed": false,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "phase",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_2/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "grasp",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 5,
+   "scene": "dagger/d0/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/d0/episode_0.json",
+   "bag": "sims/0/d0/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "dagger",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_1/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "open",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  },
+  {
+   "seed": 6,
+   "scene": "dagger/d1/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/d1/episode_0.json",
+   "bag": "sims/0/d1/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "dagger",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_2/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "grasp",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": [
+     8.0,
+     30.0
+    ]
+   }
+  },
+  {
+   "seed": 7,
+   "scene": "dagger/d2/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "sims/0/d2/episode_0.json",
+   "bag": "sims/0/d2/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 30.0
+   },
+   "recovery": {
+    "kind": "dagger",
+    "from_rollout": {
+     "run": "eval",
+     "set": "train",
+     "rollout": "2_r0",
+     "try": 0,
+     "scene": "datagen/train/scene_1/scene.yaml",
+     "bag": "x"
+    },
+    "phase": "approach",
+    "trigger": "verdict",
+    "reason": "timeout_s",
+    "t_restart": 5.0,
+    "restart_from": "before_failure",
+    "segment": null
+   }
+  }
+ ],
+ "counts": {
+  "jobs": 6,
+  "attempted": 8,
+  "passed": 7
+ }
+}

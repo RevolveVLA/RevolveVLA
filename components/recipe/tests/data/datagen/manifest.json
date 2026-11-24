@@ -1,0 +1,87 @@
+{
+ "task": "open_fridge_door",
+ "robot": "mobile_panda",
+ "created": "2026-11-24T00:00:00Z",
+ "episodes": [
+  {
+   "seed": 1,
+   "scene": "train/scene_1/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "train/scene_1/episode_0.json",
+   "bag": "train/scene_1/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 40.0
+   }
+  },
+  {
+   "seed": 2,
+   "scene": "train/scene_2/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "train/scene_2/episode_0.json",
+   "bag": "train/scene_2/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 40.0
+   }
+  },
+  {
+   "seed": 2,
+   "scene": "train/scene_2/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 1,
+   "result": "train/scene_2/episode_1.json",
+   "bag": "train/scene_2/episode_1_bag",
+   "passed": false,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 1,
+    "wall_s": 40.0
+   }
+  },
+  {
+   "seed": 3,
+   "scene": "train/scene_3/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 0,
+   "result": "train/scene_3/episode_0.json",
+   "bag": "train/scene_3/episode_0_bag",
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 0,
+    "wall_s": 40.0
+   }
+  },
+  {
+   "seed": 3,
+   "scene": "train/scene_3/scene.yaml",
+   "robot": "mobile_panda",
+   "task": "open_fridge_door",
+   "episode": 1,
+   "result": "train/scene_3/episode_1.json",
+   "bag": null,
+   "passed": true,
+   "datagen": {
+    "expert": "moveit",
+    "attempt": 1,
+    "wall_s": 40.0
+   }
+  }
+ ],
+ "counts": {
+  "scenes": 3,
+  "attempted": 5,
+  "passed": 4
+ }
+}

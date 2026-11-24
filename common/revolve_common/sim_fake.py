@@ -2,7 +2,8 @@
 SimClient's loop (wait_ready, reset, start_episode, wait_result, wait_files). No docker, no ROS: each episode writes
 `episode_<n>.json` (the DATAGEN 4.3 schema) and an empty `episode_<n>_bag/` into `out`, numbered on from the highest
 file there, as the sim does. `faults` = {op: [kind, ...]}: the next call of that op (wait_ready, reset, wait_result,
-check) raises / returns that SimFault kind once, shared by the relaunches of the session."""
+check) raises / returns that SimFault kind once, shared by the relaunches of the session. `reaches(target)` says whether
+a warm reset (`reset_to`) gets to its target."""
 from __future__ import annotations
 
 import json
@@ -12,6 +13,7 @@ import yaml
 
 from .sim_session import SimFault
 from .sim_client import EpisodeRefused
+from .warm_reset import ResetReport
 
 PHASES = ("approach", "grasp", "open")
 
@@ -37,10 +39,11 @@ def scene_name(scene: str) -> str:
 
 class FakeSession:
     def __init__(self, scene, robot: str, task: str, out, name: str, domain_id: int, record: str = "images",
-                 gui: bool = False, *, passes=lambda n: True, faults: dict | None = None, **_):
+                 gui: bool = False, *, passes=lambda n: True, faults: dict | None = None, reaches=lambda target: True, **_):
         self.scene, self.robot, self.task, self.name, self.domain_id = str(scene), robot, task, name, domain_id
         self.out, self.record, self.gui = Path(out).resolve(), record, gui
-        self.passes, self.faults = passes, {k: list(v) for k, v in (faults or {}).items()}
+        self.passes, self.faults, self.reaches = passes, {k: list(v) for k, v in (faults or {}).items()}, reaches
+        self.warm_targets = []
         self.started, self.launches, self.closed = False, 0, 0
         self.client_state = {"resets": 0, "next": 0}
 
@@ -84,6 +87,13 @@ class FakeClient:
     def reset(self, timeout_s: float = 0) -> None:
         self.s.fault("reset")
         self.s.client_state["resets"] += 1
+
+    def reset_to(self, target, tol=None, timeout_s: float = 0) -> ResetReport:
+        self.reset()
+        self.s.warm_targets.append(target)
+        if self.s.reaches(target):
+            return ResetReport(True, 0.01, 0.01, 0.01, wall_s=0.1, sim_s=0.1)
+        return ResetReport(False, 0.5, 0.0, 0.0, wall_s=0.1, sim_s=0.1, reason="missed the target (fake)")
 
     def resets(self) -> int:
         return self.s.client_state["resets"]

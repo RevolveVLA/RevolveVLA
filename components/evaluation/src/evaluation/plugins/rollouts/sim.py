@@ -5,6 +5,12 @@ sim unless it is fresh, start the episode, stream the policy's actions, wait for
 the start (the same reset). A SimFault (clock fault, sim exit, ready / reset / result timeout) relaunches the sim (up to
 `infra_retries` per config) and runs the episode again: infrastructure faults are not failed episodes.
 
+`run.reset: warm` shares one sim between the configs of a world (scene instances that differ only in `robot_start`,
+sim_session.same_world): the sim is launched with the first config's instance and each other config's rollouts start with a
+warm reset (the robot is driven to its start after the reset: revolve_common.warm_reset). A miss, or a robot / instance
+without a reset target, runs that config on a sim of its own as in `relaunch`; the record's `reset: {mode, report, fallback}`
+says which. The configs of one world then run one after the other (one sim). The default `relaunch` is one sim per config.
+
 The record is the evaluator's verdict (DATAGEN 4.3): passed, phases {name: status}, failed_phase, reason, duration_s, episode,
 bag, result_file; `error` when there is none: `wall limit` (the client ran over `wall_s`), `interrupted`, `infrastructure`, or
 the client's failure. Params (yaml `rollout: {plugin: sim, ...}`): `record` (images | no-images, default images: a policy needs
@@ -18,17 +24,20 @@ import json
 import subprocess
 import sys
 import threading
+from collections import Counter
 from pathlib import Path
 
 from datagen.core.spec import SpecError
 from revolve_common.sim_session import (REPO, DomainPool, RelaunchPolicy, SimFault, SimInfraError, SimSession,
-                                        stop_sims)
+                                        stop_sims, world_key)
+from revolve_common.warm_reset import MISS_EXIT
 
 from ...core.errors import EvalError
 from ...core.interfaces import Rollout
 from ...core.registry import REGISTRY
 from ...core.sims import sim_prefix
 from ...core.termination import LIMITS
+from ...core.warm import reset_target
 
 PARAMS = ("record", "wall_s", "ready_s", "infra_retries", "lead_s")
 CLIENT_SRC = ("/repo/components/evaluation/src", "/repo/components/datagen/src")   # in the client container (repo = /repo)
@@ -50,11 +59,21 @@ def in_container(arg: str) -> str:
     return str(Path("/repo") / p.relative_to(REPO)) if p.is_absolute() and p.is_relative_to(REPO) else arg
 
 
-class Scene:
-    """The sim of one config, kept for its rollouts."""
+class WarmMiss(Exception):
+    """A client's warm reset missed its target: the report says by how much."""
 
-    def __init__(self, session, name: str, retries: int):
+    def __init__(self, report: dict):
+        self.report = report
+        super().__init__(report.get("reason"))
+
+
+class Scene:
+    """The sim of one config, kept for its rollouts (`shared`: of a world, for all its configs); `scene` = the instance it
+    was launched with."""
+
+    def __init__(self, session, name: str, retries: int, scene: str = "", shared: bool = False):
         self.session, self.name, self.faults = session, name, RelaunchPolicy(retries)
+        self.scene, self.shared = scene, shared
         self.lock, self.running, self.fresh = threading.Lock(), False, True
 
     def launch(self) -> None:
@@ -78,7 +97,8 @@ class SimRollout(Rollout):
         self.wall_s, self.ready_s = limits["wall_s"], limits["ready_s"]
         self.infra_retries = int(params.get("infra_retries", 3))
         self.lead_s = float(params.get("lead_s", 0.1))
-        self.prefix, self.scenes = sim_prefix(spec), {}
+        self.warm = spec.run.reset == "warm"
+        self.prefix, self.scenes, self.pending = sim_prefix(spec), {}, Counter()
         self.lock, self.stopped = threading.Lock(), threading.Event()
         self.pool = self.domain_pool()
 
@@ -89,6 +109,10 @@ class SimRollout(Rollout):
     def session(self, item, sim_out: Path, name: str, domain: int, gui: bool):
         return SimSession(item.scene, self.spec.train.robot, self.spec.train.task, sim_out, name, domain, self.record,
                           gui=gui, log=sim_out.parent / f"{sim_out.name}.log")
+
+    def target(self, item):
+        """The start a warm reset takes the robot to for `item` (None: this config cannot be warm-reset)."""
+        return reset_target(item.scene, self.spec.train.robot)
 
     def run_client(self, session, rollout: Path, args: list[str], reset: bool, log: Path) -> int:
         """The policy client of one episode in a container beside the sim -> its exit code (a SimFault for a sim that is
@@ -114,16 +138,25 @@ class SimRollout(Rollout):
             record = dict(base, episode=episode["episode"], resets=episode["resets"], steps=episode.get("steps"),
                           phases={p["name"]: p["status"] for p in res["phases"]}, failed_phase=res["failed_phase"],
                           reason=res["reason"], check=res["check"], passed=bool(res["passed"]), duration_s=res["duration_s"],
-                          bag=res["bag"], result_file=res["result_file"], error=None)
+                          bag=res["bag"], result_file=res["result_file"], error=None,
+                          **({"reset": episode["reset"]} if "reset" in episode else {}))
         except Failed as e:
             record = dict(base, episode=None, phases=None, failed_phase=None, reason=None, passed=False, error=str(e))
         (out / "rollout.json").write_text(json.dumps(record))
         return record
 
-    def release(self, item) -> None:
+    def begin(self, items) -> None:
         with self.lock:
-            scene = self.scenes.pop(str(item.scene), None)
-        if scene:
+            for item in items:
+                self.pending[self._key(item)] += 1
+
+    def release(self, item) -> None:
+        """The config is over: its own sim goes; a world's sim goes with its last config."""
+        with self.lock:
+            key, own = self._key(item), str(item.scene)
+            self.pending[key] -= 1
+            gone = [self.scenes.pop(k) for k in {key, own} if k in self.scenes and (k == own or self.pending[k] <= 0)]
+        for scene in gone:
             scene.stop()
             self.pool.release(scene.name)
 
@@ -135,18 +168,39 @@ class SimRollout(Rollout):
         return 1                                                     # a sim runs in real time on the GPU
 
     # ---- one episode
-    def _scene(self, item, out: Path, gui: bool) -> Scene:
+    def _key(self, item) -> str:
+        """Which sim serves `item`: its world's when warm resets apply to it, else one of its own."""
+        world = world_key(item.scene) if self.warm else None
+        return f"world:{world}" if world and self.target(item) else str(item.scene)
+
+    def _scene(self, item, out: Path, gui: bool, key: str) -> Scene:
         with self.lock:
-            if (key := str(item.scene)) not in self.scenes:
+            if key not in self.scenes:
                 name, domain = self.pool.lease()
                 sim_out = out.parent / f"{item.config.seed}_sim"
-                self.scenes[key] = Scene(self.session(item, sim_out, name, domain, gui), name, self.infra_retries)
+                self.scenes[key] = Scene(self.session(item, sim_out, name, domain, gui), name, self.infra_retries,
+                                         str(item.scene), key.startswith("world:"))
             return self.scenes[key]
 
     def _episode(self, item, out: Path, policy, gui: bool) -> dict:
         args = policy.client_args(item)
-        (out / "episode.json").unlink(missing_ok=True)
-        scene = self._scene(item, out, gui)
+        for f in ("episode.json", "reset.json"):
+            (out / f).unlink(missing_ok=True)
+        scene, fallback = self._scene(item, out, gui, self._key(item)), None
+        try:
+            ep = self._on(scene, out, args, scene.shared and scene.scene != str(item.scene) and self.target(item))
+        except WarmMiss as miss:
+            say(f"warm reset of {item.scene} missed ({miss}): a sim of its own")
+            scene, fallback = self._scene(item, out, gui, str(item.scene)), miss.report
+            ep = self._on(scene, out, args, None)
+        if not self.warm:
+            return ep
+        return dict(ep, reset={"mode": "warm" if scene.shared else "relaunch", "report": ep.get("reset"),
+                               **({"fallback": fallback} if fallback else {})})
+
+    def _on(self, scene: Scene, out: Path, args: list[str], target) -> dict:
+        """One episode on `scene`'s sim (relaunched on its faults); `target`: warm reset to it first."""
+        args = [*args, *(["--reset-to", target.to_json()] if target else [])]
         with scene.lock:
             while True:
                 if self.stopped.is_set():
@@ -167,6 +221,8 @@ class SimRollout(Rollout):
                     scene.stop()                                   # the episode may still run: the next one gets a fresh sim
                     raise Failed(f"wall limit {self.wall_s:.0f} s: the policy client did not finish; see {out / 'client.log'}")
                 scene.fresh = False
+                if rc == MISS_EXIT:
+                    raise WarmMiss(self._miss(out))
                 if rc != 0:
                     scene.stop()
                     raise Failed("interrupted: the client was killed" if self.stopped.is_set() else
@@ -175,3 +231,10 @@ class SimRollout(Rollout):
                     return json.loads((out / "episode.json").read_text())
                 except (OSError, ValueError) as e:
                     raise Failed(f"the policy client left no episode.json ({e}); see {out / 'client.log'}") from e
+
+    @staticmethod
+    def _miss(out: Path) -> dict:
+        try:
+            return json.loads((out / "reset.json").read_text())
+        except (OSError, ValueError):
+            return {"ok": False, "reason": "warm reset missed (no report)"}

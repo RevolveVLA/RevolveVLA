@@ -71,6 +71,9 @@ class Stub:
         rec.update(self.plan.get((seed, self.n[seed]), {}))
         return rec
 
+    def begin(self, items):
+        pass
+
     def release(self, item):
         self.released.append(item.config.seed)
 

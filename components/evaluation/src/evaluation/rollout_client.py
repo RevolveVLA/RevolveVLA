@@ -1,11 +1,13 @@
 """Policy client of the `sim` rollout: `python3 -m evaluation.rollout_client --sim-out DIR --rollout DIR (--bag BAG | --spec
-JSON --instance SCENE_YAML) [--reset]` runs ONE episode against the sim on this container's ROS domain (a client container
-from the simulator image, ROS 2 Lyrical): wait for ready, reset when the sim already ran an episode, `/evaluator/start`, then
+JSON --instance SCENE_YAML) [--reset | --reset-to TARGET]` runs ONE episode against the sim on this container's ROS domain
+(a client container from the simulator image, ROS 2 Lyrical): wait for ready, reset when the sim already ran an episode
+(`--reset-to`: a warm reset to another start, revolve_common.warm_reset), `/evaluator/start`, then
 the policy acts until the evaluator's result: the oracle streams a bag's actions as a policy would (single-point
 `joint_trajectory` per controller + `cmd_vel`, 30 Hz, sim time: DATAGEN-v2.md 5.2), the expert runs the training spec's datagen
 generator closed-loop (`prepare` before the episode starts, `drive` after). Then wait for the result's files and write
-`<rollout>/episode.json` = {episode, resets, result, + the policy's: steps | expert, notes}. Exit code: 0 done, a SimFault's code
-(75-78: the host relaunches the sim), 1 anything else."""
+`<rollout>/episode.json` = {episode, resets, result, + reset (the warm reset's report), + the policy's: steps | expert, notes}.
+Exit code: 0 done, a SimFault's code (75-78: the host relaunches the sim), 79 a warm reset that missed its target (the host
+relaunches with that start; `<rollout>/reset.json` has the report), 1 anything else."""
 from __future__ import annotations
 
 import argparse
@@ -13,8 +15,9 @@ import json
 import time
 from pathlib import Path
 
-from revolve_common.sim_client import RESULT_TIMEOUT_S, run_client
+from revolve_common.sim_client import RESULT_TIMEOUT_S, WarmResetMissed, run_client
 from revolve_common.sim_session import READY_TIMEOUT_S, RESULT_TIMEOUT, SimFault
+from revolve_common.warm_reset import ResetReport, ResetTarget
 
 from .oracle_actions import ACTION_HZ, CMD_VEL, ActionSeries, read_bag
 
@@ -73,12 +76,20 @@ def stream(client, n: int, series: ActionSeries, publish, timeout_s: float = RES
     return sent
 
 
-def episode(client, rollout_dir, reset: bool, ready_s: float, drive, prepare=None) -> dict:
+def episode(client, rollout_dir, reset: bool, ready_s: float, drive, prepare=None, target: ResetTarget | None = None) -> dict:
     """One episode (the loop of DATAGEN 4.4 for a sim that may have run one before) -> what `episode.json` holds.
     `prepare()` runs once the sim is ready (and reset), before the episode starts; `drive(n)` acts until the result of
-    episode n is out and returns what the policy adds to the file."""
+    episode n is out and returns what the policy adds to the file. `target`: warm reset to that start instead of a plain
+    reset (its report is in the file as `reset`; a miss writes `reset.json` and raises WarmResetMissed)."""
     client.wait_ready(ready_s)
-    if reset:
+    report = None
+    if target is not None:
+        report = client.reset_to(target).to_dict()
+        if not report["ok"]:
+            Path(rollout_dir).mkdir(parents=True, exist_ok=True)
+            (Path(rollout_dir) / "reset.json").write_text(json.dumps(report, indent=1))
+            raise WarmResetMissed(ResetReport(**report))
+    elif reset:
         client.reset()
     if prepare:
         prepare()
@@ -86,23 +97,24 @@ def episode(client, rollout_dir, reset: bool, ready_s: float, drive, prepare=Non
     n = client.start_episode()
     extra = drive(n)
     client.wait_result(n)
-    ep = {"episode": n, "resets": resets, **extra, "result": client.wait_files(n)}
+    ep = {"episode": n, "resets": resets, **extra, **({"reset": report} if report else {}), "result": client.wait_files(n)}
     Path(rollout_dir).mkdir(parents=True, exist_ok=True)
     (Path(rollout_dir) / "episode.json").write_text(json.dumps(ep, indent=1))
     return ep
 
 
-def play(client, rollout_dir, series: ActionSeries, publish, reset: bool, ready_s: float = READY_TIMEOUT_S) -> dict:
+def play(client, rollout_dir, series: ActionSeries, publish, reset: bool, ready_s: float = READY_TIMEOUT_S,
+         target: ResetTarget | None = None) -> dict:
     """The oracle: stream the series' actions."""
     return episode(client, rollout_dir, reset, ready_s, lambda n: {"steps": stream(client, n, series, publish)},
-                   getattr(publish, "wait_matched", None))
+                   getattr(publish, "wait_matched", None), target)
 
 
 def play_expert(client, rollout_dir, generator, instance, task: str, robot: str, reset: bool,
-                ready_s: float = READY_TIMEOUT_S) -> dict:
+                ready_s: float = READY_TIMEOUT_S, target: ResetTarget | None = None) -> dict:
     """The expert: a datagen generator drives the episode closed-loop (its planner starts off the episode's clock)."""
     return episode(client, rollout_dir, reset, ready_s, lambda n: dict(generator.drive(client, instance, task, robot)),
-                   lambda: generator.prepare(client, instance, task, robot))
+                   lambda: generator.prepare(client, instance, task, robot), target)
 
 
 def main(argv=None) -> None:
@@ -114,9 +126,11 @@ def main(argv=None) -> None:
     who.add_argument("--spec", help="the expert: the training datagen spec as JSON (DatagenSpec.raw), its generator drives")
     ap.add_argument("--instance", help="the expert: the scene instance's scene.yaml")
     ap.add_argument("--reset", action="store_true", help="the sim already ran an episode: reset it first")
+    ap.add_argument("--reset-to", help="warm reset to this start (a ResetTarget as JSON) instead of a plain reset")
     ap.add_argument("--ready-s", type=float, default=READY_TIMEOUT_S)
     ap.add_argument("--lead-s", type=float, default=LEAD_S, help="time_from_start of each streamed point (the oracle)")
     a = ap.parse_args(argv)
+    target = ResetTarget.from_json(a.reset_to) if a.reset_to else None
     if a.spec:
         if not a.instance:
             ap.error("--spec needs --instance")
@@ -124,10 +138,10 @@ def main(argv=None) -> None:
         from datagen.core.spec import parse
         spec = parse(json.loads(a.spec), "<spec>")
         generator = registry.create("generator", spec.generator.plugin, spec, spec.generator.params)
-        run = lambda c: play_expert(c, a.rollout, generator, Path(a.instance), spec.task, spec.robot, a.reset, a.ready_s)
+        run = lambda c: play_expert(c, a.rollout, generator, Path(a.instance), spec.task, spec.robot, a.reset, a.ready_s, target)
     else:
         series = read_bag(a.bag)
-        run = lambda c: play(c, a.rollout, series, RosStreamer(c.node, series, a.lead_s), a.reset, a.ready_s)
+        run = lambda c: play(c, a.rollout, series, RosStreamer(c.node, series, a.lead_s), a.reset, a.ready_s, target)
     run_client(run, a.sim_out)
 
 

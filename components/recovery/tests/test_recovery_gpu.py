@@ -11,11 +11,18 @@ A small training run (the moveit expert) is the failing policies' replay source,
  - triggers: `frozen` (never moves) once per trigger type (phase_time, stall, condition): each fires, the expert takes over,
    the sidecar is valid, the takeover is smooth (max_delta_action);
  - the recipe resolves over those outputs.
+Further tests: Ctrl-C / SIGTERM of a phase recovery and of a coupled evaluation (nothing left, state resumable), two ./revolve
+processes started together (distinct ROS domains), and the SO-101 XL drawer (phase recovery, DAgger, coupled; moveit generator).
 The moveit expert itself passes only about half of its episodes (its `open` step), so "recovered" is reported twice: the expert got
 the episode past the phase it took over (the recovery's job) and the whole episode passed. Verdicts are never compared one by one."""
+import fcntl
 import json
 import os
+import re
 import shutil
+import signal
+import subprocess
+import sys
 import time
 from collections import Counter
 from pathlib import Path
@@ -30,7 +37,7 @@ from recipe import cli as recipe_cli
 from recovery import cli as recovery_cli
 from recovery.core import flags
 from recovery.core.live import tries
-from revolve_common.sim_session import ClientContainer, Docker
+from revolve_common.sim_session import LEASE_DIR, ClientContainer, Docker
 
 pytestmark = [pytest.mark.gpu, pytest.mark.skipif(os.environ.get("RECOVERY_GPU") != "1", reason="needs a GPU: RECOVERY_GPU=1")]
 
@@ -320,3 +327,245 @@ def test_the_recipe_resolves_over_the_outputs(trained, takeovers):
         assert sum(c["splits"].values()) == c["got"]
     assert not any(selection["refused"].values())
     NUMBERS["recipe"] = {f"{s}/{p}": {k: c[k] for k in ("asked", "got", "available", "splits")} for (s, p), c in got.items()}
+
+
+# ---------------------------------------------------------------- real ./revolve processes: abort, resume, parallel runs
+SIMS = re.compile(r"^(ev|rc)-[0-9a-f]{6}-\d+(-client)?$")          # the sims of an evaluation / recovery run (not the scan container)
+
+
+def sims() -> list[str]:
+    return [n for n in Docker().names() if SIMS.match(n)]
+
+
+def start(run: Run, name: str, *args: str) -> subprocess.Popen:
+    """`./revolve <args>` as its own process (log: <run dir>/<name>.log)."""
+    with open(run.dir / f"{name}.log", "w") as log:
+        return subprocess.Popen([sys.executable, str(REPO / "revolve"), *args], cwd=REPO, stdout=log, stderr=subprocess.STDOUT)
+
+
+def wait_for(proc: subprocess.Popen, condition, timeout: float, what: str):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if condition():
+            return
+        assert proc.poll() is None, f"the process ended with {proc.returncode} before {what}"
+        time.sleep(1)
+    proc.send_signal(signal.SIGINT)
+    pytest.fail(f"no {what} in {timeout:.0f} s")
+
+
+def held_leases() -> set[str]:
+    """The ROS domains whose lease file is locked by some process now."""
+    held = set()
+    for path in LEASE_DIR.glob("*"):
+        with open(path, "a+") as f:
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                held.add(path.name)
+    return held
+
+
+def read_json(path: Path):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def stamps(root: Path, pattern: str) -> dict:
+    return {str(p): p.stat().st_mtime_ns for p in sorted(root.glob(pattern)) if p.is_file()}
+
+
+def committed_jobs(out: Path) -> dict:
+    return {k: j for k, j in ((read_json(out / "state.json") or {}).get("jobs", {})).items() if j["status"] in ("done", "short")}
+
+
+def abort(proc: subprocess.Popen, signum: int, leases_before: set):
+    """Signal `proc`: it exits 128 + signum having removed its containers and released its leases."""
+    proc.send_signal(signum)
+    assert proc.wait(timeout=180) == 128 + signum
+    assert not leftovers(), f"containers left: {leftovers()}"
+    assert held_leases() <= leases_before, f"leases still held: {held_leases() - leases_before}"
+
+
+def assert_state_consistent(out: Path):
+    state = read_json(out / "state.json")
+    assert state is not None, "state.json unreadable"
+    assert set(state.get("jobs", {})) <= set(state.get("selection", [])) <= {f["id"] for f in state.get("failures", [])}, state
+    assert all(j["status"] in ("done", "short", "error") for j in state.get("jobs", {}).values()), state["jobs"]
+
+
+def assert_resumed(proc: subprocess.Popen, out: Path, before: dict, stamped: dict):
+    """The re-run finishes every selected job and leaves the jobs committed before the abort as they were."""
+    assert proc.wait(timeout=1200) in (0, 1)
+    state = read_json(out / "state.json")
+    assert set(state["selection"]) == set(state["jobs"]) and not leftovers(), state
+    assert {k: state["jobs"][k] for k in before} == before, "a committed job changed"
+    assert {k: v for k, v in stamps(out, "*/*/**/*").items() if k in stamped} == stamped, "a committed job's files were rewritten"
+    manifest_of(out)
+
+
+@pytest.fixture(scope="module")
+def failing(trained):
+    """An evaluation of `frozen` (it never moves: each rollout fails its approach) on 3 configs: what the phase recovery works on."""
+    run = trained
+    assert eval_cli.main([run.evaluation("failing", {"plugin": "frozen"}, configs=3, rollouts=1, workers=2), "all", "--headless"],
+                         root=REPO) in (0, 1)
+    failed = Counter(json.loads(Path(r["result_file"]).read_text())["failed_phase"] for *_, r, _ in all_tries(run.dir / "failing"))
+    assert failed["approach"] == 3, failed
+    return run
+
+
+def phase_spec(run: Run, name: str, eval_out: Path, out: Path, **phases) -> str:
+    return run.write(name, {**TASK, "from": {"eval": rel(eval_out)}, "triggers": [{"plugin": "verdict"}],
+                            "phases": {"restart_from": "phase_start", "generator": {"plugin": "moveit", "attempts": 3, "record": "no-images"},
+                                       "per_failure": 1, "quota": {"approach": 3}, **phases},
+                            "keep": "successes", "seed": 0, "run": {"workers": 2, "reset": "relaunch", "headless": True}, "out": rel(out)})
+
+
+def test_sigint_stops_a_phase_recovery_cleanly_and_a_rerun_resumes(failing):
+    run, out = failing, failing.dir / "abort_recovery"
+    spec, before = phase_spec(failing, "abort_recovery", failing.dir / "failing", out), held_leases()
+    proc = start(run, "abort_recovery", "recover", spec, "all", "--headless")
+    wait_for(proc, lambda: committed_jobs(out) and any(n.startswith("rc-") for n in sims()), 900, "a committed job and a running one")
+    abort(proc, signal.SIGINT, before)
+    assert_state_consistent(out)
+    done = committed_jobs(out)
+    assert done
+    stamped = {k: v for j in done for k, v in stamps(out, f"*/{j}/**/*").items()}
+    assert_resumed(start(run, "abort_recovery_rerun", "recover", spec, "all", "--headless"), out, done, stamped)
+    NUMBERS["abort_phase"] = {"committed_at_abort": len(done), "jobs": dict(Counter(j["status"] for j in read_json(out / "state.json")["jobs"].values()))}
+
+
+def test_sigterm_stops_a_coupled_evaluation_cleanly_and_a_rerun_resumes(trained):
+    run, out = trained, trained.dir / "abort_coupled"
+    recovery = phase_spec(run, "abort_coupled_recovery", out, out / "recovery")
+    spec = run.evaluation("abort_coupled", {"plugin": "frozen"}, configs=3, rollouts=1, workers=2, recovery={"spec": recovery, "enabled": True})
+    before = held_leases()
+    proc = start(run, "abort_coupled", "evaluate", spec, "all", "--headless")
+    wait_for(proc, lambda: any(n.startswith("rc-") for n in sims()), 900, "a recovery job on a slot")
+    abort(proc, signal.SIGTERM, before)
+    assert read_json(out / "results.json") is not None
+    assert_state_consistent(out / "recovery")
+    done, rolled = committed_jobs(out / "recovery"), {r["result_file"]: Path(r["result_file"]).stat().st_mtime_ns for *_, r, _ in all_tries(out)}
+    stamped = {k: v for j in done for k, v in stamps(out / "recovery", f"*/{j}/**/*").items()}
+    rerun = start(run, "abort_coupled_rerun", "evaluate", spec, "all", "--headless")
+    if done:
+        assert_resumed(rerun, out / "recovery", done, stamped)
+    else:
+        assert rerun.wait(timeout=1200) in (0, 1) and not leftovers()
+    assert len(list(all_tries(out))) == 3
+    assert {k: Path(k).stat().st_mtime_ns for k in rolled} == rolled, "a committed rollout was rerun"
+    NUMBERS["abort_coupled"] = {"committed_jobs_at_abort": len(done), "rollouts_at_abort": len(rolled)}
+
+
+def test_two_processes_started_together_lease_different_ros_domains(trained):
+    run, procs = trained, {}
+    for name in ("domain_a", "domain_b"):
+        ev = run.evaluation(f"{name}_eval", {"plugin": "frozen"}, configs=1, rollouts=1, workers=1)
+        procs[name] = run.write(name, {**TASK, "from": {"eval": ev}, "live": {"plugin": "dagger", "triggers": [TRIGGERS["phase_time"]], "record": "full"},
+                                       "keep": "all", "seed": 0, "run": {"workers": 1, "reset": "relaunch", "headless": True},
+                                       "out": rel(run.dir / f"{name}_live")})
+    running = {name: start(run, name, "recover", spec, "live", "--headless") for name, spec in procs.items()}          # back to back
+    domains = {}
+    for name, proc in running.items():
+        assert proc.wait(timeout=900) == 0, f"{name}: see {run.dir / name}.log"
+        logs = (run.dir / f"{name}_live").rglob("*.log")
+        domains[name] = {int(d) for log in logs for d in re.findall(r"--domain-id (\d+)", log.read_text(errors="replace"))}
+        assert domains[name], f"no sim launch found in the logs of {name}"
+        assert manifest_of(run.dir / f"{name}_live")["episodes"]
+        bag_contract(run.dir / f"{name}_live", "no-images")
+    assert domains["domain_a"].isdisjoint(domains["domain_b"]), domains
+    assert not leftovers()
+    NUMBERS["domains"] = {k: sorted(v) for k, v in domains.items()}
+
+
+# ---------------------------------------------------------------- open_drawer / mobile_so101_xl (the moveit generator; AutoMoMa plans the fridge only)
+DRAWER = {"task": "open_drawer", "robot": "mobile_so101_xl"}
+MERGED = ("phases", "live", "run", "rollout")           # keys whose given fields replace only those fields of the spec's block
+
+
+def derive(rn: Run, source: str, name: str, **changes) -> str:
+    """specs/<source> with `changes` on top (None drops a key; a MERGED block is updated field by field) -> its path in the run dir."""
+    data = yaml.safe_load((REPO / source).read_text())
+    for key, value in changes.items():
+        if value is None:
+            data.pop(key, None)
+        else:
+            data[key] = {**data[key], **value} if key in MERGED and key in data else value
+    return rn.write(name, data)
+
+
+@pytest.fixture(scope="module")
+def drawer(run):
+    """A 2-scene training run of the drawer (its state and bags are what the eval sets and the noisy replay read) -> its spec."""
+    base = yaml.safe_load((REPO / "specs/datagen/drawer_so101xl_v2.yaml").read_text())
+    spec = derive(run, "specs/datagen/drawer_so101xl_v2.yaml", "drawer_train", out=rel(run.dir / "drawer_train"), generator={**base["generator"], "record": "no-images"},
+                  splits={"train": {**base["splits"]["train"], "target": 2, "pool": {"initial": [0, 4], "replacement": [5, 9]}}})
+    if not (run.dir / "drawer_train" / "manifest.json").is_file():
+        assert datagen_cli.main([spec, "all", "--workers", "2", "--headless"], root=REPO) == 0
+    manifest = json.loads((run.dir / "drawer_train" / "manifest.json").read_text())
+    assert manifest["counts"]["passed"] >= 2 and not [e for e in manifest["episodes"] if e["passed"] and not e["bag"]], manifest["counts"]
+    return spec
+
+
+def drawer_eval(rn: Run, train: str, name: str, policy: dict, configs: int, **changes) -> str:
+    return derive(rn, "specs/eval/drawer_so101xl_recovery.yaml", name, train=train, policy=policy, out=rel(rn.dir / name),
+                  sets={"train": {"from": "train", "count": configs}}, rollouts=1, **changes)
+
+
+def test_drawer_failures_are_recovered_by_phase_with_moveit(run, drawer):
+    ev = drawer_eval(run, drawer, "drawer_frozen", {"plugin": "frozen"}, 2, recovery=None, run={"workers": 2, "reset": "relaunch"})
+    assert eval_cli.main([ev, "all", "--headless"], root=REPO) in (0, 1)
+    rows = list(all_tries(run.dir / "drawer_frozen"))
+    assert len(rows) == 2 and not [r for *_, r, _ in rows if r.get("error")]
+    out, quota = run.dir / "drawer_recovery", {"approach": 2, "grasp": 0, "open": 0}
+    spec = derive(run, "specs/recovery/drawer_so101xl.yaml", "drawer_recovery", **{"from": {"eval": rel(run.dir / "drawer_frozen")}},
+                  phases={"per_failure": 1, "quota": quota}, out=rel(out))
+    t0 = time.monotonic()
+    code = recovery_cli.main([str(REPO / spec), "all", "--headless"], root=REPO)
+    numbers = recovery_numbers(out)
+    assert code in (0, 1) and "error" not in numbers["jobs"], (code, numbers)
+    assert_quota_respected(out, quota, numbers["phases"])
+    assert_gate(out)
+    manifest = manifest_of(out)
+    assert numbers["phases"]["approach"]["recorded"] >= 1 and {e["recovery"]["kind"] for e in manifest["episodes"]} == {"phase"}
+    NUMBERS["drawer_phase"] = {"wall_s": round(time.monotonic() - t0), "phase": numbers, "contract_bags": bag_contract(out, "no-images")}
+
+
+def test_drawer_dagger_takes_over_a_frozen_policy_with_moveit(run, drawer):
+    ev = drawer_eval(run, drawer, "drawer_dagger_eval", {"plugin": "frozen"}, 1, recovery=None, run={"workers": 1, "reset": "relaunch"})
+    out = run.dir / "drawer_dagger"
+    spec = derive(run, "specs/recovery/drawer_so101xl_dagger.yaml", "drawer_dagger", **{"from": {"eval": ev}},
+                  live={"triggers": [TRIGGERS["phase_time"]]}, out=rel(out))
+    assert recovery_cli.main([str(REPO / spec), "live", "--headless"], root=REPO) == 0
+    (set_name, key, i, rec, f), = list(tries(out / "live"))
+    result = json.loads(Path(rec["result_file"]).read_text())
+    assert f["trigger"] == "phase_time" and f["takeover_t"] is not None and f["phase"] == "approach" and f["expert"], f
+    assert f["segments"][0][2] == "policy" and f["segments"][-1][2] == "expert" and f["segments"][-1][1] == pytest.approx(result["duration_s"], abs=0.01)
+    assert f["max_delta_action"] is not None and f["max_delta_action"] < SMOOTH_RAD, f
+    manifest = manifest_of(out)
+    assert manifest["episodes"] and manifest["episodes"][0]["recovery"]["kind"] == "dagger"
+    NUMBERS["drawer_dagger"] = {"takeover_t": f["takeover_t"], "max_delta_action": round(f["max_delta_action"], 4), "expert_passed": rec["passed"],
+                                "failed_phase": result["failed_phase"], "contract_bags": bag_contract(out, "no-images")}
+
+
+def test_the_drawer_coupled_run_records_takeovers_and_phase_episodes(run, drawer):
+    out, rec_out = run.dir / "drawer_coupled", run.dir / "drawer_coupled" / "recovery"
+    recovery = derive(run, "specs/recovery/drawer_so101xl_coupled.yaml", "drawer_coupled_recovery", **{"from": {"eval": rel(out)}},
+                      phases={"quota": {"approach": 2, "grasp": 0, "open": 1}}, live={"triggers": [TRIGGERS["phase_time"], TRIGGERS["stall"]],
+                                                                                  "quota": {"approach": 3, "grasp": 3, "open": 3}}, out=rel(rec_out))
+    ev = drawer_eval(run, drawer, "drawer_coupled", {"plugin": "noisy_expert", "sigma": 0.03}, 2, recovery={"spec": recovery, "enabled": True})
+    t0 = time.monotonic()
+    assert eval_cli.main([ev, "all", "--headless"], root=REPO) in (0, 1)
+    rows = list(all_tries(out))
+    assert len(rows) == 2 and not [r for *_, r, _ in rows if r.get("error")]
+    live = [f for *_, f in rows if f and f["takeover_t"] is not None]
+    assert live and {f["trigger"] for f in live} <= {"phase_time", "stall"}, "no trigger fired"
+    numbers = recovery_numbers(rec_out)
+    assert "error" not in numbers["jobs"], numbers
+    manifest = manifest_of(rec_out)
+    assert manifest["episodes"] and {e["recovery"]["kind"] for e in manifest["episodes"]} <= {"phase", "dagger"}
+    NUMBERS["drawer_coupled"] = {"wall_s": round(time.monotonic() - t0), "takeovers": Counter(f["trigger"] for f in live), "phase": numbers,
+                                 "manifest_entries": len(manifest["episodes"]), "contract_bags": bag_contract(rec_out, "no-images")}

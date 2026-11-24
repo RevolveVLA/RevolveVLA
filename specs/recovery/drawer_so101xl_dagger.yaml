@@ -1,0 +1,19 @@
+# DAgger (live recorder) over the rollouts of an evaluation spec of open_drawer (mobile_so101_xl): the policy is supervised and the
+# MoveIt expert takes over at the first trigger. `./revolve recover specs/recovery/drawer_so101xl_dagger.yaml live`.
+# `from.eval` is the evaluation spec whose policy and sets run (specs/eval/drawer_so101xl_recovery.yaml: a noisy replay of the
+# training episodes, so runs/datagen/drawer_so101xl_v2 must exist).
+task: open_drawer
+robot: mobile_so101_xl
+from: {eval: specs/eval/drawer_so101xl_recovery.yaml}
+live:
+  plugin: dagger
+  triggers:
+    - {plugin: phase_time, fraction: 0.5}
+    - {plugin: stall, window_s: 2, min_motion: 0.01}
+  expert: {plugin: moveit_takeover}
+  record: full
+  quota: {approach: 5, grasp: 10, open: 10}
+keep: successes
+seed: 0
+run: {workers: 1, reset: relaunch, headless: true}
+out: runs/recovery/drawer_so101xl_dagger

@@ -1,0 +1,26 @@
+# The recovery coupled to specs/eval/drawer_so101xl_recovery.yaml (its `recovery:` key), as specs/recovery/fridge_coupled.yaml:
+# DAgger in the evaluation's own rollouts (the MoveIt expert takes over at the first trigger) and the failures of its tries recovered
+# by phase with the MoveIt generator on the same worker slots, into <eval out>/recovery/. `from.eval` and `out` are not read here.
+task: open_drawer
+robot: mobile_so101_xl
+from: {eval: runs/eval/drawer_so101xl_recovery}
+triggers:
+  - {plugin: verdict}
+  - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}
+phases:
+  restart_from: phase_start
+  max_object_joint: 0.02
+  generator: {plugin: moveit, attempts: 3, record: no-images}
+  per_failure: 2
+  quota: {approach: 10, grasp: 0, open: 5}
+live:
+  plugin: dagger
+  triggers:
+    - {plugin: phase_time, fraction: 0.5}
+    - {plugin: stall, window_s: 2, min_motion: 0.01}
+  expert: {plugin: moveit_takeover}
+  record: full
+  quota: {approach: 5, grasp: 10, open: 10}
+keep: successes
+seed: 0
+out: runs/recovery/drawer_so101xl_recovery

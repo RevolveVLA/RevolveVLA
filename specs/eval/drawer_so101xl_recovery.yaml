@@ -1,0 +1,14 @@
+# specs/eval/drawer_so101xl_v2.yaml with its recovery coupled: `./revolve evaluate specs/eval/drawer_so101xl_recovery.yaml`.
+# A noisy replay of the training episodes (a bad policy the triggers catch) runs under the DAgger recorder of
+# specs/recovery/drawer_so101xl_coupled.yaml and its failures are recovered by phase on the same slots, into
+# runs/eval/drawer_so101xl_recovery/recovery/. Needs runs/datagen/drawer_so101xl_v2/{state.json,manifest.json}.
+train: specs/datagen/drawer_so101xl_v2.yaml
+policy: {plugin: noisy_expert, sigma: 0.03}
+out: runs/eval/drawer_so101xl_recovery
+sets:
+  train: {from: train, count: 3}
+rollout: {plugin: sim, record: no-images}
+rollouts: 2
+retries: 0
+run: {workers: 2, headless: true, reset: warm}
+recovery: {spec: specs/recovery/drawer_so101xl_coupled.yaml, enabled: true}

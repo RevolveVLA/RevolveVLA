@@ -25,6 +25,8 @@ from .core.spec import EvalSpec, load
 
 def build_plugins(spec: EvalSpec, stages, root: Path | None = None, out: Path | None = None) -> PluginSet:
     p = PluginSet()
+    if spec.coupled:
+        from recovery.core import coupling              # the recovery component, only when the spec couples it (registers its test policies)
     if {"sample", "check", "rollout", "recover"} & set(stages):
         p.sets = {n: REGISTRY.create("set", s.plugin, spec) for n, s in spec.sets.items()}
     if {"rollout", "recover"} & set(stages):
@@ -35,8 +37,7 @@ def build_plugins(spec: EvalSpec, stages, root: Path | None = None, out: Path | 
         if spec.ckpt:
             p.ckpt = REGISTRY.create("ckpt", spec.ckpt.source, spec, spec.ckpt.params)
         if spec.coupled:
-            from recovery.core.coupling import attach       # the recovery component, only when the spec couples it
-            attach(spec, p, root or Path.cwd(), out or Path(spec.out))
+            coupling.attach(spec, p, root or Path.cwd(), out or Path(spec.out))
     return p
 
 
@@ -62,10 +63,10 @@ def main(argv=None, root: Path | None = None) -> int:
     sys.path[:0] = [p for p in os.environ.get("DATAGEN_PLUGIN_PATH", "").split(os.pathsep) if p]
     if a.workers is not None and a.workers < 1:
         ap.error("--workers must be >= 1")
-    stages = STAGES if a.stage == "all" else (a.stage,)
     root = root or Path.cwd()
     try:
         spec = with_run(load(a.spec, root), a)
+        stages = tuple(s for s in STAGES if s != "recover" or spec.coupled) if a.stage == "all" else (a.stage,)
         out = Path(spec.out) if Path(spec.out).is_absolute() else root / spec.out
         if a.stage == "recover" and not spec.coupled:
             raise SpecError("stage recover: this spec has no enabled `recovery:`")

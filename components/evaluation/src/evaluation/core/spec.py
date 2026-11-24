@@ -67,8 +67,8 @@ class RunnerSpec:
 @dataclass(frozen=True)
 class RunSpec:
     """How the run executes, not what it evaluates (so not in the hash): rollouts in parallel (None: by free GPU memory),
-    and how a config's sim gets its start: `relaunch` (a sim per scene instance) or `warm` (one sim per world, the robot is
-    driven to each instance's start after a reset; a miss falls back to a relaunch)."""
+    and how a config's sim gets its start: `relaunch` (a sim per scene instance) or `warm` (a sim per worker slot for the configs of a world,
+    the robot is driven to each instance's start after a reset; a miss falls back to a relaunch)."""
     workers: int | None = None
     headless: bool = True
     reset: str = "relaunch"

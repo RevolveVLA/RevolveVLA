@@ -59,6 +59,13 @@ class Slots:
     def _next(self, last: str | None):
         """(kind, index, work) of the slot's next job, waiting for one; None when there is none to come."""
         with self.cv:
+            if not self.todo and last == "item" and not self.failed:
+                leaving = True
+            else:
+                leaving = False
+        if leaving:
+            self.idle()                                 # no item left for this slot: free what it kept for the items
+        with self.cv:
             while True:
                 if self.failed:
                     return None
@@ -69,11 +76,7 @@ class Slots:
                     return "task", None, self.tasks.popleft()
                 if self.closed:
                     return None
-                if last == "item":
-                    break
                 self.cv.wait()
-        self.idle()                                     # no item left for this slot: free what it kept for the items
-        return self._next(None)
 
     def _slot(self, call: Callable):
         last = None

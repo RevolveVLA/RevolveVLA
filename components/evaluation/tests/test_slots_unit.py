@@ -99,3 +99,10 @@ def test_no_items_runs_only_the_given_tasks():
     ran = []
     run(2, [], tasks=[lambda: ran.append(1), lambda: ran.append(2)])
     assert sorted(ran) == [1, 2]
+
+
+def test_a_slot_frees_what_it_kept_for_the_items_before_its_first_task():
+    order = []
+    run(1, [1, 2], call=lambda x: order.append(f"item{x}"), commit=lambda x, r: [lambda: order.append(f"task{x}")],
+        idle=lambda: order.append("idle"))
+    assert order[:3] == ["item1", "item2", "idle"] and order[3:5] == ["task1", "task2"]

@@ -64,7 +64,7 @@ def test_the_policy_is_taken_over_and_every_takeover_is_a_manifest_entry(tmp_pat
         "policy_only_success": 0, "takeovers": 3, "reasons": {"phase_time": 3}, "recovered": 3, "episodes": 3}
     assert summary["expert_frames_s"] == pytest.approx(3 * 1.5, abs=0.6) and "wall_s" in summary and "live {" in out
     m = manifest(tmp_path)
-    assert m["counts"] == {"jobs": 0, "attempted": 3, "passed": 3}
+    assert m["counts"] == {"jobs": 0, "scenes": 3, "attempted": 3, "passed": 3}
     for e in m["episodes"]:
         r = e["recovery"]
         assert (r["kind"], r["phase"], r["trigger"], r["restart_from"], r["segment"], r["policy"]["plugin"]) == (

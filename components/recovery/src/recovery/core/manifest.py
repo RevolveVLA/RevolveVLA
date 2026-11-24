@@ -67,7 +67,8 @@ def build(out: Path, spec: RecoverySpec, jobs: Sequence[tuple[Failure, Path]], c
     found = [e for f, d in jobs for e in entries(out, d, f, spec)] + list(live)
     return {"task": spec.task, "robot": spec.robot,
             "created": created or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "episodes": found,
-            "counts": {"jobs": len(jobs), "attempted": len(found), "passed": sum(e["passed"] for e in found)}}
+            "counts": {"jobs": len(jobs), "scenes": len({e["seed"] for e in found}), "attempted": len(found),
+                       "passed": sum(e["passed"] for e in found)}}
 
 
 write, created = datagen_manifest.write, datagen_manifest.created

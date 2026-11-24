@@ -60,7 +60,7 @@ def test_all_stages(tmp_path, run, capsys):
     assert "collect: 6 failures (1 unreproducible) in 6 failed, 1 passed tries" in out
     assert out.count("run approach") == 2 and out.count("run grasp") == 2 and "check jobs: PASS" in out and "check quota: PASS" in out
     m = manifest(tmp_path)
-    assert m["counts"] == {"jobs": 4, "attempted": 4, "passed": 4}
+    assert m["counts"] == {"jobs": 4, "scenes": 4, "attempted": 4, "passed": 4}
     assert sorted(e["recovery"]["phase"] for e in m["episodes"]) == ["approach", "approach", "grasp", "grasp"]
     assert {e["recovery"]["kind"] for e in m["episodes"]} == {"phase"} and all(e["passed"] and e["bag"] for e in m["episodes"])
     assert all((out_of(tmp_path) / e["result"]).is_file() and (out_of(tmp_path) / e["scene"]).is_file() for e in m["episodes"])

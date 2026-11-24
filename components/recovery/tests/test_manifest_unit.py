@@ -70,7 +70,7 @@ def test_a_try_whose_result_file_is_gone_is_left_out(tmp_path):
 def test_build_counts_and_order(tmp_path):
     out, f, d = job(tmp_path, [(0, False), (1, True)])
     data = M.build(out, spec("all"), [(f, d)], created="2026-11-24T00:00:00Z")
-    assert data["counts"] == {"jobs": 1, "attempted": 2, "passed": 1} and data["created"] == "2026-11-24T00:00:00Z"
+    assert data["counts"] == {"jobs": 1, "scenes": 1, "attempted": 2, "passed": 1} and data["created"] == "2026-11-24T00:00:00Z"
     assert (data["task"], data["robot"]) == ("open_fridge_door", "mobile_panda") and M.build(out, spec(), [])["episodes"] == []
     M.write(out / "m.json", data)
     assert M.created(out / "m.json") == "2026-11-24T00:00:00Z" and M.created(out / "none.json") is None

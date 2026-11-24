@@ -167,7 +167,20 @@ def test_a_killed_run_resumes_from_the_committed_jobs(tmp_path, run):
     assert len(json.loads((Path(spec.out) / "manifest.json").read_text())["episodes"]) == 2          # the manifest is written on a kill too
     F.CALLS.clear()
     assert P.Pipeline(spec, arm, cli.build_plugins(spec, P.STAGES), Path(spec.out), log=lambda m: None).run()
-    assert len(F.CALLS) == 2 and len(json.loads((Path(spec.out) / "manifest.json").read_text())["episodes"]) == 4
+    assert [c[0] for c in F.CALLS].count("drive") == 2 and len(json.loads((Path(spec.out) / "manifest.json").read_text())["episodes"]) == 4
+
+
+def test_the_generator_plans_each_job_on_the_host_first_and_a_failed_plan_is_a_job_error(tmp_path, run, capsys):
+    spec = write_spec(tmp_path, run, quota={"approach": 3}, phases={"generator": {"plugin": "fake_recovery", "bad_plans": [ALL[1]]},
+                                                                    "quota": {"approach": 3}})
+    F.CALLS.clear()
+    code, out, _ = recover(tmp_path, spec, capsys=capsys)
+    scenes = [c[1].parent.name for c in F.CALLS if c[0] == "plan"]
+    assert code == 1 and sorted(scenes) == ALL and "run approach heldout_101_r0_t0: error (plan: no plan)" in out
+    assert [c[1].parent.name for c in F.CALLS if c[0] == "drive"].count(ALL[1]) == 0 and state(tmp_path)["jobs"][ALL[1]]["status"] == "error"
+    F.CALLS.clear()
+    recover(tmp_path, spec, capsys=capsys)
+    assert [c[1].parent.name for c in F.CALLS if c[0] == "plan"] == [ALL[1]]         # the others are finished: not planned again
 
 
 def test_workers_do_not_change_what_is_recorded(tmp_path, run, capsys):

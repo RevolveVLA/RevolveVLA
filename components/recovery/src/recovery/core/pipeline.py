@@ -2,7 +2,8 @@
 
 `collect` reads the failures of the spec's eval run (the scanner: bags are read where rosbag2_py is) and keeps them in
 state.json, so a resumed run works on the same failures. `run` picks the failures to recover (core/quota.py; also kept),
-makes a job of each (core/jobs.py: its scene instance at the restart state) and runs them on `spec.run.workers` slots
+makes a job of each (core/jobs.py: its scene instance at the restart state), has the generator plan it (`Generator.plan`: a
+planner that works offline per scene instance) and runs them on `spec.run.workers` slots
 (datagen's pool.ordered: the jobs run in parallel, their results are committed in order), each recording the episodes of the
 spec's datagen generator. `check` judges the run: every job ran and every phase has its quota of episodes. A killed run resumes:
 collected failures, the selection and finished jobs are kept, a job continues from its own log (datagen.json).
@@ -122,6 +123,10 @@ class Pipeline:
             i, f = item
             try:
                 job = jb.make(i, f, self.out, self.spec.robot, self.arm)
+                if not episodes.finished(episodes.read(job.dir), self.spec.phases.episodes):
+                    planned = generator.plan(job.scene, self.spec.task, self.spec.robot)     # e.g. AutoMoMa's offline planner
+                    if not planned.ok:
+                        return {"status": "error", "reason": f"plan: {planned.reason}"}
                 runner.run(job, generator)
             except JobError as e:
                 return {"status": "error", "reason": str(e)}

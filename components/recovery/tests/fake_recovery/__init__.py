@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from datagen.core.interfaces import Generator
+from datagen.core.interfaces import Generator, Result
 from datagen.core.registry import register
 from revolve_common import specs
 from revolve_common.supervision import BagMessage
@@ -125,7 +125,11 @@ def write_eval_run(root: Path, tries: list[Try]) -> Path:
 @register("generator", "fake_recovery")
 class FakeGenerator(Generator):
     def __init__(self, spec, params):
-        self.spec = spec
+        self.spec, self.bad_plans = spec, set(params.get("bad_plans", ()))
+
+    def plan(self, instance, task, robot):
+        CALLS.append(("plan", Path(instance)))
+        return Result.fail("no plan") if Path(instance).parent.name in self.bad_plans else Result()
 
     def drive(self, client, instance, task, robot):
         CALLS.append(("drive", Path(instance)))

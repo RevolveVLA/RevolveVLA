@@ -1,0 +1,22 @@
+# Phase-wise recovery of the failed phases of an evaluation run of open_fridge_door (mobile_panda): every failed try is read from
+# its bag, restarted a second before its failure (the door must still be closed there) and recorded again by the AutoMoMa
+# generator, up to a per-phase quota of episodes. `./revolve recover specs/recovery/fridge.yaml [collect|run|check|all] [--dry-run]`.
+# `collect` and `run` need the simulator image (bags are read with rosbag2_py), the assets and a GPU.
+task: open_fridge_door
+robot: mobile_panda
+from: {eval: runs/eval/fridge_panda_v2}        # a finished `./revolve evaluate` run (its out)
+triggers:                                      # what names a failure, first to fire wins (default: the evaluator's verdict)
+  - {plugin: verdict}
+  - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}
+phases:
+  restart_from: before_failure                 # phase_start | before_failure
+  back_s: 1.0
+  max_object_joint: 0.02                       # unreproducible when a scene joint is beyond this (the door must be closed)
+  generator: {plugin: automoma, attempts: 3, record: images}
+  per_failure: 2                               # accepted episodes per failure
+  quota: {approach: 20, grasp: 20, open: 0}    # episodes wanted per phase (a phase not listed is not recovered)
+# live: {plugin: dagger, ...}                  # optional live recorder: runs inside the rollouts (when its plugin is installed)
+keep: successes                                # successes | all
+seed: 0
+run: {workers: 2, reset: warm, headless: true}   # warm: reset the running sim and drive to the restart (a relaunch when that misses)
+out: runs/recovery/fridge

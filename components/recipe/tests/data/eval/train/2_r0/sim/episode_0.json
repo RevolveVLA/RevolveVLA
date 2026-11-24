@@ -1,0 +1,5 @@
+{
+ "passed": false,
+ "duration_s": 12.0,
+ "failed_phase": "grasp"
+}

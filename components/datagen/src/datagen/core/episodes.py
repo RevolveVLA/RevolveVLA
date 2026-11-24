@@ -75,9 +75,11 @@ def clean_partial(scene_dir: Path) -> None:
 
 
 def run_episodes(client: EpisodeClient, generator: Generator, task: str, robot: str, instance: Path, seed: int,
-                 episodes: EpisodeSpec, clock=time.monotonic) -> dict:
+                 episodes: EpisodeSpec, clock=time.monotonic, *, reset_first: bool = False,
+                 extra: Mapping[str, Any] | None = None) -> dict:
     """The client loop of DATAGEN-v2.md 4.4 on a freshly launched sim of `instance`: ready, then tries (the first needs
-    no reset, later ones reset the sim) until the scene is `finished`. -> the log."""
+    no reset, later ones reset the sim; `reset_first`: a sim that already ran, the first one resets too) until the scene
+    is `finished`. `extra`: keys added to every try of the log. -> the log."""
     scene_dir = Path(instance).parent
     clean_partial(scene_dir)
     log = {**read(scene_dir), "seed": seed}
@@ -85,7 +87,7 @@ def run_episodes(client: EpisodeClient, generator: Generator, task: str, robot: 
         return log
     client.wait_ready()
     generator.prepare(client, instance, task, robot)
-    first = True
+    first = not reset_first
     while not finished(log, episodes):
         if not first:
             client.reset()
@@ -96,6 +98,6 @@ def run_episodes(client: EpisodeClient, generator: Generator, task: str, robot: 
         result = client.wait_files(n)
         log["tries"].append({"attempt": len(log["tries"]), "episode": n, "passed": bool(result["passed"]),
                              "reason": result.get("reason"), "wall_s": round(clock() - t0, 1),
-                             "expert": notes["expert"], "notes": notes.get("notes", "")})
+                             "expert": notes["expert"], "notes": notes.get("notes", ""), **(extra or {})})
         write(scene_dir, log)
     return log

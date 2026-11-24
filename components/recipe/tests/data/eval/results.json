@@ -1,0 +1,148 @@
+{
+ "spec_hash": "0123456789abcdef",
+ "ckpt": null,
+ "sets": {
+  "train": {
+   "configs": [],
+   "rollouts": {
+    "1_r0": {
+     "seed": 1,
+     "passed": true,
+     "tries": [
+      {
+       "dir": "eval/train/1_r0",
+       "passed": true,
+       "detail": {},
+       "termination": "success",
+       "record": {
+        "seed": 1,
+        "scene": "datagen/train/scene_1/scene.yaml",
+        "policy": "oracle",
+        "episode": 0,
+        "passed": true,
+        "failed_phase": null,
+        "duration_s": 21.0,
+        "bag": "eval/train/1_r0/sim/episode_0_bag",
+        "result_file": "eval/train/1_r0/sim/episode_0.json",
+        "error": null
+       }
+      }
+     ]
+    },
+    "2_r0": {
+     "seed": 2,
+     "passed": true,
+     "tries": [
+      {
+       "dir": "eval/train/2_r0",
+       "passed": false,
+       "detail": {},
+       "termination": "timeout_s",
+       "record": {
+        "seed": 2,
+        "scene": "datagen/train/scene_2/scene.yaml",
+        "policy": "oracle",
+        "episode": 0,
+        "passed": false,
+        "failed_phase": "grasp",
+        "duration_s": 12.0,
+        "bag": "eval/train/2_r0/sim/episode_0_bag",
+        "result_file": "eval/train/2_r0/sim/episode_0.json",
+        "error": null
+       }
+      },
+      {
+       "dir": "eval/train/2_r0/retry_1",
+       "passed": true,
+       "detail": {},
+       "termination": "success",
+       "record": {
+        "seed": 2,
+        "scene": "datagen/train/scene_2/scene.yaml",
+        "policy": "oracle",
+        "episode": 0,
+        "passed": true,
+        "failed_phase": null,
+        "duration_s": 31.0,
+        "bag": "eval/train/2_r0/retry_1/sim/episode_0_bag",
+        "result_file": "eval/train/2_r0/retry_1/sim/episode_0.json",
+        "error": null
+       }
+      }
+     ]
+    },
+    "2_r1": {
+     "seed": 2,
+     "passed": false,
+     "tries": [
+      {
+       "dir": "x",
+       "passed": false,
+       "detail": {},
+       "termination": "stack_error",
+       "record": {
+        "seed": 2,
+        "scene": "datagen/train/scene_2/scene.yaml",
+        "passed": false,
+        "error": "RuntimeError: fake"
+       }
+      }
+     ]
+    }
+   }
+  },
+  "heldout": {
+   "configs": [],
+   "rollouts": {
+    "500_r0": {
+     "seed": 500,
+     "passed": true,
+     "tries": [
+      {
+       "dir": "eval/heldout/500_r0",
+       "passed": true,
+       "detail": {},
+       "termination": "success",
+       "record": {
+        "seed": 500,
+        "scene": "eval/heldout/scene_500/scene.yaml",
+        "policy": "oracle",
+        "episode": 0,
+        "passed": true,
+        "failed_phase": null,
+        "duration_s": 22.0,
+        "bag": "eval/heldout/500_r0/sim/episode_0_bag",
+        "result_file": "eval/heldout/500_r0/sim/episode_0.json",
+        "error": null
+       }
+      }
+     ]
+    },
+    "501_r0": {
+     "seed": 501,
+     "passed": false,
+     "tries": [
+      {
+       "dir": "eval/heldout/501_r0",
+       "passed": false,
+       "detail": {},
+       "termination": "timeout_s",
+       "record": {
+        "seed": 501,
+        "scene": "eval/heldout/scene_501/scene.yaml",
+        "policy": "oracle",
+        "episode": 0,
+        "passed": false,
+        "failed_phase": "approach",
+        "duration_s": 8.0,
+        "bag": "eval/heldout/501_r0/sim/episode_0_bag",
+        "result_file": "eval/heldout/501_r0/sim/episode_0.json",
+        "error": null
+       }
+      }
+     ]
+    }
+   }
+  }
+ }
+}

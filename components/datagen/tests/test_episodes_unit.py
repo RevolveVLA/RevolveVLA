@@ -34,6 +34,16 @@ def test_the_loop_runs_tries_until_enough_are_accepted_and_logs_each(tmp_path):
     assert episodes.verdict(log, EpisodeSpec(3, 1)).ok and not episodes.verdict(log, EpisodeSpec(3, 2)).ok
 
 
+def test_reset_first_resets_a_sim_that_already_ran_and_extra_keys_go_into_every_try(tmp_path):
+    s, instance = session(tmp_path)
+    s.start()
+    log = episodes.run_episodes(s.connect(), GEN, "t", "r", instance, 0, EpisodeSpec(2, 1), reset_first=True, extra={"sim": "dir"})
+    assert s.client_state["resets"] == 1 and [t["sim"] for t in log["tries"]] == ["dir"]
+    plain, instance = session(tmp_path, seed=1)
+    plain.start()
+    assert loop(plain, instance, EpisodeSpec(2, 1), seed=1)["tries"][0].get("sim") is None and plain.client_state["resets"] == 0
+
+
 def test_the_loop_gives_up_after_attempts_and_says_why(tmp_path):
     s, instance = session(tmp_path, passes=lambda n: False)
     s.start()

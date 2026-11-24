@@ -1,0 +1,21 @@
+{
+ "takeover_t": 12.0,
+ "takeover_sim_t": 112.0,
+ "trigger": "stall",
+ "reason": "no motion",
+ "phase": "open",
+ "max_delta_action": 0.2,
+ "expert_failure": null,
+ "segments": [
+  [
+   0.0,
+   12.0,
+   "policy"
+  ],
+  [
+   12.0,
+   40.0,
+   "expert"
+  ]
+ ]
+}

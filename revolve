@@ -19,6 +19,10 @@
   ./revolve datagen --list-randomisers --task T --robot R   what a task + robot can vary (dims, ranges)
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
+  ./revolve recover <spec.yaml> [collect|run|check|all] [--dry-run] [--workers N] [--gui|--headless]
+                                     phase-wise recovery of a finished evaluation run (spec: specs/recovery/)
+  ./revolve recipe <recipe.yaml> [resolve|check|materialise] [--dry-run]
+                                     picks the data of a training round from finished runs (spec: specs/recipes/)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
                                      robot and task under specs/, and tasks/sanity.yaml; a scene.yaml outside specs/
                                      is a scene instance), against the model SDFs in
@@ -36,7 +40,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent
 VENV_PY = REPO / ".venv" / "bin" / "python"
-COMPONENTS = ("common", "simulator", "datagen", "recovery", "dataset", "training", "evaluation", "manager", "integration")
+COMPONENTS = ("common", "simulator", "datagen", "recovery", "recipe", "dataset", "training", "evaluation", "manager", "integration")
 
 
 def reexec_in_venv():
@@ -172,7 +176,6 @@ def cmd_sim(a):
 
 
 BUILDS = {"simulator": REPO / "components" / "simulator" / "build.sh",
-          "recovery": REPO / "components" / "recovery" / "build.sh",
           "dataset": REPO / "components" / "dataset" / "build.sh",
           "training": REPO / "components" / "training" / "build.sh",
           "manager": REPO / "components" / "manager" / "build.sh"}
@@ -194,6 +197,7 @@ def cmd_test(a):
              "simulator": REPO / "components" / "simulator" / "ros" / "revolve_sim" / "test",
              "datagen": REPO / "components" / "datagen" / "tests",
              "recovery": REPO / "components" / "recovery" / "tests",
+             "recipe": REPO / "components" / "recipe" / "tests",
              "dataset": REPO / "components" / "dataset" / "tests",
              "training": REPO / "components" / "training" / "tests",
              "evaluation": REPO / "components" / "evaluation" / "tests",
@@ -221,12 +225,28 @@ def cmd_evaluate(args):
     return cli.main(args, root=REPO)
 
 
+def cmd_recover(args):
+    sys.path[:0] = [str(REPO / "components" / "datagen" / "src"), str(REPO / "components" / "recovery" / "src")]
+    from recovery import cli
+    return cli.main(args, root=REPO)
+
+
+def cmd_recipe(args):
+    sys.path[:0] = [str(REPO / "components" / "datagen" / "src"), str(REPO / "components" / "recipe" / "src")]
+    from recipe import cli
+    return cli.main(args, root=REPO)
+
+
 def main():
     reexec_in_venv()
     if sys.argv[1:2] == ["datagen"]:             # its own parser: argparse's REMAINDER rejects a leading --option
         return cmd_datagen(sys.argv[2:])
     if sys.argv[1:2] == ["evaluate"]:            # same
         return cmd_evaluate(sys.argv[2:])
+    if sys.argv[1:2] == ["recover"]:             # same
+        return cmd_recover(sys.argv[2:])
+    if sys.argv[1:2] == ["recipe"]:              # same
+        return cmd_recipe(sys.argv[2:])
     ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -256,6 +276,10 @@ def main():
                                            help="<spec.yaml> [step] [--split S] [--dry-run] [--workers N] [--gui] | --list-randomisers --task T --robot R")
     sub.add_parser("evaluate").add_argument("evaluate_args", nargs=argparse.REMAINDER,
                                             help="<spec.yaml> [stage] [--set S] [--dry-run] [--workers N] [--gui]")
+    sub.add_parser("recover").add_argument("recover_args", nargs=argparse.REMAINDER,
+                                           help="<spec.yaml> [stage] [--dry-run] [--workers N] [--gui]")
+    sub.add_parser("recipe").add_argument("recipe_args", nargs=argparse.REMAINDER,
+                                          help="<recipe.yaml> [stage] [--dry-run]")
     v = sub.add_parser("validate")
     v.add_argument("spec", nargs="*")
     v.add_argument("--robot", help="also check the tasks with this robot (specs/robots/<robot>)")

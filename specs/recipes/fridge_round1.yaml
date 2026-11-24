@@ -1,0 +1,20 @@
+# The data of a training round for open_fridge_door (mobile_panda): the base datagen demonstrations, the passed rollouts of an
+# evaluation run, its phase-wise recovery episodes and the expert's spans of its DAgger takeovers, in per-source / per-phase amounts,
+# divided into train / val by scene. `./revolve recipe specs/recipes/fridge_round1.yaml [resolve|check|materialise] [--dry-run]`.
+# The runs it reads need not exist until `resolve`/`check`/`materialise`; no docker, ROS or GPU. Writes selection.json + report.md.
+seed: 0
+unit: episodes                                 # episodes | frames (seconds x fps of the episode or its segment)
+sources:
+  base:     {plugin: datagen,  manifest: runs/datagen/fridge_panda_v2/manifest.json}
+  rollouts: {plugin: rollouts, run: runs/eval/fridge_r0, passed: true}
+  recovery: {plugin: recovery, run: runs/recovery/fridge, kind: phase}
+  dagger:   {plugin: recovery, run: runs/recovery/fridge, kind: dagger, segment: interventions}   # or full
+take:                                          # all | n | {phase: n}, per source
+  base:     all
+  rollouts: 20
+  recovery: {approach: 10, grasp: 10}
+  dagger:   {approach: 5, grasp: 10, open: 15}
+splits: {train: 0.9, val: 0.1}                 # fractions of the unit, grouped by scene (a scene is in one split only)
+exclude: [runs/eval/fridge_r0/heldout]         # leakage guard: anything from these scenes / folders is refused
+on_short: warn                                 # warn | error: fewer items than asked for
+out: runs/recipes/fridge_round1

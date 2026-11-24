@@ -6,8 +6,10 @@ client (check_contract.py) in its own container from the sim image on the host n
 the documented interface: two episodes with a reset between them, then the files in DIR: two result JSONs, two gz log
 copies and two closed bags, every frozen topic (config/record.yaml) with messages, the cameras JPEG at ~30 Hz,
 /tf_static and /robot_description, controller_state at >= 30 Hz, and a 30 Hz action series (controller_state reference +
-cmd_vel) from each bag. DIR (runs/contract_<pid>/, ~100 MB of images per episode) is removed when the test passes; its
-sizes and rates go into the log folder's contract.json."""
+cmd_vel) from each bag. Then the robot's Rosetta contract against both bags with Rosetta's own loader and decoders
+(check_rosetta.py: every contract topic with messages, the client streamed cmd_vel and both joint_trajectory topics,
+/task/prompt once and the prompt in the bag metadata). DIR (runs/contract_<pid>/, ~100 MB of images per episode) is
+removed when the test passes; its sizes and rates go into the log folder's contract.json and rosetta.json."""
 import json
 import os
 import shutil
@@ -16,7 +18,7 @@ import subprocess
 import robot_cases
 import pytest
 import yaml
-from conftest import REPO, SCENE, TEST_IN, problem_lines
+from conftest import REPO, SCENE, TEST_IN, problem_lines, rosetta
 
 ROBOTS = ["mobile_panda"]
 TASK = robot_cases.TASKS["mobile_panda"]["task"]
@@ -91,4 +93,16 @@ def test_contract(sim):
     assert abs(s["hand_ref_at_goal_end"] - robot_cases.CONTROL["mobile_panda"]["closed"]) < 1e-3, s
     assert s["stream_joint1_range"] > 0.1 and s["stream_last_err"] < 1e-3, s   # the streamed points
     assert not problem_lines(sim["launch_log"]), problem_lines(sim["launch_log"])[:5]
+    # the robot's Rosetta contract on both bags (in a throwaway container from the sim image)
+    bags = [ep["result"]["bag"] for ep in eps]
+    rr = rosetta(["--robots", sim["robot"], "--task", TASK, "--bag", *bags], sim["logs"] / "check_rosetta.log",
+                 mounts=[OUT])
+    (sim["logs"] / "rosetta.json").write_text(json.dumps(rr, indent=1))
+    assert not rr["contracts"][sim["robot"]]["check_contract"], rr["contracts"]
+    for b in bags:
+        e = rr["bags"][b]
+        assert not e["missing"] and not e["type_mismatch"] and not e["decode_problems"], e
+        assert not e["zero_header_stamps"], e["zero_header_stamps"]           # observations: header timeline
+        assert e["prompts"] == [rr["prompt"]] and e["metadata_prompt"] == rr["prompt"], e
+        assert e["ok"], e
     shutil.rmtree(OUT)

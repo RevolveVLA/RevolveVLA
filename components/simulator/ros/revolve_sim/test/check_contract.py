@@ -5,9 +5,9 @@ container on the host network with the sim's ROS_DOMAIN_ID, next to a sim starte
 --scene: the scene name or a scene instance file (its robot_start is checked). Client, through the documented
 interface only: wait for /evaluator/state `ready`; /evaluator/start; episode 0: a
 ramped TwistStamped segment backwards, a FollowJointTrajectory goal to the arm and one to the hand, then single-point
-JointTrajectory messages streamed at 30 Hz (as a policy commands); wait for /evaluator/result and the result file
-(written once the episode's bag is closed); /simulator/reset (after reading `resets`), wait for `resets` above it and
-`ready`; episode 1: a short stream, the result, the result file.
+JointTrajectory messages to the arm and the hand and zero twists streamed at 30 Hz (as a policy commands); wait for
+/evaluator/result and the result file (written once the episode's bag is closed); /simulator/reset (after reading
+`resets`), wait for `resets` above it and `ready`; episode 1: a short stream, the result, the result file.
 Then the files in DIR: per episode the result JSON and its bag (episode_<n>_bag/): every topic of
 config/record.yaml (filled in for this scene and robot) present with messages (contact topics: only while in
 contact, commands only once commanded), the cameras JPEG at ~30 Hz, /tf_static and /robot_description, the controllers' controller_state; and the
@@ -124,22 +124,29 @@ def main():
     rclpy.init()
     n = EvalProbe(robot.name, scene.name, contact_links)
     stream = n.create_publisher(JointTrajectory, f'/{arm}/joint_trajectory', 10)
+    stream_hand = n.create_publisher(JointTrajectory, f'/{hand}/joint_trajectory', 10)
     reset_cli = n.create_client(Trigger, '/simulator/reset')
     ex = MultiThreadedExecutor(num_threads=4)
     ex.add_node(n)
     threading.Thread(target=ex.spin, daemon=True).start()
 
-    def send_stream(q0, duration):
-        """Single-point JointTrajectory at 30 Hz (time_from_start 0.1 s), joint 1 on a 0.5 Hz sine. -> (t0, t1, last)"""
+    def point(joints, q):
+        m = JointTrajectory()       # header stamp zero: "start now"
+        m.joint_names = joints
+        m.points = [JointTrajectoryPoint(positions=[float(v) for v in q])]
+        m.points[0].time_from_start.nanosec = 100_000_000
+        return m
+
+    def send_stream(q0, duration, hand_q):
+        """As a policy commands: at 30 Hz single-point JointTrajectory messages (time_from_start 0.1 s) to the arm,
+        joint 1 on a 0.5 Hz sine, and to the hand (hand_q), and a zero base twist. -> (t0, t1, last arm q)"""
         t0 = n.now()
         while (t := n.now() - t0) < duration:
             q = list(q0)
             q[0] += STREAM_AMPL * math.sin(math.pi * t)
-            m = JointTrajectory()
-            m.joint_names = arm_joints
-            m.points = [JointTrajectoryPoint(positions=[float(v) for v in q])]
-            m.points[0].time_from_start.nanosec = 100_000_000
-            stream.publish(m)
+            stream.publish(point(arm_joints, q))
+            stream_hand.publish(point([case['hand_joint']], [hand_q]))
+            n.twist((0.0, 0.0, 0.0))
             n.wait(1.0 / ACTION_HZ)
         return t0, n.now(), q
 
@@ -175,7 +182,7 @@ def main():
     marks['arm_goal_end'] = n.now()
     out['hand_goal'] = n.goal(n.hand, [case['hand_joint']], [case['closed']], 1.0)
     marks['hand_goal_end'] = n.now()
-    s0, s1, last_q = send_stream(target, 2.0)
+    s0, s1, last_q = send_stream(target, 2.0, case['closed'])
     marks['stream'] = (s0, s1)
     res0, closed0 = episode_files(k0)
     out['episodes'].append({'result': res0, 'bag_closed_at_result_file': closed0, 'marks': marks})
@@ -195,7 +202,7 @@ def main():
     out['start'].append(n.start())
     k1 = int(out['start'][1][1].split()[-1])
     send_stream(robot.poses[scene.robot_start.arm] if isinstance(scene.robot_start.arm, str)
-                else scene.robot_start.arm, 1.0)
+                else scene.robot_start.arm, 1.0, case['open'])
     res1, closed1 = episode_files(k1)
     out['episodes'].append({'result': res1, 'bag_closed_at_result_file': closed1, 'marks': {}})
     ex.shutdown()

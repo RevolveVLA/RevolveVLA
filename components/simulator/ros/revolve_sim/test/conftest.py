@@ -13,10 +13,12 @@ starts one fresh `revolve sim` container, runs the check_*.py scripts inside it 
      ramped TwistStamped segments (test code only): open_fridge_door (mobile_panda, check_open_door.py) and
      open_drawer (mobile_so101_xl, check_open_drawer.py) pass approach, grasp and open.
   Reset (test_reset.py) and the datagen contract (test_contract.py: a client in its own container, two episodes,
-     the recorded files). A relaunch into an --out dir a killed run left (test_out_dir.py).
+     the recorded files, the robot's Rosetta contract on the bags). A relaunch into an --out dir a killed run left
+     (test_out_dir.py).
   A scene instance through the launch, without the `sim` fixture (test_launch_refusals.py).
 Host only, no sim and no `robot` argument (helpers: host_cases.py): the evaluator logic (test_episode_unit.py), the
-episode numbering (test_episode_numbers.py), the `./revolve sim` and `validate` CLI (test_cli.py).
+episode numbering (test_episode_numbers.py), the `./revolve sim` and `validate` CLI (test_cli.py); in a throwaway
+simulator-image container, the robots' Rosetta contracts with Rosetta's loader (test_rosetta_contracts.py).
 A launch whose controller manager logs "No clock received" once a second (it never gets /clock; rare, cause not
 pinned) fails at once with that message, before the test runs (no retry).
 A test module sets ROBOTS (the robots it runs on, one fresh sim each; default mobile_panda; T1 and T2: every robot
@@ -135,3 +137,27 @@ def host_path(container_path):
 
 def problem_lines(launch_log):
     return [ln for ln in Path(launch_log).read_text(errors="replace").splitlines() if PROBLEM.search(ln)]
+
+
+# Rosetta's pure-Python packages (rosetta, rosetta_ros) pip-installed from the submodule into a container's /tmp, so
+# that its `ros2` robot interface entry point is registered (Rosetta is not colcon-built for Lyrical in this repo)
+ROSETTA_PY = "/tmp/rosetta_py"
+ROSETTA_PIP = ("mkdir -p /tmp/rosetta_src && cp -r /repo/ThirdParty/rosetta/rosetta "
+               "/repo/ThirdParty/rosetta/robots/ros/rosetta_ros /tmp/rosetta_src/ && "
+               "pip install -q --no-deps --no-build-isolation --no-index --use-pep517 "
+               f"--target {ROSETTA_PY} /tmp/rosetta_src/rosetta /tmp/rosetta_src/rosetta_ros")
+
+
+def rosetta(args, log, mounts=(), timeout=600):
+    """check_rosetta.py in a throwaway container from the simulator image (no network) -> its RESULT JSON."""
+    image = os.environ.get("REVOLVE_SIM_IMAGE", "revolve-simulator:latest")
+    vols = [x for m in mounts for x in ("-v", f"{m}:{m}:ro")]
+    cmd = ["docker", "run", "--rm", "--network", "none", "-u", f"{os.getuid()}:{os.getgid()}", "-e", "HOME=/tmp",
+           "-v", f"{REPO}:/repo:ro", *vols, image, "bash", "-c",
+           f"{ROSETTA_PIP} && PYTHONPATH={ROSETTA_PY}:/repo/common:$PYTHONPATH python3 {TEST_IN}/check_rosetta.py "
+           + " ".join(args)]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    Path(log).write_text(r.stdout + r.stderr)
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("RESULT ")]
+    assert lines, f"check_rosetta.py printed no RESULT (rc {r.returncode}): see {log}"
+    return json.loads(lines[-1][len("RESULT "):])

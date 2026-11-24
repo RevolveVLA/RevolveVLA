@@ -229,9 +229,14 @@ Contact) and a few TF_OLD_DATA lines from the evaluator before it notices the ju
   `--out`, the sim from the CLI with `--record images --out --domain-id`, the client in its own container (host
   network, the sim's domain), two episodes (ramped twist, FollowJointTrajectory goals, streamed joint_trajectory
   points) with a reset between, then the files: two results + two closed bags with every frozen topic, cameras JPEG
-  at ~30 Hz, /tf_static, and a 30 Hz action series from each bag. `test_out_dir.py`: a relaunch into an `--out` that
-  a killed episode left (a bag without a result): the next episode number, its own closed bag, host paths, the gz
-  log copy, every condition in `/evaluator/state`. `test_launch_refusals.py`: a valid scene instance starts, and
+  at ~30 Hz, /tf_static, and a 30 Hz action series from each bag; then the robot's Rosetta contract against both bags
+  with Rosetta's own loader and decoders (`check_rosetta.py`, in a throwaway container from the simulator image with
+  Rosetta's two pure-Python packages pip-installed from `ThirdParty/rosetta` into its /tmp: every contract topic with
+  messages and the contract's type, no zero header stamp on a header-timeline source, decodable at the contract's
+  widths and image size, `/task/prompt` once and in the bag metadata). `test_rosetta_contracts.py` (no sim): every
+  robot's contract loads with Rosetta's loader and has the agreed streams. `test_out_dir.py`: a relaunch into an
+  `--out` that a killed episode left (a bag without a result): the next episode number, its own closed bag, host
+  paths, the gz log copy, every condition in `/evaluator/state`. `test_launch_refusals.py`: a valid scene instance starts, and
   the launch itself (the host check bypassed) refuses a `robot_start.arm` that does not fit the robot. The other
   modules record `--record no-images`. No sim: `test_episode_unit.py` (phase rules, metrics),
   `test_episode_numbers.py`, `test_cli.py` (`./revolve sim` refusals before docker and `./revolve validate`, with a

@@ -75,6 +75,15 @@ class RunSpec:
 
 
 @dataclass(frozen=True)
+class RecoveryRef:
+    """`recovery: {spec, enabled}`: the recovery spec (specs/recovery/<x>.yaml) coupled to this run: its live recorder wraps the
+    rollouts' policy and its phase-wise recovery works on the failures, on the same worker slots (the recovery component's
+    `attach`). Not coupled when disabled."""
+    spec: str
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class SetSpec:
     """An eval set. kind `heldout`: `count` new configs from `pool`, drawn by `sampler` inside the training ranges (or the
     narrower `randomisers`), `min_distance` from the training configs (`realised` is an alias: an instance's values are
@@ -105,12 +114,21 @@ class EvalSpec:
     retries: int = 0
     runner: RunnerSpec = RunnerSpec()
     run: RunSpec = RunSpec()
+    recovery: RecoveryRef | None = None                 # coupled recovery (only an enabled one is hashed: it changes the run)
+
+    @property
+    def coupled(self) -> bool:
+        return self.recovery is not None and self.recovery.enabled
 
     @property
     def hash(self) -> str:
         """Stable across yaml formatting / key order; changes with any setting except `out` and `run`."""
         d = asdict(self) | {"train": self.train.hash}
         d.pop("out"), d.pop("run")
+        if self.recovery is None or not self.recovery.enabled:       # as before the field existed (an existing out keeps its hash)
+            del d["recovery"]
+        else:
+            d["recovery"] = {"spec": self.recovery.spec}
         if d["runner"]["aggregate"] is None:                # as before the field existed (an existing out keeps its hash)
             del d["runner"]["aggregate"]
         return hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -161,6 +179,14 @@ def _run(v, at) -> RunSpec:
     if reset not in RESET_MODES:
         _fail(f"{at}.reset", f"must be one of {list(RESET_MODES)}, got {reset!r}")
     return RunSpec(_int(d["workers"], f"{at}.workers", 1) if d.get("workers") is not None else None, headless, reset)
+
+
+def _recovery(v, at) -> RecoveryRef:
+    d = _mapping(v, at, required=("spec",), optional=("enabled",))
+    enabled = d.get("enabled", True)
+    if not isinstance(enabled, bool):
+        _fail(f"{at}.enabled", f"expected true/false, got {enabled!r}")
+    return RecoveryRef(_str(d["spec"], f"{at}.spec"), enabled)
 
 
 def _pool(v, count, at) -> PoolSpec:
@@ -239,7 +265,7 @@ def _check_pools(train: DatagenSpec, sets, at):
 def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpec:
     """`root` (default cwd) is what the relative `train:` path is relative to."""
     d = _mapping(raw, source, required=("train", "sets", "out"),
-                 optional=("train_manifest", "training", "ckpt", "policy", "rollout", "judge", "rollouts", "retries", "runner", "run"))
+                 optional=("train_manifest", "training", "ckpt", "policy", "rollout", "judge", "rollouts", "retries", "runner", "run", "recovery"))
     train_path = Path(_str(d["train"], f"{source}.train"))
     train = load_train(train_path if train_path.is_absolute() else (root or Path.cwd()) / train_path)
     raw_sets = _mapping(d["sets"], f"{source}.sets", free=True)
@@ -254,7 +280,8 @@ def parse(raw: Any, source: str = "<spec>", root: Path | None = None) -> EvalSpe
         ckpt=_ckpt(d["ckpt"], f"{source}.ckpt") if "ckpt" in d else None,
         judge=_judge(d.get("judge"), f"{source}.judge"),
         rollouts=_int(d.get("rollouts", 1), f"{source}.rollouts", 1), retries=_int(d.get("retries", 0), f"{source}.retries", 0),
-        runner=_runner(d.get("runner", {}), f"{source}.runner"), run=_run(d.get("run", {}), f"{source}.run"), **fields)
+        runner=_runner(d.get("runner", {}), f"{source}.runner"), run=_run(d.get("run", {}), f"{source}.run"),
+        recovery=_recovery(d["recovery"], f"{source}.recovery") if "recovery" in d else None, **fields)
 
 
 def load(path: str | Path, root: Path | None = None) -> EvalSpec:

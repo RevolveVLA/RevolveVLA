@@ -102,12 +102,39 @@ class Rollout(ABC):
     def release(self, item: EvalItem) -> None:
         """The rollouts of the config `item` are over: free what `run` kept for it (the sim of its scene instance)."""
 
+    def idle(self) -> None:
+        """The calling worker slot has no rollout left to run (or ends): free the sim it kept (a rollout that keeps a sim per slot)."""
+
     def stop(self) -> None:
         """The run is being aborted: start nothing more."""
 
     def default_workers(self, policy: Policy) -> int:
         """Rollouts to run at a time when the spec sets no `run.workers`."""
         return 1
+
+
+class Follow(ABC):
+    """Work that follows the rollouts on the same worker slots (a recovery of their failures): after a config's rollouts are
+    committed it gives tasks that a slot runs when no rollout is pending."""
+
+    @abstractmethod
+    def after(self, set_name: str, entries: Mapping[str, Mapping]) -> Sequence[Callable[[], None]]:
+        """The tasks of the committed rollouts `entries` (results.json entries by key; also the ones of an earlier run: what
+        it already took is not taken again) and of what an earlier run left unfinished."""
+
+    def flush(self) -> None:
+        """The rollout walk of a set is over: write what is kept and free what the tasks used."""
+
+    def check(self) -> bool:
+        """Judge what the tasks made (False: the `recover` stage fails)."""
+        return True
+
+    def report(self) -> str:
+        """Markdown appended to the evaluation's report.md ('' for none)."""
+        return ""
+
+    def stop(self) -> None:
+        """The run is being aborted: stop what running tasks started."""
 
 
 class Judge(ABC):

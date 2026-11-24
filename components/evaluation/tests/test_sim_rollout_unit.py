@@ -423,10 +423,9 @@ def worlds(tmp_path):
         instance(tmp_path, "3", "[0, 0, 0]", fridge_x=2.0)
 
 
-def test_warm_one_sim_per_world_the_other_start_is_reset_to_and_the_world_goes_with_its_last_config(worlds, tmp_path):
+def test_warm_a_slot_keeps_one_sim_per_world_resets_to_the_other_start_and_drops_it_for_another_world(worlds, tmp_path):
     a, b, c = worlds
     r = WarmInProcess()
-    r.begin([a, b, c])
     ra0, ra1 = run(r, a, tmp_path, "1_r0"), run(r, a, tmp_path, "1_r1")
     rb, rc = run(r, b, tmp_path, "2_r0"), run(r, c, tmp_path, "3_r0")
     ab, other = r.sessions
@@ -440,17 +439,17 @@ def test_warm_one_sim_per_world_the_other_start_is_reset_to_and_the_world_goes_w
     assert rb["reset"]["mode"] == "warm" and rb["reset"]["report"]["ok"] and "fallback" not in rb["reset"]
     assert rb["episode"] == 2 and rb["resets"] == 2 and json.loads((tmp_path / "set" / "2_r0" / "rollout.json").read_text()) == rb
     r.release(a)
-    assert ab.closed == 0                                                           # b still has to run
     r.release(b)
-    assert ab.closed == 1 and other.closed == 0 and len(r.scenes) == 1
+    assert ab.closed == 1 and other.closed == 0 and len(r.scenes) == 1              # c's world replaced the slot's sim; release keeps it
     r.release(c)
+    assert other.closed == 0
+    r.idle()                                                                        # the slot has no rollout left
     assert other.closed == 1 and not r.scenes and r.pool._leased == {}
 
 
 def test_warm_miss_runs_the_config_on_a_sim_of_its_own_and_records_the_report(worlds, tmp_path, capsys):
     a, b, _ = worlds
     r = WarmInProcess(reaches=lambda target: False)
-    r.begin([a, b])
     run(r, a, tmp_path, "1_r0")
     rb = run(r, b, tmp_path, "2_r0")
     shared, own = r.sessions
@@ -463,7 +462,7 @@ def test_warm_miss_runs_the_config_on_a_sim_of_its_own_and_records_the_report(wo
     assert len(r.sessions) == 2 and r.client_calls[-1][1] is True and "--reset-to" not in r.client_calls[-1][0]
     r.release(b)
     assert own.closed == 1 and shared.closed == 0
-    r.release(a)
+    r.idle()
     assert shared.closed == 1 and not r.scenes
 
 
@@ -471,7 +470,6 @@ def test_warm_without_a_reset_target_is_a_sim_of_its_own(worlds, tmp_path):
     a, b, _ = worlds
     r = WarmInProcess()
     r.target = lambda item: None
-    r.begin([a, b])
     ra, rb = run(r, a, tmp_path, "1_r0"), run(r, b, tmp_path, "2_r0")
     assert len(r.sessions) == 2 and all("--reset-to" not in c[0] for c in r.client_calls)
     assert ra["reset"] == rb["reset"] == {"mode": "relaunch", "report": None}
@@ -480,7 +478,6 @@ def test_warm_without_a_reset_target_is_a_sim_of_its_own(worlds, tmp_path):
 def test_relaunch_keeps_one_sim_per_config_and_adds_nothing_to_the_record(worlds, tmp_path):
     a, b, _ = worlds
     r = InProcess()
-    r.begin([a, b])
     ra, rb = run(r, a, tmp_path, "1_r0"), run(r, b, tmp_path, "2_r0")
     assert len(r.sessions) == 2 and "reset" not in ra and "reset" not in rb
     assert all("--reset-to" not in c[0] for c in r.client_calls)
@@ -498,7 +495,7 @@ def test_a_missing_warm_report_is_still_a_fallback(worlds, tmp_path):
     assert rb["reset"]["fallback"] == {"ok": False, "reason": "warm reset missed (no report)"}
 
 
-def test_a_walk_with_workers_shares_one_sim_per_world_and_closes_it_after_its_last_config(worlds, tmp_path):
+def test_a_walk_with_workers_keeps_a_sim_per_slot_and_closes_them_all(worlds, tmp_path):
     from evaluation.core.interfaces import Built, Verdict
     from evaluation.core.walk import RetryPolicy, Walk
 
@@ -510,7 +507,32 @@ def test_a_walk_with_workers_shares_one_sim_per_world_and_closes_it_after_its_la
     got = {}
     walk.run("set", Built(list(worlds)), 2, {}, got.__setitem__)
     assert sorted(got) == ["1_r0", "1_r1", "2_r0", "2_r1", "3_r0", "3_r1"] and all(e["passed"] for e in got.values())
-    assert len(r.sessions) == 2 and sorted(s.launches for s in r.sessions) == [1, 1]            # configs 1 + 2 shared one
-    assert all(s.closed == 1 for s in r.sessions) and not r.scenes
-    modes = {k: e["tries"][0]["record"]["reset"]["mode"] for k, e in got.items()}
-    assert set(modes.values()) == {"warm"}
+    assert 2 <= len(r.sessions) <= 3 and all(s.launches == 1 and s.closed == 1 for s in r.sessions) and not r.scenes
+    assert {e["tries"][0]["record"]["reset"]["mode"] for e in got.values()} == {"warm"}
+
+
+def test_two_slots_run_two_configs_of_one_world_on_two_sims_each_warm_resetting_between_its_configs(worlds, tmp_path):
+    import threading
+    from evaluation.core.interfaces import Built, Verdict
+    from evaluation.core.walk import RetryPolicy, Walk
+
+    class Judge:
+        def score(self, record, rollout_dir, task):
+            return Verdict(record["passed"])
+
+    class Meeting(WarmInProcess):
+        meet = threading.Barrier(2, timeout=10)
+
+        def run_client(self, session, rollout, args, reset, log):
+            if rollout.name in ("1_r0", "2_r0"):
+                self.meet.wait()                                                     # both slots hold a config at the same time
+            return super().run_client(session, rollout, args, reset, log)
+    a, b, _ = worlds
+    d = instance(tmp_path, "4", "[0.1, 0.1, 0.0]")
+    r = Meeting()
+    walk = Walk(r, oracle, Judge(), RetryPolicy(0), RunnerSpec(), None, None, tmp_path, 2, False, lambda m: None)
+    got = {}
+    walk.run("set", Built([a, b, d]), 1, {}, got.__setitem__)
+    assert sorted(got) == ["1_r0", "2_r0", "4_r0"] and all(e["passed"] for e in got.values())
+    assert len(r.sessions) == 2 and all(s.launches == 1 and s.closed == 1 for s in r.sessions)    # a sim per slot, not one per world
+    assert sum("--reset-to" in c[0] for c in r.client_calls) == 1 and not r.scenes                 # d: the free slot's warm reset

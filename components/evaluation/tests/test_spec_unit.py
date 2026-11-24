@@ -117,7 +117,7 @@ def test_the_default_hash_is_as_before_the_aggregate_field(root):
     import hashlib, json
     spec = parse(root)
     d = dataclasses.asdict(spec) | {"train": spec.train.hash}
-    d.pop("out"), d.pop("run")
+    d.pop("out"), d.pop("run"), d.pop("recovery")
     assert "aggregate" in d["runner"]
     del d["runner"]["aggregate"]
     assert spec.hash == hashlib.sha256(json.dumps(d, sort_keys=True, default=str).encode()).hexdigest()[:16]
@@ -183,3 +183,17 @@ def test_run_reset_is_relaunch_or_warm_and_not_hashed(root):
     assert warm.run == S.RunSpec(2, True, "warm") and warm.hash == parse(root).hash
     with pytest.raises(SpecError, match=r"run.reset: must be one of \['relaunch', 'warm'\], got 'hot'"):
         parse(root, run={"reset": "hot"})
+
+
+def test_recovery_is_optional_validated_and_hashed_only_when_enabled(root):
+    plain = parse(root)
+    assert plain.recovery is None and not plain.coupled
+    on = parse(root, recovery={"spec": "specs/recovery/x.yaml"})
+    assert on.recovery == S.RecoveryRef("specs/recovery/x.yaml", True) and on.coupled and on.hash != plain.hash
+    off = parse(root, recovery={"spec": "specs/recovery/x.yaml", "enabled": False})
+    assert off.recovery.enabled is False and not off.coupled and off.hash == plain.hash        # a disabled recovery changes nothing
+    assert parse(root, recovery={"spec": "other.yaml"}).hash != on.hash and parse(root, run={"workers": 3}).hash == plain.hash
+    with pytest.raises(SpecError, match=r"recovery.enabled: expected true/false"):
+        parse(root, recovery={"spec": "x.yaml", "enabled": "yes"})
+    with pytest.raises(SpecError, match=r"recovery"):
+        parse(root, recovery={"enabled": True})

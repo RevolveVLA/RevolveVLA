@@ -1,7 +1,8 @@
-"""`./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui|--headless]`.
+"""`./revolve evaluate <spec.yaml> [sample|check|rollout|recover|report|all] [--set S] [--dry-run] [--workers N] [--gui|--headless]`.
 
 Resolves only the plugins the requested stages need; `--dry-run` resolves none (it prints the plan from the spec).
-Extra plugin modules are found through $EVAL_PLUGIN_PATH (datagen's, which the sets use, through $DATAGEN_PLUGIN_PATH;
+A spec with an enabled `recovery:` couples the recovery component (recovery.core.coupling.attach): its live recorder wraps the
+policy and its phase-wise recovery runs on the same worker slots; stage `recover` takes what is left of it. Extra plugin modules are found through $EVAL_PLUGIN_PATH (datagen's, which the sets use, through $DATAGEN_PLUGIN_PATH;
 os.pathsep separated). `--workers` / `--gui` override the spec's `run:` block. Exit code: 0 ok, 1 failed check or error, 2 invalid spec, 128 + n when stopped by signal n
 (results saved: rerun the same command to resume; the run's sim containers are removed). Never imports ROS / docker SDKs: the plugins do, lazily."""
 from __future__ import annotations
@@ -22,17 +23,20 @@ from .core.sims import sim_prefix
 from .core.spec import EvalSpec, load
 
 
-def build_plugins(spec: EvalSpec, stages) -> PluginSet:
+def build_plugins(spec: EvalSpec, stages, root: Path | None = None, out: Path | None = None) -> PluginSet:
     p = PluginSet()
-    if {"sample", "check", "rollout"} & set(stages):
+    if {"sample", "check", "rollout", "recover"} & set(stages):
         p.sets = {n: REGISTRY.create("set", s.plugin, spec) for n, s in spec.sets.items()}
-    if "rollout" in stages:
+    if {"rollout", "recover"} & set(stages):
         p.policy = REGISTRY.create("policy", spec.policy.plugin, spec, spec.policy.params)
         p.rollout = REGISTRY.create("rollout", spec.rollout.plugin, spec, spec.rollout.params)
         p.judge = REGISTRY.create("judge", spec.judge.plugin, spec, spec.judge.params)
         p.rollout.validate(p.policy)
         if spec.ckpt:
             p.ckpt = REGISTRY.create("ckpt", spec.ckpt.source, spec, spec.ckpt.params)
+        if spec.coupled:
+            from recovery.core.coupling import attach       # the recovery component, only when the spec couples it
+            attach(spec, p, root or Path.cwd(), out or Path(spec.out))
     return p
 
 
@@ -63,7 +67,9 @@ def main(argv=None, root: Path | None = None) -> int:
     try:
         spec = with_run(load(a.spec, root), a)
         out = Path(spec.out) if Path(spec.out).is_absolute() else root / spec.out
-        pipeline = Pipeline(spec, PluginSet() if a.dry_run else build_plugins(spec, stages), out, a.dry_run,
+        if a.stage == "recover" and not spec.coupled:
+            raise SpecError("stage recover: this spec has no enabled `recovery:`")
+        pipeline = Pipeline(spec, PluginSet() if a.dry_run else build_plugins(spec, stages, root, out), out, a.dry_run,
                             abort=lambda: stop_jobs(spec))
         with interruptible():
             return 0 if pipeline.run(stages, a.set) else 1

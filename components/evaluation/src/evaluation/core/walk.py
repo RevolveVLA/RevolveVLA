@@ -1,6 +1,7 @@
-"""The rollout walk of one eval set: every config x `rollouts`, `workers` configs at a time (datagen's `pool.ordered`:
-configs run in parallel, results are committed in order on the calling thread, so the results are the same for any worker
-count). A config's rollouts run one after the other (the rollout plugin keeps one sim per config and resets it between
+"""The rollout walk of one eval set: every config x `rollouts`, `workers` configs at a time (core/slots.py: configs run in
+parallel on the worker slots, results are committed in order on the calling thread, so the results are the same for any worker
+count). With a `Follow` (a recovery of the failures) the tasks it gives for a config's committed rollouts run on the same slots
+once no config is pending. A config's rollouts run one after the other (the rollout plugin keeps one sim per config and resets it between
 them, then `release`s it). Each rollout is a chain of tries in `<out>/<set>/<seed>_r<i>/` (retries in its `retry_<j>/`),
 judged one by one.
 
@@ -17,10 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from datagen.core import pool
-
 from .errors import EvalError
-from .interfaces import Built, EvalItem, Judge, Policy, ResolvedCkpt, Rollout, Verdict
+from .interfaces import Built, EvalItem, Follow, Judge, Policy, ResolvedCkpt, Rollout, Verdict
+from .slots import Slots
 from .spec import RunnerSpec
 from .termination import termination
 
@@ -72,22 +72,37 @@ class Walk:
         self.ckpt, self.task = ckpt, task
         self.out, self.workers, self.gui, self.log, self.hook = out, workers, gui, log, abort
         self.stopping = threading.Event()
+        self.follow: Follow | None = None
 
     def run(self, name: str, built: Built, rollouts: int, done: Mapping[str, Mapping],
-            commit: Callable[[str, dict], None]):
-        """Every item of `built` x `rollouts` not in `done` (entries by key); `commit(key, entry)` in order."""
+            commit: Callable[[str, dict], None], follow: Follow | None = None, pending: bool = True):
+        """Every item of `built` x `rollouts` not in `done` (entries by key); `commit(key, entry)` in order. `follow`: what
+        runs on the slots after the rollouts (the `done` ones too); `pending` False: no rollout, only the follow-up."""
         todo = [(it, [i for i in range(rollouts) if key(it, i) not in done]) for it in built.items]
-        todo = [(it, idx) for it, idx in todo if idx]
+        todo = [(it, idx) for it, idx in todo if idx and pending]
+        self.follow = follow
         self.rollout.begin([it for it, _ in todo])
         progress = Progress(name, [key(it, i) for it in built.items for i in range(rollouts)], self.log)
         for k, e in done.items():
             progress.state[k], progress.first[k] = "pass" if e["passed"] else "fail", e["tries"][0]["passed"]
-        pool.ordered(todo, lambda x: self._config(name, *x, progress),
-                     lambda x, es: [commit(key(x[0], i), e) for i, e in zip(x[1], es)], self.workers, self._abort)
+
+        def committed(x, es):
+            entries = {key(x[0], i): e for i, e in zip(x[1], es)}
+            for k, e in entries.items():
+                commit(k, e)
+            return follow.after(name, entries) if follow else ()
+        try:
+            Slots(self.workers, self.rollout.idle, self._abort).run(
+                todo, lambda x: self._config(name, *x, progress), committed, follow.after(name, done) if follow else ())
+        finally:
+            if follow:
+                follow.flush()
 
     def _abort(self):
         self.stopping.set()                 # running workers start no retry / second attempt
         self.rollout.stop()
+        if self.follow:
+            self.follow.stop()
         if self.hook:
             self.hook()
 

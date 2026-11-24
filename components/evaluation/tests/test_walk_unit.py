@@ -74,6 +74,9 @@ class Stub:
     def begin(self, items):
         pass
 
+    def idle(self):
+        pass
+
     def release(self, item):
         self.released.append(item.config.seed)
 
@@ -269,3 +272,63 @@ def test_sigint_stops_the_run_with_130_and_resumes(tmp_path):
     _, err = p.communicate(timeout=30)
     assert p.returncode == 130 and "interrupted by SIGINT" in err
     assert not (tmp_path / "run" / "results.json").exists() or not results_of(tmp_path)["sets"]["heldout"].get("rollouts")
+
+
+# ------------------------------------------------------------------ a follow-up on the same slots
+class Followed:
+    """A `Follow`: the tasks it gives per committed rollout key, kept in the order they ran, with what it was asked."""
+
+    def __init__(self, order):
+        self.order, self.asked, self.flushed, self.stopped = order, [], 0, 0
+
+    def after(self, set_name, entries):
+        self.asked.append((set_name, sorted(entries)))
+        return [lambda k=k: self.order.append(f"follow {k}") for k in sorted(entries) if self.take(k)]
+
+    take = staticmethod(lambda k: True)
+
+    def flush(self):
+        self.flushed += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
+def test_the_follow_up_of_the_committed_rollouts_runs_on_the_slots_after_the_pending_ones(tmp_path):
+    order = []
+
+    class Ordered(Stub):
+        def run(self, item, out, **kw):
+            order.append(f"rollout {out.name}")
+            return super().run(item, out, **kw)
+    follow, got = Followed(order), {}
+    walk(tmp_path, Ordered(), workers=1).run("s", built(0, 1, 2), 1, {}, got.__setitem__, follow)
+    assert order[:3] == ["rollout 0_r0", "rollout 1_r0", "rollout 2_r0"]                   # no rollout waits for a follow-up
+    assert sorted(order[3:]) == ["follow 0_r0", "follow 1_r0", "follow 2_r0"] and follow.flushed == 1
+    assert follow.asked == [("s", []), ("s", ["0_r0"]), ("s", ["1_r0"]), ("s", ["2_r0"])]
+
+
+def test_finished_rollouts_are_offered_to_the_follow_up_and_pending_false_runs_none(tmp_path):
+    order, follow = [], Followed([])
+    follow.order = order
+    stub = Stub()
+    done = {"0_r0": {"seed": 0, "passed": True, "tries": [{"passed": True}]}}
+    walk(tmp_path, stub).run("s", built(0, 1), 1, done, lambda k, e: None, follow, pending=False)
+    assert stub.calls == [] and order == ["follow 0_r0"] and follow.asked == [("s", ["0_r0"])] and follow.flushed == 1
+
+
+def test_an_abort_stops_the_follow_up_too_and_flushes(tmp_path):
+    follow = Followed([])
+
+    class Dies(Stub):
+        def run(self, *a, **kw):
+            raise KeyboardInterrupt
+    with pytest.raises(KeyboardInterrupt):
+        walk(tmp_path, Dies(), workers=1).run("s", built(0), 1, {}, lambda k, e: None, follow)
+    assert follow.stopped == 1 and follow.flushed == 1
+
+
+def test_without_a_follow_up_the_walk_is_as_before(tmp_path):
+    stub = Stub()
+    got = run(walk(tmp_path, stub, workers=2), built(0, 1, 2))
+    assert sorted(got) == ["0_r0", "1_r0", "2_r0"] and list(got) == ["0_r0", "1_r0", "2_r0"]

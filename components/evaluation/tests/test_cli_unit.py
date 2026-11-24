@@ -190,3 +190,16 @@ def test_stop_jobs_removes_the_runs_containers_through_common(tmp_path, monkeypa
     cli.stop_jobs(spec)
     assert seen == [sim_prefix(spec)] and sim_prefix(spec).startswith("ev-") and "removed 2 container(s)" in capsys.readouterr().err
     assert "datagen.containers" not in sys.modules
+
+
+def test_a_recover_stage_needs_an_enabled_recovery_and_a_disabled_one_changes_nothing(tmp_path, capsys):
+    assert evaluate(tmp_path, "recover") == 2 and "no enabled `recovery:`" in capsys.readouterr().err
+    off = SPEC | {"recovery": {"spec": "specs/recovery/none.yaml", "enabled": False}}
+    assert evaluate(tmp_path, "recover", spec=off) == 2
+    assert evaluate(tmp_path, spec=off) == 0 and (tmp_path / "run" / "report.md").is_file()      # never loaded: not enabled
+    assert "recovery" not in capsys.readouterr().out
+
+
+def test_dry_run_names_the_coupled_recovery_without_loading_it(tmp_path, capsys):
+    assert evaluate(tmp_path, "--dry-run", spec=SPEC | {"recovery": {"spec": "specs/recovery/none.yaml"}}) == 0
+    assert "[dry-run] recovery: specs/recovery/none.yaml on the same worker slots (stage recover)" in capsys.readouterr().out

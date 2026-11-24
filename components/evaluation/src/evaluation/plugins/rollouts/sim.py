@@ -5,11 +5,12 @@ sim unless it is fresh, start the episode, stream the policy's actions, wait for
 the start (the same reset). A SimFault (clock fault, sim exit, ready / reset / result timeout) relaunches the sim (up to
 `infra_retries` per config) and runs the episode again: infrastructure faults are not failed episodes.
 
-`run.reset: warm` shares one sim between the configs of a world (scene instances that differ only in `robot_start`,
-sim_session.same_world): the sim is launched with the first config's instance and each other config's rollouts start with a
-warm reset (the robot is driven to its start after the reset: revolve_common.warm_reset). A miss, or a robot / instance
-without a reset target, runs that config on a sim of its own as in `relaunch`; the record's `reset: {mode, report, fallback}`
-says which. The configs of one world then run one after the other (one sim). The default `relaunch` is one sim per config.
+`run.reset: warm` keeps one sim per worker slot (the calling thread) for the configs of a world (scene instances that differ
+only in `robot_start`, sim_session.same_world), so a world has up to `run.workers` sims: a slot's sim is launched with its first
+config's instance and each later config of the world starts with a warm reset (the robot is driven to its start after the
+reset: revolve_common.warm_reset). A slot that moves to another world relaunches; `idle` (the slot has no rollout left) closes
+its sim. A miss, or a robot / instance without a reset target, runs that config on a sim of its own as in `relaunch`; the record's
+`reset: {mode, report, fallback}` says which. The default `relaunch` is one sim per config.
 
 The record is the evaluator's verdict (DATAGEN 4.3): passed, phases {name: status}, failed_phase, reason, duration_s, episode,
 bag, result_file; `error` when there is none: `wall limit` (the client ran over `wall_s`), `interrupted`, `infrastructure`, or
@@ -24,7 +25,6 @@ import json
 import subprocess
 import sys
 import threading
-from collections import Counter
 from pathlib import Path
 
 from datagen.core.spec import SpecError
@@ -68,12 +68,12 @@ class WarmMiss(Exception):
 
 
 class Scene:
-    """The sim of one config, kept for its rollouts (`shared`: of a world, for all its configs); `scene` = the instance it
-    was launched with."""
+    """The sim of one config, kept for its rollouts (`shared`: a worker slot's, for its configs of a world); `scene` = the
+    instance it was launched with, `owner` the slot's thread."""
 
-    def __init__(self, session, name: str, retries: int, scene: str = "", shared: bool = False):
+    def __init__(self, session, name: str, retries: int, scene: str = "", shared: bool = False, owner: int = 0):
         self.session, self.name, self.faults = session, name, RelaunchPolicy(retries)
-        self.scene, self.shared = scene, shared
+        self.scene, self.shared, self.owner = scene, shared, owner
         self.lock, self.running, self.fresh = threading.Lock(), False, True
 
     def launch(self) -> None:
@@ -100,7 +100,7 @@ class SimRollout(Rollout):
         self.infra_retries = int(params.get("infra_retries", 3))
         self.lead_s = float(params.get("lead_s", 0.1))
         self.warm = spec.run.reset == "warm"
-        self.prefix, self.scenes, self.pending = sim_prefix(spec), {}, Counter()
+        self.prefix, self.scenes = sim_prefix(spec), {}
         self.lock, self.stopped = threading.Lock(), threading.Event()
         self.pool = self.domain_pool()
 
@@ -147,18 +147,21 @@ class SimRollout(Rollout):
         (out / "rollout.json").write_text(json.dumps(record))
         return record
 
-    def begin(self, items) -> None:
-        with self.lock:
-            for item in items:
-                self.pending[self._key(item)] += 1
-
     def release(self, item) -> None:
-        """The config is over: its own sim goes; a world's sim goes with its last config."""
+        """The config is over: its own sim goes (a slot's sim is kept for its next config: `idle`)."""
         with self.lock:
-            key, own = self._key(item), str(item.scene)
-            self.pending[key] -= 1
-            gone = [self.scenes.pop(k) for k in {key, own} if k in self.scenes and (k == own or self.pending[k] <= 0)]
-        for scene in gone:
+            scene = self.scenes.pop(str(item.scene), None)
+        self._close([scene] if scene else [])
+
+    def idle(self) -> None:
+        """The calling slot has no rollout left: its sim goes."""
+        me = threading.get_ident()
+        with self.lock:
+            gone = [self.scenes.pop(k) for k in [k for k, v in self.scenes.items() if v.shared and v.owner == me]]
+        self._close(gone)
+
+    def _close(self, scenes) -> None:
+        for scene in scenes:
             scene.stop()
             self.pool.release(scene.name)
 
@@ -171,18 +174,24 @@ class SimRollout(Rollout):
 
     # ---- one episode
     def _key(self, item) -> str:
-        """Which sim serves `item`: its world's when warm resets apply to it, else one of its own."""
+        """Which sim serves `item`: the calling slot's for its world when warm resets apply to it, else one of its own."""
         world = world_key(item.scene) if self.warm else None
-        return f"world:{world}" if world and self.target(item) else str(item.scene)
+        return f"world:{world}@{threading.get_ident()}" if world and self.target(item) else str(item.scene)
 
     def _scene(self, item, out: Path, gui: bool, key: str) -> Scene:
+        me, other = threading.get_ident(), []
         with self.lock:
             if key not in self.scenes:
+                shared = key.startswith("world:")
+                if shared:                                                   # one sim per slot: another world's goes
+                    other = [self.scenes.pop(k) for k in [k for k, v in self.scenes.items() if v.shared and v.owner == me]]
                 name, domain = self.pool.lease()
                 sim_out = out.parent / f"{item.config.seed}_sim"
                 self.scenes[key] = Scene(self.session(item, sim_out, name, domain, gui), name, self.infra_retries,
-                                         str(item.scene), key.startswith("world:"))
-            return self.scenes[key]
+                                         str(item.scene), shared, me)
+            scene = self.scenes[key]
+        self._close(other)
+        return scene
 
     def _episode(self, item, out: Path, policy, gui: bool) -> dict:
         args = policy.client_args(item)

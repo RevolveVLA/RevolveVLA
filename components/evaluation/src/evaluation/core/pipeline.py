@@ -1,8 +1,10 @@
-"""sample -> check -> rollout -> report, over injected plugins.
+"""sample -> check -> rollout -> recover -> report, over injected plugins.
 
 `sample` builds every eval set (configs + start dirs, resumable), `check` reports the sets' checks, `rollout` walks each
 set's configs x `rollouts` (core/walk.py: parallel, retries, resume) and judges every try, `report` writes report.md.
-Stages that need a built set build it (idempotent), so each can run alone. Everything is kept in `<out>/results.json`
+`recover` (only with a coupled `recovery:`, a `Follow`): what follows the rollouts on the same worker slots (their failures'
+recovery) is done during `rollout`; this stage takes what is left (committed rollouts not yet taken, unfinished tasks), then judges
+it and appends its report. Stages that need a built set build it (idempotent), so each can run alone. Everything is kept in `<out>/results.json`
 (core/results.py), saved after every rollout, so a killed run resumes; a changed spec hash refuses an existing `out`.
 Layout: `<out>/<set>/<seed>_r<i>/` (+ `retry_<j>/`). `abort` stops what the sample and rollout stages started (docker jobs)
 when the run is interrupted."""
@@ -13,7 +15,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from .errors import EvalError
-from .interfaces import Built, CkptSource, EvalSet, Judge, Policy, Rollout
+from .interfaces import Built, CkptSource, EvalSet, Follow, Judge, Policy, Rollout
 from .results import Results
 from .runner import check_chunk_size
 from .sets import repo_root
@@ -22,7 +24,7 @@ from .task import load_task
 from .termination import rollout_policy
 from .walk import RetryPolicy, Walk
 
-STAGES = ("sample", "check", "rollout", "report")
+STAGES = ("sample", "check", "rollout", "recover", "report")
 
 
 class PipelineError(EvalError):
@@ -36,6 +38,7 @@ class PluginSet:
     policy: Policy | None = None
     rollout: Rollout | None = None
     judge: Judge | None = None
+    follow: Follow | None = None                                   # the coupled recovery
 
 
 class Pipeline:
@@ -76,6 +79,8 @@ class Pipeline:
             f"runner {s.runner.describe()}")
         if s.runner.warning:
             say(f"warning: {s.runner.warning}")
+        if s.coupled:
+            say(f"recovery: {s.recovery.spec} on the same worker slots (stage recover)")
         runs = 0
         for n in names:
             t = s.sets[n]
@@ -128,14 +133,32 @@ class Pipeline:
         self.results.data["ckpt"] = ckpt and {"path": ckpt.path, "origin": ckpt.origin}
         task = load_task(s.train.task, repo_root(s, self.out))
         policy = rollout_policy(task, s.rollout.params)
-        walk = Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt, task, self.out,
-                    self.rollout_workers(), self.gui, self.log, self.abort)
+        walk = self._walk(ckpt, task)
         for n in names:
             built = self._build(n)
             self.results.set(n)["rollout_policy"] = policy
             self.results.set(n)["configs"] = [dict(c.config.to_dict(), scene=str(c.scene)) for c in built.items]
-            walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e))
+            walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e),
+                     self.plugins.follow)
+
+    def _walk(self, ckpt, task) -> Walk:
+        p, s = self.plugins, self.spec
+        return Walk(p.rollout, p.policy, p.judge, RetryPolicy(s.retries), s.runner, ckpt, task, self.out,
+                    self.rollout_workers(), self.gui, self.log, self.abort)
+
+    def _recover(self, names) -> bool | None:
+        """No rollout: what follows the committed ones on the slots (the coupled recovery's leftovers), then its verdict."""
+        follow = self.plugins.follow
+        if follow is None:
+            return None
+        walk = self._walk(None, load_task(self.spec.train.task, repo_root(self.spec, self.out)))
+        for n in names:
+            walk.run(n, self._build(n), self.spec.rollouts, self.results.rollouts(n), None, follow, pending=False)
+        return follow.check()
 
     def _report(self, names):
         kinds = {n: "seen" if t.kind == "train" else "new" for n, t in self.spec.sets.items()}
-        (self.out / "report.md").write_text(self.results.report(self.spec.judge.plugin, names, kinds))
+        text = self.results.report(self.spec.judge.plugin, names, kinds)
+        if self.plugins.follow and (extra := self.plugins.follow.report()):
+            text += "\n" + extra
+        (self.out / "report.md").write_text(text)

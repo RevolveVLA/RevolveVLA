@@ -2,7 +2,7 @@
 import subprocess
 
 import pytest
-from bench_metrics import (ClientTimes, Sampler, container_id, cpu_busy, cpu_percent, gpu_by_container, parse_apps, parse_gpu, ram_used_gb,
+from bench_metrics import (ClientTimes, bag_rtfs, bag_sim_s, birth_s, Sampler, container_id, cpu_busy, cpu_percent, gpu_by_container, parse_apps, parse_gpu, ram_used_gb,
                            rollout_rtfs, rtf, stability, summarise)
 
 CID = "ab" * 32
@@ -93,3 +93,14 @@ def test_stability_compares_the_verdicts_per_config():
     base = {"1": {(True, None)}, "2": {(False, "open")}, "3": {(False, "approach")}}
     other = {"1": {(True, None)}, "2": {(True, None)}, "9": {(True, None)}}
     assert stability(base, other) == {"configs": 2, "same": 1, "differ": ["2"]}
+
+
+def test_a_bag_gives_the_rtf_of_its_episode(tmp_path):
+    bag = tmp_path / "sim" / "episode_0_bag"
+    bag.mkdir(parents=True)
+    (bag / "0.mcap").write_text("")
+    (bag / "metadata.yaml").write_text("rosbag2_bagfile_information:\n  duration:\n    nanoseconds: 24646000000\n  starting_time:\n")
+    births = {"0.mcap": birth_s("2026-11-24 23:45:08.500000000 +0530"), "metadata.yaml": birth_s("2026-11-24 23:45:33.500000000 +0530")}
+    rows = bag_rtfs(tmp_path, birth=lambda p: births[p.name])
+    assert rows == [{"bag": str(bag), "sim_s": 24.6, "wall_s": 25.0, "rtf": 0.986}]
+    assert bag_sim_s("no duration") is None and birth_s("2026-11-24 23:45:09.25 +0000") % 1 == 0.25

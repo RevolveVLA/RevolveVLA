@@ -1,7 +1,7 @@
 """Capacity bench (GPU + docker; skipped unless RECOVERY_BENCH=1): how many slots (= warm sims) one host runs before the sim's real-time
 factor or the verdicts degrade. For each N in RECOVERY_BENCH_N (default 1,2,3,4,6) one coupled evaluation on N slots: `noisy_expert`
 rollouts with the DAgger recorder (takeover by the moveit expert) and automoma phase recovery of the failures, warm resets, on the
-slots' own sims. Measured: RTF per rollout (sim seconds of the episode / wall seconds of its client container), wall per episode,
+slots' own sims. Measured: RTF per recorded episode (bag: sim seconds / wall seconds of the recording) and of the rollout clients (episode / client container), wall per episode,
 GPU memory per slot, GPU util, CPU, RAM, load, verdicts against N=1, infrastructure faults. N stops growing at the first RTF < 0.5, fault
 or error. Numbers: RECOVERY_BENCH_NUMBERS=<file> (JSON). RECOVERY_BENCH_RUN=<dir> reuses a training run, RECOVERY_BENCH_KEEP=1 keeps the
 outputs. Needs the GPU gate: >= 6 GB free and the other processes <= 20 % util."""
@@ -16,7 +16,7 @@ from pathlib import Path
 from statistics import mean
 
 import pytest
-from bench_metrics import ClientTimes, Sampler, parse_gpu, rollout_rtfs, stability, summarise
+from bench_metrics import ClientTimes, Sampler, bag_rtfs, parse_gpu, rollout_rtfs, stability, summarise
 from test_recovery_gpu import PREFIXES, REPO, TASK, Run, all_tries, leftovers, manifest_of, recovery_numbers, rel, resets_of
 
 from datagen import cli as datagen_cli
@@ -124,10 +124,12 @@ def test_capacity_at_n_slots(trained, n):
     seen = verdicts(out)
     if n == SLOTS[0]:
         BASE.update(seen)
+    bags = bag_rtfs(out)
     got = {"slots": n, "host_before": host, "rollouts": len(rows), "wall_s": wall, "rollout_errors": errors,
-           "client_faults": times.faults, "rtf": {"n": len(rtfs), "mean": round(mean(r["rtf"] for r in rtfs), 3) if rtfs else None,
-                                                   "min": min((r["rtf"] for r in rtfs), default=None),
-                                                   "p10": percentile([r["rtf"] for r in rtfs], 0.1) if rtfs else None},
+           "client_faults": times.faults, "rtf": {"bags": len(bags), "mean": round(mean(r["rtf"] for r in bags), 3) if bags else None,
+                                                   "min": min((r["rtf"] for r in bags), default=None),
+                                                   "p10": percentile([r["rtf"] for r in bags], 0.1) if bags else None},
+           "client_rtf_mean": round(mean(r["rtf"] for r in rtfs), 3) if rtfs else None,
            "wall_per_episode_s": round(mean(r["wall_s"] for r in rtfs), 1) if rtfs else None,
            "sim_s_per_episode": round(mean(r["sim_s"] for r in rtfs), 1) if rtfs else None,
            "phase_jobs": {"runs": len(jobs), "wall_s_mean": round(mean(r["wall_s"] for r in jobs), 1) if jobs else None},

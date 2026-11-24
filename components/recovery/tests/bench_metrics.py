@@ -7,6 +7,7 @@ import re
 import subprocess
 import threading
 import time
+from datetime import datetime
 from collections import defaultdict
 from contextlib import contextmanager
 from pathlib import Path
@@ -167,6 +168,37 @@ def rollout_rtfs(runs: list[dict], sim_s_of) -> list[dict]:
         if Path(r["log"]).name != "client.log" or (sim := sim_s_of(Path(r["log"]))) is None:
             continue
         rows.append({"wall_s": round(r["wall_s"], 1), "sim_s": round(sim, 1), "rtf": rtf(sim, r["wall_s"])})
+    return rows
+
+
+def birth_s(text: str) -> float:
+    """`stat -c %w` ("2026-11-24 23:45:08.123456789 +0530") -> epoch seconds."""
+    day, clock, zone = text.split()
+    whole, _, frac = clock.partition(".")
+    stamp = datetime.strptime(f"{day} {whole}.{(frac + '000000')[:6]} {zone}", "%Y-%m-%d %H:%M:%S.%f %z")
+    return stamp.timestamp()
+
+
+def bag_sim_s(metadata: str) -> float | None:
+    found = re.search(r"duration:\s*nanoseconds:\s*(\d+)", metadata)
+    return int(found.group(1)) / 1e9 if found else None
+
+
+def _birth(path: Path) -> float:
+    return birth_s(_run("stat", "-c", "%w", str(path)))
+
+
+def bag_rtfs(root: Path, birth=_birth) -> list[dict]:
+    """The sim's real-time factor per recorded episode under `root`: the bag's sim duration over the wall time between the creation of
+    its data file (recording starts) and of metadata.yaml (written at close). Inside the episode: no client or reset overhead."""
+    rows = []
+    for meta in sorted(root.rglob("metadata.yaml")):
+        data, sim = next(iter(sorted(meta.parent.glob("*.mcap")) + sorted(meta.parent.glob("*.db3"))), None), bag_sim_s(meta.read_text())
+        if data is None or sim is None:
+            continue
+        wall = birth(meta) - birth(data)
+        if wall > 0:
+            rows.append({"bag": str(meta.parent), "sim_s": round(sim, 1), "wall_s": round(wall, 1), "rtf": rtf(sim, wall)})
     return rows
 
 

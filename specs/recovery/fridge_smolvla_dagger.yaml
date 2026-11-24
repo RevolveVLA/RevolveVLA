@@ -1,0 +1,21 @@
+# DAgger on the SmolVLA checkpoint: its rollouts (specs/eval/fridge_smolvla_dagger.yaml) are supervised; the first trigger hands control to
+# the expert (MoveIt, from the measured joints), which hands it back at the end of the phase it took over in, up to 3 times per episode.
+# Only the expert's spans are recorded. `./revolve evaluate specs/eval/fridge_smolvla_dagger.yaml` (coupled) or
+# `./revolve recover specs/recovery/fridge_smolvla_dagger.yaml live [--dry-run]` (the policy's rollouts are run here).
+task: open_fridge_door
+robot: mobile_panda
+from: {eval: specs/eval/fridge_smolvla_dagger.yaml}
+live:
+  plugin: dagger
+  triggers:                                    # the first to fire hands over to the expert
+    - {plugin: phase_time, fraction: 0.5}      # later takeovers leave the expert too little of the phase's time (0.7 did not)
+    - {plugin: stall, window_s: 2, min_motion: 0.01}
+    - {plugin: condition, phase: open, value: "open.while[1]", op: gt, threshold: 0.01, for_s: 0.2}     # the grasp slips
+  expert: {plugin: moveit_takeover}
+  record: interventions                        # the expert's spans only
+  handback: {when: phase_done}
+  max_interventions: 3
+  quota: {approach: 10, grasp: 10, open: 10}   # takeovers per phase
+keep: successes
+seed: 0
+out: runs/recovery/fridge_smolvla_dagger       # standalone only

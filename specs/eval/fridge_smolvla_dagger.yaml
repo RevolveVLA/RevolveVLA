@@ -1,0 +1,16 @@
+# The SmolVLA fridge checkpoint (specs/eval/fridge_smolvla_v2.yaml) under DAgger: 5 rollouts on the training instances, the policy is
+# supervised, an expert takes over at the first trigger and hands control back to the policy at the end of the phase it took over in
+# (specs/recovery/fridge_smolvla_dagger.yaml), into runs/eval/fridge_smolvla_dagger/recovery/.
+# `./revolve evaluate specs/eval/fridge_smolvla_dagger.yaml [all|rollout]`; needs runs/datagen/fridge_panda_v2/{state.json,manifest.json}.
+train: specs/datagen/fridge_panda_v2.yaml
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+out: runs/eval/fridge_smolvla_dagger
+sets:
+  train: {from: train, count: 5}
+rollout: {plugin: sim}                         # record images (the default): the takeover episodes are training data
+rollouts: 1
+retries: 0
+runner: {n_action_steps: 20, chunk_size_threshold: 0}
+run: {workers: 1, headless: true}              # one policy service, one sim
+recovery: {spec: specs/recovery/fridge_smolvla_dagger.yaml, enabled: true}

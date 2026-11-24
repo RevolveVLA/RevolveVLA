@@ -1,0 +1,22 @@
+# Phase-wise recovery of the SmolVLA checkpoint's failures on the training instances: each failed try is restarted a second before its
+# failure (the door must still be closed there) and recorded again by AutoMoMa, in the phases' quota. Coupled to
+# specs/eval/fridge_smolvla_phases.yaml (`./revolve evaluate` on it recovers right after the rollouts), or alone on the finished run:
+# `./revolve recover specs/recovery/fridge_smolvla_phases.yaml [collect|run|check|all] [--dry-run]`. Only non-held-out sets are mined.
+task: open_fridge_door
+robot: mobile_panda
+from: {eval: runs/eval/fridge_smolvla_phases}
+triggers:
+  - {plugin: verdict}
+  - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}
+phases:
+  restart_from: before_failure
+  back_s: 1.0
+  max_object_joint: 0.02
+  # automoma, not moveit: moveit's resume cannot meet the 5 s grasp timer from a grasp phase_start
+  generator: {plugin: automoma, attempts: 3, record: images}
+  per_failure: 2
+  quota: {approach: 10, grasp: 10, open: 0}
+keep: successes
+seed: 0
+run: {workers: 1, headless: true}
+out: runs/recovery/fridge_smolvla_phases       # standalone only

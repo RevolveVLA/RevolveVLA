@@ -1,0 +1,16 @@
+# The SmolVLA fridge checkpoint (specs/eval/fridge_smolvla_v2.yaml) with phase-wise recovery of its failures: 5 rollouts on the training
+# instances (the mined set; a held-out set stays out of the recovery), then the failed tries are restarted shortly before their failure
+# and recorded again by AutoMoMa (specs/recovery/fridge_smolvla_phases.yaml), into runs/eval/fridge_smolvla_phases/recovery/.
+# `./revolve evaluate specs/eval/fridge_smolvla_phases.yaml [all|rollout|recover]`; needs runs/datagen/fridge_panda_v2/{state.json,manifest.json}.
+train: specs/datagen/fridge_panda_v2.yaml
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}
+out: runs/eval/fridge_smolvla_phases
+sets:
+  train: {from: train, count: 5}
+rollout: {plugin: sim}                         # record images (the default)
+rollouts: 1
+retries: 0
+runner: {n_action_steps: 20, chunk_size_threshold: 0}
+run: {workers: 1, headless: true}              # one policy service, one sim
+recovery: {spec: specs/recovery/fridge_smolvla_phases.yaml, enabled: true}

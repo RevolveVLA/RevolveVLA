@@ -1,0 +1,32 @@
+# The recovery of specs/eval/fridge_recovery.yaml, coupled to that evaluation (its `recovery:` key): what the evaluation runs, this
+# spec records on the same worker slots into <eval out>/recovery/, so `from.eval` (and `out`, `run`) are the evaluation's own and are
+# not read.
+#   live    DAgger in the evaluation's own rollouts: the policy is supervised; at the first trigger the expert takes over and finishes
+#   phases  the failed tries of those rollouts are restarted a second before their failure and recorded again by AutoMoMa, in the
+#           phases' quota; they queue behind the pending rollouts on the same slots
+# Run alone on a finished run (no live stage: that needs the evaluation spec) as `./revolve recover specs/recovery/fridge_coupled.yaml
+# collect|run|check`; `from.eval` below is then the run to read.
+task: open_fridge_door
+robot: mobile_panda
+from: {eval: runs/eval/fridge_recovery}
+triggers:                                      # what names a failure of the phase-wise recovery (the evaluator's verdict first)
+  - {plugin: verdict}
+  - {plugin: stall, phases: [approach], window_s: 3, min_motion: 0.01}
+phases:
+  restart_from: before_failure
+  back_s: 1.0
+  max_object_joint: 0.02
+  generator: {plugin: automoma, attempts: 3, record: images}
+  per_failure: 2
+  quota: {approach: 10, grasp: 10, open: 0}
+live:
+  plugin: dagger
+  triggers:                                    # supervise the policy: the first to fire hands over to the expert
+    - {plugin: phase_time, fraction: 0.7}
+    - {plugin: stall, window_s: 2, min_motion: 0.01}
+  expert: {plugin: moveit_takeover}
+  record: full                                 # the whole episode (the flags say where the expert took over); `interventions`: its span
+  quota: {approach: 5, grasp: 10, open: 10}    # takeovers per phase; a full phase gets none: the evaluator's verdict stands
+keep: successes
+seed: 0
+out: runs/recovery/fridge_recovery             # standalone only

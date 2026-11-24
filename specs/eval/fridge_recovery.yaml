@@ -1,0 +1,18 @@
+# specs/eval/fridge_panda_v2.yaml with its recovery coupled: `./revolve evaluate specs/eval/fridge_recovery.yaml [all|rollout|recover]`.
+# The rollouts run under the recorder of specs/recovery/fridge_coupled.yaml (DAgger: the policy is supervised, an expert takes over at
+# the first trigger) and the failures of the tries are recovered by phase on the same worker slots (the pending rollouts first, then
+# the jobs), into runs/eval/fridge_recovery/recovery/ (manifest.json, report.md). The report shows the policy's success alone apart
+# from the takeovers'. `run.reset: warm` keeps a sim per slot and warm-resets it between configs and jobs.
+# The policy streams the oracle's replay with noise (`noisy_expert`: a bad policy the triggers catch, no checkpoint needed): it replays
+# the training episodes, so only the train set can run. A served policy (smolvla) takes its place once it runs on the new simulator;
+# a held-out set then needs `from.sets` in the recovery spec to leave it out of the recorder (its pool is the training spec's aside pool).
+train: specs/datagen/fridge_panda_v2.yaml
+policy: {plugin: noisy_expert, sigma: 0.03}
+out: runs/eval/fridge_recovery
+sets:
+  train: {from: train, count: 10}              # needs runs/datagen/fridge_panda_v2/{state.json,manifest.json}
+rollout: {plugin: sim}                         # record images (the default): the takeover episodes are training data
+rollouts: 2
+retries: 0
+run: {workers: 2, headless: true, reset: warm}
+recovery: {spec: specs/recovery/fridge_coupled.yaml, enabled: true}

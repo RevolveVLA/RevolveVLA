@@ -58,3 +58,17 @@ def test_unreproducible_failures_are_not_selected():
 def test_a_config_is_its_set_and_scene():
     assert Q.config_of(failure(1, 0, "approach")) != Q.config_of(failure(1, 0, "approach", set="train"))
     assert Q.config_of(failure(1, 0, "approach")) == Q.config_of(failure(1, 1, "grasp"))
+
+
+def test_admission_picks_failures_as_they_arrive_up_to_the_phases_jobs():
+    adm = Q.Admission({"approach": 3, "grasp": 1}, 2)                    # 2 approach jobs, 1 grasp job
+    first = adm.pick([failure(1, 0, "approach"), failure(1, 1, "grasp"), failure(1, 2, "approach", ok=False), failure(2, 0, "open")])
+    assert ids(first) == ["heldout_1_r0_t0", "heldout_1_r1_t0"]          # an unreproducible one or a phase out of the quota is left
+    second = adm.pick([failure(2, 1, "approach"), failure(2, 2, "approach"), failure(2, 3, "grasp")])
+    assert ids(second) == ["heldout_2_r1_t0"]                            # the phases are full
+    assert [f.phase for f in Q.Admission({"approach": 3}, 2, ["approach", "grasp"]).pick(FAILS)] == ["approach"]       # jobs of an earlier run count
+
+
+def test_admission_in_one_batch_equals_the_head_of_each_phase():
+    one = Q.Admission({"approach": 2}, 1).pick(FAILS)
+    assert ids(one) == ids([f for f in FAILS if f.phase == "approach"][:2])

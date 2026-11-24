@@ -8,9 +8,13 @@ planner that works offline per scene instance) and runs them on `spec.run.worker
 spec's datagen generator. `check` judges the run: every job ran and every phase has its quota of episodes. A killed run resumes:
 collected failures, the selection and finished jobs are kept, a job continues from its own log (datagen.json).
 Layout under `out`: state.json, manifest.json, report.md, <phase>/<failure id>/{scene.yaml, datagen.json, resets.json},
-sims/<slot>/ (the sims' episode results and bags), logs/."""
+sims/<slot>/ (the sims' episode results and bags), logs/.
+A coupled evaluation (core/coupling.py) runs the same jobs (`work`, `record`) as tasks on its worker slots as its rollouts' failures
+arrive (`absorb`), into `<eval out>/recovery/`: the same state, manifest and report."""
 from __future__ import annotations
 
+import threading
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -24,8 +28,10 @@ from . import live as lv
 from . import manifest as mf
 from . import quota, report
 from .errors import JobError, RecoveryError
-from .failures import Failure
+from .failures import Failure, Scan
+from .generator import create as create_generator
 from .interfaces import LiveRecorder, Runner, Scanner
+from .registry import REGISTRY
 from .robot import Arm
 from .spec import RecoverySpec
 
@@ -46,10 +52,23 @@ class PluginSet:
     live_run: lv.LiveRun | None = None
 
 
+def phase_plugins(spec: RecoverySpec, stages: Sequence[str]) -> PluginSet:
+    """The plugins of the phase-wise stages in `stages` (the scanner, the generator and the runner)."""
+    p = PluginSet()
+    if "collect" in stages or "run" in stages:
+        p.scanner = REGISTRY.create("scanner", spec.scanner.plugin, spec, spec.scanner.params)
+    if "run" in stages:
+        p.generator = create_generator(spec)
+        p.runner = REGISTRY.create("runner", spec.runner.plugin, spec, spec.runner.params)
+    return p
+
+
 class Pipeline:
     def __init__(self, spec: RecoverySpec, arm: Arm, plugins: PluginSet, out: Path, dry_run: bool = False,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = print, live_dir: Path | None = None):
+        """`live_dir`: the evaluation run the live recorder's episodes are read from (default `<out>/live`)."""
         self.spec, self.arm, self.plugins, self.out, self.dry_run, self.log = spec, arm, plugins, out, dry_run, log
+        self.live_dir, self.lock = live_dir or out / lv.LIVE, threading.Lock()
         self.state = State.open(out / "state.json", spec, persist=not dry_run)
         self.workers = spec.run.workers if spec.run.headless else 1
         if self.workers != spec.run.workers:
@@ -68,7 +87,7 @@ class Pipeline:
             for stage in stages:
                 ok &= getattr(self, f"_{stage}")() is not False
         finally:
-            self._report()
+            self.report()
         return ok
 
     def _plan(self, stages):
@@ -94,6 +113,27 @@ class Pipeline:
     @property
     def failures(self) -> list[Failure]:
         return [Failure.from_dict(d) for d in self.state.data.get("failures", [])]
+
+    def absorb(self, scan: Scan) -> list[tuple[int, Failure]]:
+        """A coupled run: the failures of the rollouts that just finished are kept; the jobs the quota picks among them, as
+        (run order, failure) (core/quota.py `Admission`: first come, as the evaluation delivers them)."""
+        with self.lock:
+            data = self.state.data
+            data["failures"] = [*data.get("failures", []), *(f.to_dict() for f in scan.failures)]
+            data["scan"] = dict(Counter(data.get("scan", {})) + Counter(scan.counts))
+            selection, by_id = data.setdefault("selection", []), {f.id: f for f in self.failures}
+            first = len(selection)
+            picks = quota.Admission(self.spec.phases.quota, self.spec.phases.per_failure,
+                                    [by_id[i].phase for i in selection]).pick(scan.failures)
+            selection += [f.id for f in picks]
+            self.state.save()
+            return list(zip(range(first, len(selection)), picks))
+
+    def todo(self) -> list[tuple[int, Failure]]:
+        """The selected jobs not finished yet, as (run order, failure)."""
+        done, by_id = self.state.data.get("jobs", {}), {f.id: f for f in self.failures}
+        return [(i, by_id[k]) for i, k in enumerate(self.state.data.get("selection", []))
+                if done.get(k, {}).get("status") not in ("done", "short")]
 
     def _selected(self) -> list[Failure]:
         """The failures to recover, in run order (chosen once, then kept)."""
@@ -125,36 +165,40 @@ class Pipeline:
 
     def _run(self):
         self._ensure_collected()
-        selected, done = self._selected(), self.state.data.setdefault("jobs", {})
-        runner, generator = self._need("runner", self.plugins.runner), self._need("generator", self.plugins.generator)
-        todo = [(i, f) for i, f in enumerate(selected) if done.get(f.id, {}).get("status") not in ("done", "short")]
+        selected = self._selected()
+        runner = self._need("runner", self.plugins.runner)
+        self._need("generator", self.plugins.generator)
+        todo = self.todo()
         self.log(f"run: {len(selected)} jobs selected, {len(todo)} to run")
+        try:
+            pool.ordered(todo, lambda item: self.work(*item), lambda item, result: self.record(item[1], result),
+                         self.workers, runner.stop)
+        finally:
+            runner.close()
 
-        def attempt(item):                  # on a worker thread: touches no state
-            i, f = item
-            try:
-                job = jb.make(i, f, self.out, self.spec.robot, self.arm)
-                if not episodes.finished(episodes.read(job.dir), self.spec.phases.episodes):
-                    planned = generator.plan(job.scene, self.spec.task, self.spec.robot)     # e.g. AutoMoMa's offline planner
-                    if not planned.ok:
-                        return {"status": "error", "reason": f"plan: {planned.reason}"}
-                runner.run(job, generator)
-            except JobError as e:
-                return {"status": "error", "reason": str(e)}
-            log = episodes.read(job.dir)
-            return {"status": "done" if episodes.accepted(log) >= self.spec.phases.per_failure else "short",
-                    "tries": len(log["tries"]), "accepted": episodes.accepted(log)}
+    def work(self, index: int, failure: Failure) -> dict:
+        """The job of `failure` (run order `index`) on the runner -> its result for `record`. On any thread: touches no state."""
+        runner, generator = self._need("runner", self.plugins.runner), self._need("generator", self.plugins.generator)
+        try:
+            job = jb.make(index, failure, self.out, self.spec.robot, self.arm)
+            if not episodes.finished(episodes.read(job.dir), self.spec.phases.episodes):
+                planned = generator.plan(job.scene, self.spec.task, self.spec.robot)     # e.g. AutoMoMa's offline planner
+                if not planned.ok:
+                    return {"status": "error", "reason": f"plan: {planned.reason}"}
+            runner.run(job, generator)
+        except JobError as e:
+            return {"status": "error", "reason": str(e)}
+        log = episodes.read(job.dir)
+        return {"status": "done" if episodes.accepted(log) >= self.spec.phases.per_failure else "short",
+                "tries": len(log["tries"]), "accepted": episodes.accepted(log)}
 
-        def commit(item, result):           # in job order, on this thread
-            done[item[1].id] = result
+    def record(self, failure: Failure, result: dict) -> None:
+        with self.lock:
+            self.state.data.setdefault("jobs", {})[failure.id] = result
             self.state.save()
             detail = result["reason"] if "reason" in result else \
                 f"{result['accepted']}/{self.spec.phases.per_failure} accepted in {result['tries']} tries"
-            self.log(f"run {item[1].phase} {item[1].id}: {result['status']} ({detail})")
-        try:
-            pool.ordered(todo, attempt, commit, self.workers, runner.stop)
-        finally:
-            runner.close()
+            self.log(f"run {failure.phase} {failure.id}: {result['status']} ({detail})")
 
     def _live(self):
         return self._need("live_run", self.plugins.live_run).run()
@@ -182,11 +226,11 @@ class Pipeline:
         by_id = {f.id: f for f in self.failures}
         return [(by_id[i], self._job_dir(by_id[i])) for i in data.get("selection", []) if i in data.get("jobs", {})]
 
-    def _report(self):
+    def report(self):
         """state.json, manifest.json (merged from the job logs, in run order) and report.md."""
         self.state.save()
         data, path = self.state.data, self.out / "manifest.json"
-        manifest = mf.build(self.out, self.spec, self._job_dirs(), mf.created(path), lv.entries(self.out, self.spec))
+        manifest = mf.build(self.out, self.spec, self._job_dirs(), mf.created(path), lv.entries(self.live_dir, self.out, self.spec) if self.spec.live else ())
         mf.write(path, manifest)
         if "failures" in data:
             (self.out / "report.md").write_text(report.render(

@@ -16,8 +16,10 @@ def main(argv=None) -> None:
     ap.add_argument("--spec", required=True, help="the recovery spec as JSON (RecoverySpec.raw)")
     ap.add_argument("--run", required=True, help="the evaluation run's out")
     ap.add_argument("--out", required=True, help="the scan's JSON file")
+    ap.add_argument("--only", action="append", help="<set>/<rollout key> to scan (repeatable; default: every rollout)")
     a = ap.parse_args(argv)
-    scan = scan_run(parse(json.loads(a.spec), "<spec>"), Path(a.run), read_messages)
+    only = {tuple(o.split("/", 1)) for o in a.only} if a.only else None
+    scan = scan_run(parse(json.loads(a.spec), "<spec>"), Path(a.run), read_messages, only)
     Path(a.out).write_text(json.dumps(scan.to_dict(), indent=1))
 
 

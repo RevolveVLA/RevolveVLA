@@ -22,21 +22,15 @@ from datagen.core.spec import SpecError
 from revolve_common import specs
 
 from .core import live as lv
-from .core.generator import create as create_generator
-from .core.pipeline import LIVE, STAGES, Pipeline, PluginSet
+from .core.pipeline import LIVE, STAGES, Pipeline, PluginSet, phase_plugins
 from .core.registry import REGISTRY
 from .core.robot import arm_of
-from .core.scan import load_task, supervisor_of
+from .core.scan import checked
 from .core.spec import RecoverySpec, load
 
 
 def build_plugins(spec: RecoverySpec, stages, root: Path | None = None) -> PluginSet:
-    p = PluginSet()
-    if "collect" in stages or "run" in stages:
-        p.scanner = REGISTRY.create("scanner", spec.scanner.plugin, spec, spec.scanner.params)
-    if "run" in stages:
-        p.generator = create_generator(spec)
-        p.runner = REGISTRY.create("runner", spec.runner.plugin, spec, spec.runner.params)
+    p = phase_plugins(spec, stages)
     if LIVE in stages:
         p.live, out = REGISTRY.create("live", spec.live.plugin, spec, spec.live.params), Path(spec.out)
         from evaluation.cli import stop_jobs
@@ -60,14 +54,6 @@ def with_run(spec: RecoverySpec, a) -> RecoverySpec:
     run = dataclasses.replace(spec.run, **{**({"workers": a.workers} if a.workers else {}),
                                            **({"headless": False} if a.gui else {"headless": True} if a.headless else {})})
     return dataclasses.replace(spec, run=run)
-
-
-def checked(spec: RecoverySpec) -> RecoverySpec:
-    """The spec once the task, the robot and the registry have checked it (quota phases, triggers, the live recorder)."""
-    supervisor_of(spec, load_task(spec), arm_of(spec.robot, specs.REPO_SPECS))
-    if spec.live:
-        REGISTRY.create("live", spec.live.plugin, spec, spec.live.params).validate(spec)
-    return spec
 
 
 def main(argv=None, root: Path | None = None) -> int:

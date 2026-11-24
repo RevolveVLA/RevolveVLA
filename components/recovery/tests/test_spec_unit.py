@@ -1,5 +1,6 @@
 """core/spec.py: parsing, defaults, errors naming the yaml path, the hash, the datagen spec of the generator."""
 import copy
+from pathlib import Path
 
 import pytest
 import yaml
@@ -33,9 +34,21 @@ def test_defaults():
 
 
 def test_full_spec_of_the_repo_parses():
-    for name in ("fridge", "smoke"):
+    for name in ("fridge", "smoke", "fridge_coupled"):
         s = S.load(f"{__file__.rsplit('/components', 1)[0]}/specs/recovery/{name}.yaml")
         assert s.task == "open_fridge_door" and s.phases.quota
+
+
+def test_the_coupled_example_has_phases_and_a_live_recorder_and_its_evaluation_names_it():
+    import dataclasses
+    from evaluation.core import spec as E
+    from recovery.core import coupling
+    from recovery.core.scan import checked
+    repo = Path(__file__).resolve().parents[3]
+    ev = E.load(repo / "specs/eval/fridge_recovery.yaml", repo)
+    assert ev.coupled and ev.recovery.spec == "specs/recovery/fridge_coupled.yaml" and ev.run.reset == "warm"
+    spec = checked(coupling.coupled_spec(S.load(repo / ev.recovery.spec), ev, repo / "runs/eval/fridge_recovery"))
+    assert spec.phases and spec.live.plugin == "dagger" and dataclasses.astuple(spec.run) == (2, "warm", True)
 
 
 def test_per_failure_is_the_episodes_per_scene_of_the_datagen_spec():

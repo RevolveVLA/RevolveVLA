@@ -33,7 +33,17 @@ Same shape as datagen and evaluation: `core/` + `plugins/`, one yaml, its own en
   Params: `triggers` (required), `expert`, `record: full | interventions`, `quota {phase: takeovers}` (a full phase gets no more
   takeovers: the evaluator's verdict stands; checked when an episode starts, so parallel workers can overshoot by a few). Policies that
   can be halted stream actions (`oracle`, `frozen`, `noisy_expert`, a served policy); `expert` cannot. A spec has `phases`, `live` or both
-  (phase-wise recovery needs `from.eval` = a finished run dir, a live run an evaluation spec: two specs then).
+  (standalone, phase-wise recovery needs `from.eval` = a finished run dir, a live run an evaluation spec: two specs then; coupled to an
+  evaluation, one spec can have both: see below).
+
+## Coupled to an evaluation
+An evaluation spec with `recovery: {spec: specs/recovery/<x>.yaml}` (`./revolve evaluate`, example `specs/eval/fridge_recovery.yaml`) runs
+this component inside it, through the same core (`core/coupling.py`): `from.eval`, `out` and `run` are the evaluation's own (the
+output is `<eval out>/recovery/`). `live` wraps the evaluation's policy (core/live.py `wrap`) in the sets `from.sets`; `phases`: when a
+config's rollouts are committed their failures are scanned (the scanner's `only`: just those rollouts) and `quota.Admission` picks the
+jobs (first come in the evaluation's order, not spread over configs), which the evaluation's worker slots run when no rollout is pending
+(`Pipeline.work` / `record`, as in `run`). A job's sim is the runner's slot sim, warm-reset between jobs under `run.reset: warm`; the
+slot's rollout sim is closed first. The evaluation's stage `recover` takes the leftovers and runs the `check`.
 
 ## Outputs (`<out>/`)
 `state.json`, `manifest.json` (datagen's episode list with a `recovery` block per entry; `core/manifest.py`), `report.md` (per phase:

@@ -6,7 +6,9 @@ warm resets and resumes are the evaluation's own.
 `<out>/live/` = an evaluation run (results.json, report.md, `<set>/<seed>_sim/` with every episode's result, bag and sidecar,
 see core/flags.py) + `summary.json`: {policy_only_success, takeovers, reasons, recovered, expert_frames_s, episodes, wall_s}
 (a line of it is logged). The manifest entries (core/manifest.py shape, `recovery.kind` "dagger") are derived from that run,
-never read back: one per episode with a takeover (a policy-only success is the evaluation's rollout)."""
+never read back: one per episode with a takeover (a policy-only success is the evaluation's rollout). A coupled evaluation
+(core/coupling.py) is the same run, in the evaluation's own out: `wrap` puts the recorder around its policy, the functions
+below read it from its dir."""
 from __future__ import annotations
 
 import dataclasses
@@ -16,7 +18,7 @@ import os
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Callable, Collection, Sequence
 
 from datagen.core.spec import SpecError
 
@@ -32,16 +34,19 @@ STAGES = ("sample", "rollout", "report")                # of the evaluation pipe
 class LivePolicy:
     """The evaluation policy `inner` under the live recorder: same name and needs, its client args add the driver (the spec,
     the phases the recorder wants no takeover in, the policy's own perturbation for the test policies). Only a policy whose
-    client streams actions can be halted: not `expert` (a closed-loop generator)."""
+    client streams actions can be halted: not `expert` (a closed-loop generator). `seeds`: the seed ranges (pools) of the eval sets
+it records in (default all): the configs of the others run the plain policy."""
 
-    def __init__(self, inner, spec: RecoverySpec, recorder, root: Path):
+    def __init__(self, inner, spec: RecoverySpec, recorder, root: Path, seeds: Collection[tuple[int, int]] | None = None):
         if inner.name == "expert":
             raise SpecError("policy expert drives closed-loop and cannot be halted: a live recorder needs a policy whose "
                             "client streams actions (oracle, frozen, noisy_expert, a served policy)")
-        self.inner, self.spec, self.recorder, self.root = inner, spec, recorder, root
+        self.inner, self.spec, self.recorder, self.root, self.seeds = inner, spec, recorder, root, seeds
         self.name, self.needs_ckpt, self.client_only = inner.name, inner.needs_ckpt, inner.client_only
 
     def client_args(self, item) -> list[str]:
+        if self.seeds is not None and not any(lo <= item.config.seed <= hi for lo, hi in self.seeds):
+            return self.inner.client_args(item)
         payload = {"spec": self.spec.raw, "closed": sorted(self.recorder.closed(flags.tally(self.root))),
                    "perturb": getattr(self.inner, "perturbation", lambda item: None)(item)}
         return [*self.inner.client_args(item), "--instance", str(item.scene), "--driver", DRIVER,
@@ -50,12 +55,22 @@ class LivePolicy:
 
 def eval_plugins(spec: RecoverySpec, eval_spec, recorder, root: Path):
     """The evaluation's plugins for `eval_spec`, its policy under the recorder, its client container able to import this package."""
-    importlib.import_module("recovery.plugins.policies")            # frozen, noisy_expert: policy plugins of the evaluation registry
+    register_policies()
     from evaluation.cli import build_plugins
     from evaluation.core.registry import REGISTRY
     REGISTRY.extend_path()                                          # $EVAL_PLUGIN_PATH
-    plugins = build_plugins(eval_spec, ("sample", "rollout"))
-    plugins.policy = LivePolicy(plugins.policy, spec, recorder, root)
+    return wrap(build_plugins(eval_spec, ("sample", "rollout")), spec, recorder, root)
+
+
+def register_policies() -> None:
+    """The test policies (frozen, noisy_expert) into the evaluation registry: before a spec that names them is built."""
+    importlib.import_module("recovery.plugins.policies")
+
+
+def wrap(plugins, spec: RecoverySpec, recorder, root: Path, seeds: Collection[tuple[int, int]] | None = None):
+    """`plugins` (an evaluation PluginSet) with its policy under the recorder (for the configs of the pools `seeds`), its client
+    container able to import this package."""
+    plugins.policy = LivePolicy(plugins.policy, spec, recorder, root, seeds)
     if hasattr(plugins.rollout, "client_src"):
         plugins.rollout.client_src = (*plugins.rollout.client_src, RECOVERY_SRC)
     return plugins
@@ -88,7 +103,7 @@ class LiveRun:
     def run(self) -> bool:
         t0 = time.monotonic()
         ok = self.pipeline(STAGES)
-        line = {**summary(self.out), "wall_s": round(time.monotonic() - t0, 1)}
+        line = {**summary(self.out / LIVE), "wall_s": round(time.monotonic() - t0, 1)}
         (self.out / LIVE).mkdir(parents=True, exist_ok=True)
         (self.out / LIVE / "summary.json").write_text(json.dumps(line, indent=1))
         self.log("live " + json.dumps(line))
@@ -96,10 +111,10 @@ class LiveRun:
 
 
 # ------------------------------------------------------------------ what the run left
-def tries(out: Path):
-    """(set, rollout key, try index, record, flags) of every episode of the live run that has a sidecar."""
+def tries(run: Path):
+    """(set, rollout key, try index, record, flags) of every episode of the live run (an evaluation run's dir) that has a sidecar."""
     try:
-        results = json.loads((out / LIVE / "results.json").read_text())
+        results = json.loads((run / "results.json").read_text())
     except (OSError, ValueError):
         return
     for set_name, block in sorted(results["sets"].items()):
@@ -110,12 +125,12 @@ def tries(out: Path):
                     yield set_name, key, i, rec, f
 
 
-def summary(out: Path) -> dict:
-    """The one-line health check of a live run (wall_s is the run's)."""
+def summary(run: Path) -> dict:
+    """The one-line health check of a live run (`run`: its dir)."""
     n = taken = recovered = ok = 0
     reasons: Counter = Counter()
     expert_s = 0.0
-    for *_, rec, f in tries(out):
+    for *_, rec, f in tries(run):
         n += 1
         if f["takeover_t"] is None:
             ok += bool(rec["passed"])
@@ -128,11 +143,12 @@ def summary(out: Path) -> dict:
             "expert_frames_s": round(expert_s, 2), "episodes": n}
 
 
-def entries(out: Path, spec: RecoverySpec) -> list[dict]:
-    """The manifest entries of the live run: one per episode with a takeover (`keep: successes` leaves out the failed ones)."""
+def entries(run: Path, out: Path, spec: RecoverySpec) -> list[dict]:
+    """The manifest entries (paths relative to `out`) of the live run `run`: one per episode with a takeover (`keep: successes`
+    leaves out the failed ones)."""
     rel = lambda p: os.path.relpath(p, out)
     found = []
-    for set_name, key, i, rec, f in tries(out):
+    for set_name, key, i, rec, f in tries(run):
         if f["takeover_t"] is None or (spec.keep == "successes" and not rec["passed"]):
             continue
         bag = rec.get("bag")

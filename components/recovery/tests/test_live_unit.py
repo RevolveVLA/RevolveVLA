@@ -98,6 +98,13 @@ def test_the_policy_client_gets_the_driver_the_closed_phases_and_the_scene(tmp_p
     assert (p.name, p.needs_ckpt, p.client_only) == ("oracle", False, True)
 
 
+def test_a_policy_is_wrapped_only_for_the_configs_of_the_live_pools(tmp_path):
+    inner = EVAL.create("policy", "oracle", None, {})
+    p = live.LivePolicy(inner, parse(RAW), Recorder(), tmp_path, [(5, 9), (20, 22)])
+    assert "--driver" in p.client_args(item(7)) and "--driver" in p.client_args(item(22))
+    assert p.client_args(item(10)) == inner.client_args(item(10)) == ["--bag", "/b"]           # another set: the plain policy
+
+
 def test_the_test_policies_pass_their_perturbation_and_refuse_what_they_cannot_replay(tmp_path):
     import recovery.plugins.policies  # noqa: F401
     spec, frozen = parse(RAW), EVAL.create("policy", "frozen", None, {})

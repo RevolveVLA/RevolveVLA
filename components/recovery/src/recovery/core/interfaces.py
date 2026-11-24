@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Mapping, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Protocol
 
 from datagen.core.interfaces import Generator
 
@@ -20,9 +20,9 @@ Drive = Callable[[int], Mapping[str, Any]]
 
 class Scanner(ABC):
     @abstractmethod
-    def scan(self, out: Path) -> Scan:
+    def scan(self, out: Path, only: Collection[tuple[str, str]] | None = None) -> Scan:
         """The failures of the spec's eval run, read from its bags (the bag reader needs the simulator image); `out`: the
-        run's folder (logs, the scan's own files)."""
+        run's folder (logs, the scan's own files); `only`: the (set, rollout key)s to scan (default all of the run)."""
 
 
 class Runner(ABC):

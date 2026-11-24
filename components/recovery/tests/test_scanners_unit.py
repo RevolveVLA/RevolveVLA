@@ -79,3 +79,22 @@ def test_bag_io_decodes_the_recorded_message_types():
     x, y, yaw = bag_io.decode("/model/mobile_panda/pose", NS(transforms=[tf("mobile_panda/base", 0.0), tf("mobile_panda", 1.2)]))
     assert (x, y) == (1.0, 2.0) and yaw == pytest.approx(1.2)
     assert bag_io.decode("/model/mobile_panda/pose", NS(transforms=[tf("other", 0.0)])) is None
+
+
+def test_only_the_named_rollouts_are_scanned(tmp_path):
+    run = F.write_eval_run(tmp_path, [F.Try(seed=100, failed="grasp"), F.Try(seed=101, failed="grasp"), F.Try(seed=102)])
+    scanner = LocalScanner(spec(tmp_path, run), {"reader": "fake_recovery:read_messages"})
+    scan = scanner.scan(tmp_path, {("heldout", "101_r0")})
+    assert [f.rollout for f in scan.failures] == ["101_r0"] and dict(scan.counts) == {"failed": 1}
+    assert dict(scanner.scan(tmp_path, set()).counts) == {} and len(scanner.scan(tmp_path).failures) == 2
+
+
+def test_the_container_scan_and_its_client_take_the_rollouts_as_only_arguments(tmp_path, monkeypatch):
+    s = spec(tmp_path, tmp_path / "eval")
+    command = ContainerScanner(s, {}).command(tmp_path, {("heldout", "5_r1"), ("train", "2_r0")})
+    assert command[-4:] == ["--only", "heldout/5_r1", "--only", "train/2_r0"] and "--only" not in ContainerScanner(s, {}).command(tmp_path)
+    run = F.write_eval_run(tmp_path, [F.Try(seed=100, failed="grasp"), F.Try(seed=101, failed="grasp")])
+    monkeypatch.setattr(scan_client, "read_messages", F.read_messages)
+    scan_client.main(["--spec", json.dumps(spec(tmp_path, run).raw), "--run", str(run), "--out", str(tmp_path / "s.json"),
+                      "--only", "heldout/100_r0"])
+    assert [f["rollout"] for f in json.loads((tmp_path / "s.json").read_text())["failures"]] == ["100_r0"]

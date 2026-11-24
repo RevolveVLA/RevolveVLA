@@ -27,10 +27,31 @@ def spread(failures: Sequence[Failure], seed: str) -> list[Failure]:
     return [f for row in zip_longest(*(by_config[c] for c in configs)) for f in row if f is not None]
 
 
+def limit(quota: Mapping[str, int], phase: str, per_failure: int) -> int:
+    """The jobs a phase's quota of episodes needs."""
+    return math.ceil(quota[phase] / per_failure)
+
+
+class Admission:
+    """`select` for failures that arrive one batch at a time (a coupled evaluation): each reproducible failure of a phase with jobs
+    left is picked, in arrival order (the evaluation's), not spread over its configs. `taken`: the phases of the jobs picked so far."""
+
+    def __init__(self, quota: Mapping[str, int], per_failure: int, taken: Sequence[str] = ()):
+        self.left = {p: limit(quota, p, per_failure) - sum(t == p for t in taken) for p in quota}
+
+    def pick(self, failures: Sequence[Failure]) -> list[Failure]:
+        chosen = []
+        for f in failures:
+            if f.restart.reproducible and self.left.get(f.phase, 0) > 0:
+                self.left[f.phase] -= 1
+                chosen.append(f)
+        return chosen
+
+
 def select(failures: Sequence[Failure], quota: Mapping[str, int], per_failure: int, seed: int) -> list[Failure]:
     """The failures to recover, in run order."""
     chosen = {}
-    for phase, episodes in quota.items():
+    for phase in quota:
         mine = [f for f in failures if f.phase == phase and f.restart.reproducible]
-        chosen[phase] = spread(mine, f"{seed}:{phase}")[:math.ceil(episodes / per_failure)]
+        chosen[phase] = spread(mine, f"{seed}:{phase}")[:limit(quota, phase, per_failure)]
     return [f for row in zip_longest(*chosen.values()) for f in row if f is not None]

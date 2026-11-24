@@ -10,6 +10,7 @@ from revolve_common import specs
 from revolve_common.supervision import Supervisor, build
 
 from . import failures
+from .registry import REGISTRY
 from .robot import Arm, arm_of
 from .spec import RecoverySpec, check_task
 
@@ -31,6 +32,15 @@ def supervisor_of(spec: RecoverySpec, task: specs.Resolved, arm: Arm) -> Supervi
         raise SpecError(str(e)) from None
 
 
-def scan_run(spec: RecoverySpec, run: Path, read_messages: Callable) -> failures.Scan:
+def checked(spec: RecoverySpec) -> RecoverySpec:
+    """The spec once the task, the robot and the registry have checked it (quota phases, triggers, the live recorder)."""
+    supervisor_of(spec, load_task(spec), arm_of(spec.robot, specs.REPO_SPECS))
+    if spec.live:
+        REGISTRY.create("live", spec.live.plugin, spec, spec.live.params).validate(spec)
+    return spec
+
+
+def scan_run(spec: RecoverySpec, run: Path, read_messages: Callable, only=None) -> failures.Scan:
+    """`only`: the (set, rollout key)s of the run to scan (default all)."""
     task, arm = load_task(spec), arm_of(spec.robot, specs.REPO_SPECS)
-    return failures.scan(spec, supervisor_of(spec, task, arm), arm.joints, run, read_messages)
+    return failures.scan(spec, supervisor_of(spec, task, arm), arm.joints, run, read_messages, only)

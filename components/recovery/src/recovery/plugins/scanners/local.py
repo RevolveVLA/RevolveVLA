@@ -19,6 +19,6 @@ class LocalScanner(Scanner):
     def __init__(self, spec, params):
         self.spec, self.reader = spec, params.get("reader", REAL)
 
-    def scan(self, out: Path):
+    def scan(self, out: Path, only=None):
         module, _, name = self.reader.partition(":")
-        return scan_run(self.spec, Path(self.spec.eval_run), getattr(importlib.import_module(module), name))
+        return scan_run(self.spec, Path(self.spec.eval_run), getattr(importlib.import_module(module), name), only)

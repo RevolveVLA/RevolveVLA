@@ -21,12 +21,12 @@ class ContainerScanner(Scanner):
     def __init__(self, spec, params):
         self.spec, self.wall_s = spec, float(params.get("wall_s", 1800))
 
-    def command(self, out: Path) -> list[str]:
+    def command(self, out: Path, only=None) -> list[str]:
         return ["python3", "-m", "recovery.scan_client", "--spec", json.dumps(self.spec.raw), "--run", self.spec.eval_run,
-                "--out", str(out / "scan.json")]
+                "--out", str(out / "scan.json"), *(a for s, k in sorted(only or ()) for a in ("--only", f"{s}/{k}"))]
 
-    def scan(self, out: Path) -> Scan:
-        container = ClientContainer(f"{prefix(self.spec)}-scan", 0, self.command(out), out,
+    def scan(self, out: Path, only=None) -> Scan:
+        container = ClientContainer(f"{prefix(self.spec)}-scan", 0, self.command(out, only), out,
                                     pythonpath=[DATAGEN_SRC, RECOVERY_SRC], mounts=[self.spec.eval_run])
         log = out / "logs" / "scan.log"
         try:

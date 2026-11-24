@@ -17,7 +17,7 @@
   ./revolve datagen <spec.yaml> [sample|generate|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
   ./revolve datagen --list-randomisers --task T --robot R   what a task + robot can vary (dims, ranges)
-  ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
+  ./revolve evaluate <spec.yaml> [sample|check|rollout|recover|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
   ./revolve recover <spec.yaml> [collect|run|check|live|all] [--dry-run] [--workers N] [--gui|--headless]
                                      phase-wise recovery of a finished evaluation run, or a live recorder (DAgger) over an
@@ -221,7 +221,7 @@ def cmd_datagen(args):
 
 
 def cmd_evaluate(args):
-    sys.path[:0] = [str(REPO / "components" / "datagen" / "src"), str(REPO / "components" / "evaluation" / "src")]
+    sys.path[:0] = [str(REPO / "components" / c / "src") for c in ("datagen", "evaluation", "recovery")]    # recovery: `recovery:` coupling
     from evaluation import cli
     return cli.main(args, root=REPO)
 

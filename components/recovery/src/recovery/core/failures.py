@@ -8,7 +8,7 @@ import json
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Collection, Iterable, Iterator, Mapping
 
 from revolve_common.supervision import BagSource, Supervisor
 
@@ -56,15 +56,15 @@ class Scan:
         return cls([Failure.from_dict(f) for f in d["failures"]], Counter(d["counts"]))
 
 
-def tries(run: Path) -> Iterator[tuple[str, str, int, Mapping]]:
-    """(set, rollout key, try index, try) of every try in `<run>/results.json`, in sorted order."""
+def tries(run: Path, only: Collection[tuple[str, str]] | None = None) -> Iterator[tuple[str, str, int, Mapping]]:
+    """(set, rollout key, try index, try) of every try in `<run>/results.json`, in sorted order; `only`: the (set, rollout key)s wanted."""
     try:
         results = json.loads((Path(run) / "results.json").read_text())
     except (OSError, ValueError) as e:
         raise RecoveryError(f"{run}: not an evaluation run ({e})") from None
     for set_name, block in sorted(results["sets"].items()):
         for key, entry in sorted(block.get("rollouts", {}).items()):
-            for i, t in enumerate(entry["tries"]):
+            for i, t in enumerate(entry["tries"] if only is None or (set_name, key) in only else ()):
                 yield set_name, key, i, t
 
 
@@ -72,10 +72,12 @@ def phase_start(result: Mapping, phase: str) -> float:
     return next((p["t_start"] for p in result["phases"] if p["name"] == phase and p["t_start"] is not None), 0.0)
 
 
-def scan(spec: RecoverySpec, supervisor: Supervisor, arm_joints: Iterable[str], run: Path, read_messages) -> Scan:
-    """The failures of `run`: its failed tries, each run through the supervisor (`spec.triggers`) over its bag."""
+def scan(spec: RecoverySpec, supervisor: Supervisor, arm_joints: Iterable[str], run: Path, read_messages,
+         only: Collection[tuple[str, str]] | None = None) -> Scan:
+    """The failures of `run` (of the (set, rollout key)s `only`, default all): its failed tries, each run through the supervisor
+    (`spec.triggers`) over its bag."""
     arm, found, p = tuple(arm_joints), Scan(), spec.phases
-    for set_name, key, i, t in tries(run):
+    for set_name, key, i, t in tries(run, only):
         record = t["record"]
         if record.get("error"):
             found.counts["errors"] += 1

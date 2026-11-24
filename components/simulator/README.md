@@ -62,6 +62,7 @@ the initial joint values. Add `--robot R` to also check its `robot_start` agains
 | cameras | `/<camera>/image`, `/<camera>/image/compressed`, `/<camera>/camera_info` | 30 Hz, 480 x 480, cameras `wrist_cam`, `overhead_left_cam`, `overhead_right_cam`. Raw images are 0.7 MB over UDP: a reliable subscriber got every frame, a best-effort one lost 2.5 % (585 of 600). The JPEG topic is the lighter input. |
 | controllers | `/<jtc>/follow_joint_trajectory` (action), `/<jtc>/joint_trajectory`, `/<jtc>/controller_state`, `/omni_wheel_drive_controller/cmd_vel`, `.../odom` | Commands in, state out (Run notes below). |
 | evaluator | `/evaluator/state`, `/evaluator/result`, `/evaluator/start` (std_srvs/Trigger) | With `--task` (Evaluator below). |
+| task prompt | `/task/prompt` | With `--task`: std_msgs/String, transient local, task.yaml's `prompt`, published once by the evaluator (so every episode bag has it once; the Rosetta contracts' `tasks` channel, `components/dataset/DATASET-v2.md`). |
 | reset | `/simulator/reset` (std_srvs/Trigger) | Always (Reset below). |
 | exit code | | Runs until stopped. 1: a refused argument, a missing scene file or build, a broken GPU, or a launch error such as a refused spec (one line on stderr, or the launch's `[ERROR] [launch]` line). 2: a usage error (unknown flag or value). 125: the container name is taken. 137: stopped by `docker rm -f`. |
 
@@ -147,12 +148,12 @@ origin). An episode counts only the non-finite commands and gz log lines since i
 - Bags: one per episode, `<run dir>/episode_<n>_bag/`. The topics: `config/record.yaml`, the frozen list (clock,
   robot_description, tf, tf_static, joint states, each JTC's controller_state and joint_trajectory, the omni
   cmd_vel and odom, the ground-truth poses, the scene joint states, the contacts, camera_info, the evaluator's
-  state and result; with `--record images` also `/<camera>/image/compressed`, JPEG from compressed_image_transport
-  through ros_gz_image's image_transport publisher, 30 Hz). The launch starts `ros2 bag record` paused into a
-  scratch bag in the container; the evaluator stops it and, per episode, calls its `record` service with the
-  episode's bag path and `stop` at the end: each recording subscribes anew, so the transient-local /tf_static and
-  /robot_description are in every bag (a QoS override takes /evaluator/result live only). Topics with messages
-  only on demand (contacts, commands) are missing from a bag that saw no publisher.
+  state and result, `/task/prompt`; with `--record images` also `/<camera>/image/compressed`, JPEG from
+  compressed_image_transport through ros_gz_image's image_transport publisher, 30 Hz). The launch starts `ros2 bag
+  record` paused into a scratch bag in the container; the evaluator stops it and, per episode, calls its `record`
+  service with the episode's bag path and `stop` at the end: each recording subscribes anew, so the transient-local
+  /tf_static, /robot_description and /task/prompt are in every bag (a QoS override takes /evaluator/result live
+  only). Topics with messages only on demand (contacts, commands) are missing from a bag that saw no publisher.
 - Launch args: `autostart`, `run_dir`, `record` (images, no-images, none) (`ros2 launch revolve_sim sim.launch.py ...
   task:=<t>`).
 

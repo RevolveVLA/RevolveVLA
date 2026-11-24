@@ -27,6 +27,7 @@ e.g. a slip condition outside its phase).
 A world reset (/simulator/reset, revolve_sim/reset.py: sim time jumps back) re-arms it: a running episode ends with
 reason `reset`, every input is dropped for SETTLE_S, then it is ready again once its inputs are live (~/start).
 ~/state `resets` counts the resets it has seen.
+/task/prompt (std_msgs/String, transient local): task.yaml's prompt, published once at start (in every episode bag).
 
   ros2 run revolve_sim evaluator --ros-args -p task:=<t> -p scene:=<s> -p robot:=<r> [-p run_dir:=DIR]
 """
@@ -156,6 +157,9 @@ class Evaluator(Node):
         latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self.result_pub = self.create_publisher(String, '~/result', latched)
         self.state_pub = self.create_publisher(String, '~/state', 10)
+        # the task's language instruction, latched: every episode bag gets it once (the dataset's Rosetta `tasks` channel)
+        self.prompt_pub = self.create_publisher(String, '/task/prompt', latched)
+        self.prompt_pub.publish(String(data=self.res.task.prompt))
         self.bag_clients, self.bag_idle = {}, False
         if self.bag:
             from rosbag2_interfaces.srv import Record, Resume, Stop

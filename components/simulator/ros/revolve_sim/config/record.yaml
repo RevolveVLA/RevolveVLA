@@ -2,7 +2,8 @@
 # dataset converter rely on. sim.launch.py fills {world} (the scene name) and {robot}, and repeats an entry for each
 # {camera} sensor of the robot, each {contact_link} (a robot link with a contact sensor), each {scene_model}, each
 # articulated scene {model}, each joint trajectory controller {jtc} and each omni base controller {omni} of the robot's
-# controllers.yaml. Change it only together with the consumers (components/datagen/DATAGEN-v2.md).
+# controllers.yaml. Change it only together with the consumers (components/datagen/DATAGEN-v2.md,
+# components/dataset/DATASET-v2.md and the robots' Rosetta contracts specs/robots/<r>/contract.yaml).
 topics:
   - /clock
   - /robot_description                  # transient local: the URDF, once per bag
@@ -20,11 +21,13 @@ topics:
   - /{camera}/camera_info
   - /evaluator/state                    # std_msgs/String JSON, 10 Hz
   - /evaluator/result                   # std_msgs/String JSON, once, at the episode's end
+  - /task/prompt                        # std_msgs/String, transient local: task.yaml's prompt, once per bag
 # `revolve sim --record images` (default) only: the cameras, JPEG (ros_gz_image publishes through image_transport, so
 # compressed_image_transport serves <image>/compressed; it encodes only while subscribed)
 images:
   - /{camera}/image/compressed
 # rosbag2 QoS overrides (--qos-profile-overrides-path): the recorder subscribes anew for each episode (so it gets the
-# transient-local /tf_static and /robot_description); the result is taken live only, not the previous episode's
+# transient-local /tf_static, /robot_description and /task/prompt); the result is taken live only, not the previous
+# episode's
 qos_overrides:
   /evaluator/result: {history: keep_last, depth: 1, reliability: reliable, durability: volatile}

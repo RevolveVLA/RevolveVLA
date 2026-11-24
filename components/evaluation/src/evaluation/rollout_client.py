@@ -1,12 +1,13 @@
 """Policy client of the `sim` rollout: `python3 -m evaluation.rollout_client --sim-out DIR --rollout DIR (--bag BAG | --spec
-JSON --instance SCENE_YAML) [--reset | --reset-to TARGET]` runs ONE episode against the sim on this container's ROS domain
+JSON --instance SCENE_YAML | --serve JSON) [--reset | --reset-to TARGET]` runs ONE episode against the sim on this container's ROS domain
 (a client container from the simulator image, ROS 2 Lyrical): wait for ready, reset when the sim already ran an episode
 (`--reset-to`: a warm reset to another start, revolve_common.warm_reset), `/evaluator/start`, then
 the policy acts until the evaluator's result: the oracle streams a bag's actions as a policy would (single-point
 `joint_trajectory` per controller + `cmd_vel`, 30 Hz, sim time: DATAGEN-v2.md 5.2), the expert runs the training spec's datagen
 generator closed-loop (`prepare` before the episode starts, `drive` after). Then wait for the result's files and write
 `<rollout>/episode.json` = {episode, resets, result, + reset (the warm reset's report), + the policy's: steps | expert, notes}.
-`--driver MODULE:FUNC [--driver-args JSON]` (the oracle only) wraps the policy of the episode with a `Live`
+`--serve JSON` = a served checkpoint (evaluation.served: observation from the sim's topics, actions from a policy service).
+`--driver MODULE:FUNC [--driver-args JSON]` (the oracle and a served policy) wraps the policy of the episode with a `Live`
 (FUNC(client, args, instance, rollout) -> Live): a live recorder that supervises the policy and may take over.
 Exit code: 0 done, a SimFault's code (75-78: the host relaunches the sim), 79 a warm reset that missed its target (the host
 relaunches with that start; `<rollout>/reset.json` has the report), 1 anything else."""
@@ -163,6 +164,7 @@ def main(argv=None) -> None:
     who = ap.add_mutually_exclusive_group(required=True)
     who.add_argument("--bag", help="the oracle: the datagen episode bag whose actions are replayed")
     who.add_argument("--spec", help="the expert: the training datagen spec as JSON (DatagenSpec.raw), its generator drives")
+    who.add_argument("--serve", help="a served checkpoint: {url, prompt, robot, actions_per_chunk, image_size} as JSON")
     ap.add_argument("--instance", help="the expert: the scene instance's scene.yaml")
     ap.add_argument("--reset", action="store_true", help="the sim already ran an episode: reset it first")
     ap.add_argument("--reset-to", help="warm reset to this start (a ResetTarget as JSON) instead of a plain reset")
@@ -182,6 +184,10 @@ def main(argv=None) -> None:
         spec = parse(json.loads(a.spec), "<spec>")
         generator = registry.create("generator", spec.generator.plugin, spec, spec.generator.params)
         run = lambda c: play_expert(c, a.rollout, generator, Path(a.instance), spec.task, spec.robot, a.reset, a.ready_s, target)
+    elif a.serve:
+        from .served import play_served
+        run = lambda c: play_served(c, a.rollout, json.loads(a.serve), a.reset, a.ready_s, target,
+                                    load_live(a, c) if a.driver else NO_LIVE, a.lead_s)
     else:
         series = read_bag(a.bag)
         run = lambda c: play(c, a.rollout, series, RosStreamer(c.node, series, a.lead_s), a.reset, a.ready_s, target,

@@ -1,0 +1,23 @@
+# The fridge SmolVLA checkpoint (trained on the earlier simulator's mobile_panda data) on the new simulator: the same instances as
+# specs/eval/fridge_panda_v2.yaml (10 held-out, 10 training), `./revolve evaluate specs/eval/fridge_smolvla_v2.yaml [all|rollout]`.
+# The checkpoint is served by a policy service container (the training image, GPU) and the policy client in the sim's client
+# container streams its actions at 30 Hz (no blend: 20 actions of each chunk, then a new observation). A large sim-to-sim gap is
+# expected: the policy runs, its success is not the point. Cameras go in as the sim publishes them (480x480, what it was trained on);
+# `policy: {plugin: smolvla, image_size: 256}` resizes them to the checkpoint's config label instead. `train` needs
+# runs/datagen/fridge_panda_v2/{state.json,manifest.json}; the held-out set alone does not.
+train: specs/datagen/fridge_panda_v2.yaml
+ckpt: {source: local, path: runs/ckpts/modal_smolvla30k_030000}
+policy: {plugin: smolvla}                      # actions_per_chunk: the runner's n_action_steps (20)
+out: runs/eval/fridge_smolvla_v2
+sets:
+  heldout:
+    count: 10
+    sampler: {strategy: sobol}
+    pool: {initial: [500, 529], replacement: [530, 599]}
+    min_distance: {value: 0.1}
+  train: {from: train, count: 10}
+rollout: {plugin: sim}                         # record images (the default): the policy's rollouts are recorded
+rollouts: 2
+retries: 0
+runner: {n_action_steps: 20, chunk_size_threshold: 0}
+run: {workers: 1, headless: true}              # one policy service, one sim

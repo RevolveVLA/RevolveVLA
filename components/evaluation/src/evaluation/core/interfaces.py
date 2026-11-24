@@ -85,6 +85,9 @@ class Policy(ABC):
         """The command line arguments of the policy client (rollout_client.py) for the scene `item`."""
         return []
 
+    def close(self) -> None:
+        """The rollouts are over: stop what the policy started (a policy service)."""
+
 
 class Rollout(ABC):
     @abstractmethod

@@ -261,13 +261,10 @@ def test_a_changed_spec_refuses_the_existing_out_and_run_does_not_matter(root):
     assert evaluate(root, "all", spec=spec_of(root, run={"workers": 2}))[0] == 0
 
 
-def test_a_served_checkpoint_is_blocked_on_the_sim_rollout(root):
+def test_a_served_checkpoint_on_the_sim_rollout_is_planned_without_starting_its_service(root):
     training_manifest(root)
-    rc, _, err = evaluate(root, "rollout", spec=spec_of(root, rollout={"plugin": "sim"}))      # policy smolvla
-    assert rc == 2 and "policy 'smolvla' is not available on the new simulator" in err and "Traceback" not in err
-    assert not (root / "runs" / "eval" / "sys" / "results.json").exists()
-    rc, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "sim"}))
-    assert rc == 0 and "rollout sim" in out                                                       # sample / check / dry-run still work
+    rc, out, _ = evaluate(root, "all", "--dry-run", spec=spec_of(root, rollout={"plugin": "sim"}))      # policy smolvla
+    assert rc == 0 and "rollout sim" in out
 
 
 def test_a_missing_ckpt_or_plugin_is_one_line_exit_1(root):

@@ -17,8 +17,7 @@ bag, result_file; `error` when there is none: `wall limit` (the client ran over 
 the client's failure. Params (yaml `rollout: {plugin: sim, ...}`): `record` (images | no-images, default images: a policy needs
 the cameras, the oracle and the expert do not), `wall_s` (wall seconds per episode, 600), `ready_s` (wall seconds to be ready, 180),
 `infra_retries` (3), `lead_s` (0.1: time_from_start of each streamed point). Limits of the episode itself (budget, phase
-timeouts) are the task's. Only policies that bring their own actions (`client_only`: the oracle, the expert) run: a served checkpoint is
-blocked on the new simulator."""
+timeouts) are the task's. A policy's `client_args` choose the client: the oracle's bag, the expert's spec, a served checkpoint's service."""
 from __future__ import annotations
 
 import json
@@ -27,7 +26,6 @@ import sys
 import threading
 from pathlib import Path
 
-from datagen.core.spec import SpecError
 from revolve_common.sim_session import (REPO, DomainPool, RelaunchPolicy, SimFault, SimInfraError, SimSession,
                                         has_bag, stop_sims, world_key)
 from revolve_common.warm_reset import MISS_EXIT
@@ -41,8 +39,6 @@ from ...core.warm import reset_target
 
 PARAMS = ("record", "wall_s", "ready_s", "infra_retries", "lead_s")
 CLIENT_SRC = ("/repo/components/evaluation/src", "/repo/components/datagen/src")   # in the client container (repo = /repo)
-BLOCKED = ("policy {name!r} is not available on the new simulator: a served checkpoint needs a v2 dataset, a retrained "
-           "checkpoint and a Rosetta contract for the new bag topics (use `policy: {{plugin: oracle}}` or `expert`)")
 
 
 class Failed(Exception):
@@ -126,10 +122,6 @@ class SimRollout(Rollout):
         return client.run(log, timeout=self.wall_s, watch=lambda: None if self.stopped.is_set() else session.check())
 
     # ---- Rollout
-    def validate(self, policy) -> None:
-        if not policy.client_only:
-            raise SpecError(BLOCKED.format(name=policy.name))
-
     def run(self, item, out, *, seed, runner, policy, ckpt, gui=False):
         out = Path(out).resolve()
         out.mkdir(parents=True, exist_ok=True)

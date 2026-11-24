@@ -354,8 +354,7 @@ def test_params_validation_and_policy_check():
     r = REGISTRY.create("rollout", "sim", spec, {"record": "no-images", "wall_s": 30, "ready_s": 60})
     assert (r.record, r.wall_s, r.ready_s, r.infra_retries, r.default_workers(oracle)) == ("no-images", 30.0, 60.0, 3, 1)
     r.validate(oracle)
-    with pytest.raises(SpecError, match="policy 'smolvla' is not available on the new simulator.*Rosetta contract"):
-        r.validate(smolvla)
+    r.validate(smolvla)
     assert r.prefix == sim_prefix(spec) and r.prefix.startswith("ev-")
 
 

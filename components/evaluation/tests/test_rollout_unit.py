@@ -32,7 +32,6 @@ def test_the_oracle_replays_the_first_passed_bag_of_the_config(tmp_path):
     assert oracle.client_args(EvalItem(Config("train", 1), tmp_path, eps)) == ["--bag", "/b/2"]
     with pytest.raises(EvalError, match="no passed datagen episode with a bag for seed 1"):
         oracle.client_args(EvalItem(Config("train", 1), tmp_path, eps[:2]))
-    assert smolvla.client_args(EvalItem(Config("train", 1), tmp_path)) == []
 
 
 def test_fake_contract_and_scripted_verdicts(item, tmp_path):

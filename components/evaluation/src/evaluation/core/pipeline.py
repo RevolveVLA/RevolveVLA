@@ -135,12 +135,15 @@ class Pipeline:
         policy = rollout_policy(task, s.rollout.params)
         walk = self._walk(ckpt, task)
         self.results.data["leakage"] = s.leakage()
-        for n in names:
-            built = self._build(n)
-            self.results.set(n)["rollout_policy"] = policy
-            self.results.set(n)["configs"] = [dict(c.config.to_dict(), scene=str(c.scene)) for c in built.items]
-            walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e),
-                     self.plugins.follow)
+        try:
+            for n in names:
+                built = self._build(n)
+                self.results.set(n)["rollout_policy"] = policy
+                self.results.set(n)["configs"] = [dict(c.config.to_dict(), scene=str(c.scene)) for c in built.items]
+                walk.run(n, built, s.rollouts, self.results.rollouts(n), lambda k, e, n=n: self.results.commit(n, k, e),
+                         self.plugins.follow)
+        finally:
+            getattr(p.policy, "close", lambda: None)()
 
     def _walk(self, ckpt, task) -> Walk:
         p, s = self.plugins, self.spec

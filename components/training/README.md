@@ -1,51 +1,71 @@
 # training
-SmolVLA training (LeRobot 0.6.1's own `lerobot-train`) and serving (Rosetta's `lerobot_rosetta.policy_server`
-over LeRobot's async gRPC server), each under the revolve_common HTTP wrapper. Backends: local, gpu_machine, modal.
 
-| Path | What |
-|---|---|
-| `Dockerfile`, `build.sh` | revolve-training: deps only (debian slim, ffmpeg, uv 0.9.15, uv-managed Python 3.12.12, `uv pip sync --require-hashes requirements.lock`, + pydantic/FastAPI/uvicorn/modal/ssh/rsync with the lock as a constraint). `./revolve build training` |
-| `requirements.lock` / `.in` | copy of the earlier pipeline's serve lock (= the training lock + LeRobot's async extra, same pins): one image for train and serve |
-| `launch.py` | host side (docker SDK): `start_train` / `train` / `train_from_spec(training, dataset, out, prev)`, `start_serve(ckpt, job_dir, internal_network)`, `stop`, `in_image` |
-| `src/training/entry.py` | `train --backend ...` and `serve` (the wrapper's command) |
-| `src/training/train.py` | retrain modes -> lerobot-train flags (`plan`), the final checkpoint -> `<out>/` + train.json (`finalize`), `stream` (process group + SIGTERM) |
-| `src/training/local.py`, `gpu_machine.py`, `modal_backend.py` | one module per backend, same `run(plan, settings, job, on_line)` contract |
-| `src/training/progress.py` | wrapper parsers: `parse` (lerobot-train log line + tqdm bar: step, total_steps, loss, lr, grad_norm, s/step, eta_s, gpu_mem_gb, losses) and `parse_serve` (ready, chunks) |
-| `src/training/smolvla.yaml` | the legacy policy plugin's train_args (unchanged) |
-| `src/training/serve_check.py` | one inference request as LeRobot's RobotClient makes it (tests) |
+Training fine-tunes a SmolVLA policy on a dataset with LeRobot 0.6.1's own `lerobot-train`, and serves a trained
+checkpoint to the robot through Rosetta's policy server. It sits between dataset and evaluation in the loop. Each
+job runs in the `revolve-training` container under the shared job wrapper, on the local GPU, on a remote GPU
+machine over ssh, or on Modal.
 
-## Job contract
-`train(dataset, out, mode, base, prev, steps, batch_size, backend, settings)`: job dir `<out parent>/jobs/train_<out
-name>/` (job.json, status.json, result.json, stdout.log). `out/` = the final checkpoint's pretrained_model files +
-train.json (mode, init, episodes, step, model_sha256, losses, backend, remote timings). Modes (experiment
-training.mode): `finetune_last` (previous checkpoint's weights, full merged dataset; base on turn 0), `from_base`,
-`finetune_recovery_only` (previous weights, `--dataset.episodes` = the dataset component's
-`labels.select(source="recovery")`). Weights carry over through `policy.pretrained_path` (fresh optimizer and
-schedule, as legacy; never `--resume`). steps / batch_size from the yaml; save only the final checkpoint, unless
-`training.save_every: N` (-> `--save_freq`): then each earlier checkpoint's pretrained_model files are copied to
-`<out>_<step>/` (e.g. `turn_0/ckpt_010000/`) as soon as LeRobot has written it, while the training goes on
-(backends local and gpu_machine; not modal).
+Status on main: `launch.py`, the host side, fails at import. It loads `components/simulator/launch.py`, which was
+removed with the old simulator. The image and the in-container `entry.py` do not need that file. Training also
+still reads datasets through the old dataset component (`labels.py`, repo id `revolve/dataset`) and has not moved
+to dataset v2 yet.
 
-## Backends
-- local: the container gets the GPU. RTX 5060 8 GB: batch 2 uses 1.9 GB, 0.15 s/step.
-- gpu_machine (`{host, scratch: ~/revolve_scratch, gpu: 0}`): the host is `user@host` with passwordless ssh, taken
-  from the environment variable `REVOLVE_GPU_MACHINE_HOST` when the experiment yaml gives no `host` (the shipped
-  experiments do not); unset, a gpu_machine train step fails with an error naming the variable. Set it before
-  `./revolve run` (e.g. `export REVOLVE_GPU_MACHINE_HOST=me@my-gpu-box`); the manager passes every `REVOLVE_*`
-  variable on to its steps. The gpu_machine test is skipped when it is unset. A CPU container drives ssh/rsync (the user's ~/.ssh,
-  /etc/passwd, /etc/group mounted read-only). Per job `<scratch>/<job>/` holds uv + the lock, a venv built there,
-  every cache and HOME, the dataset and the init checkpoint; lerobot-train runs as an ssh command whose output
-  streams back to the local wrapper (same parser, same /status); the final checkpoint is rsync'd back; then the
-  job's processes are killed and the dir removed (and the scratch dir if empty), whatever happened.
-- modal (`{gpu: L4, timeout_s, volume}`): one attached Function call (image from the same lock, no secrets),
-  dataset/init uploaded to a Volume under jobs/<job>/, trainer output streamed back, checkpoint downloaded,
-  jobs/<job>/ removed. Needs Modal's own credentials (~/.modal.toml, mounted read-only); unit-tested with a fake
-  SDK only (no credentials on this host).
+## Inputs
 
-## Serve
-`start_serve(ckpt, job_dir, network)`: refuses unless `network` is a `docker network create --internal` network
-(the server unpickles client data); clients reach `<name>:8080`; no host ports. HF offline
-(SmolVLM2 processor files from cache/hf). Status: `ready` after "RosettaPolicyServer started on", `chunks`.
+| Input | Comes from | Format |
+|---|---|---|
+| Dataset | the dataset component | a LeRobot v3.0 dataset directory |
+| Base model | Hugging Face, cached in `cache/hf/` | default `lerobot/smolvla_base`, public, no token |
+| Previous checkpoint | an earlier training job's `<out>/` | needs `config.json` and `model.safetensors` |
+| Retrain mode | the caller | `finetune_last` (previous weights, full dataset), `from_base`, `finetune_recovery_only` (previous weights, recovery episodes only) |
+| Run settings | the caller | `steps`, `batch_size`, `save_every`, `backend` (`local`, `gpu_machine`, `modal`) and its settings |
+| GPU machine | `REVOLVE_GPU_MACHINE_HOST=user@host`, your `~/.ssh` | passwordless ssh; the job builds its own venv in a scratch dir there and removes it at the end |
+| Modal credentials | `~/.modal.toml` | mounted read-only when it exists |
+| Rosetta | `ThirdParty/rosetta` submodule | mounted read-only for serving |
 
-## Tests
-`./revolve test training` (conftest.py: fixtures; test_training_unit.py: no docker; test_training.py: real jobs).
+## Outputs
+
+| Output | Where it lands | Read by |
+|---|---|---|
+| Final checkpoint | `<out>/`: the `pretrained_model` files plus `train.json` (mode, init, episodes, steps, losses, model sha256) | evaluation, the next training turn |
+| Earlier checkpoints | `<out>_<step>/`, only with `save_every` (backends `local` and `gpu_machine`) | evaluation |
+| Job files | `<out parent>/jobs/train_<out name>/`: `job.json`, `status.json`, `result.json`, `stdout.log` | the manager |
+| Live progress | `GET /status` on the job container, port 8000: step, loss, learning rate, ETA, GPU memory | the manager |
+| Policy server | `<container name>:8080` on an internal Docker network only, because the server unpickles what clients send | evaluation rollouts |
+
+## Run
+
+```
+./revolve build training      # the dependency image; nothing is built from source
+```
+
+Then from Python, once `launch.py` imports again:
+
+```
+launch.train(dataset, out, mode=M, steps=N, batch_size=B, backend="local")   # blocks until the job ends
+job = launch.start_train(dataset, out, ...)                                   # same, without blocking
+job = launch.start_serve(ckpt, job_dir, network)    # policy server; network from docker network create --internal
+launch.stop(job)                                    # stop the server
+```
+
+Exit codes of a training job: those of `lerobot-train`, 3 when a Hugging Face token was found, 2 for bad arguments
+or a missing checkpoint. On the reference laptop (RTX 5060, 8 GB) batch 2 used 1.9 GB at 0.15 s per step.
+
+## Test
+
+```
+./revolve test training
+```
+
+`test_training_unit.py` needs no Docker: progress parsing, retrain plans, and the `gpu_machine` and `modal`
+backends against fakes. On main 12 of its 14 tests pass; the other 2 fail on the missing simulator `launch.py`.
+`test_training.py` runs real jobs on the GPU (40 steps, then serving one request) and today fails at collection
+for the same reason. Its GPU machine part runs only when `REVOLVE_GPU_MACHINE_HOST` is set.
+
+## Files
+
+- `launch.py`: host side; starts training and serve jobs with the Docker SDK.
+- `src/training/entry.py`: what the job container runs, `train` or `serve`.
+- `src/training/train.py`: retrain mode to `lerobot-train` flags, and the final checkpoint to `<out>/`.
+- `src/training/local.py`, `gpu_machine.py`, `modal_backend.py`: one module per backend.
+- `requirements.lock`: the hashed pins for the image (LeRobot 0.6.1, torch 2.11.0 with CUDA 13.0).

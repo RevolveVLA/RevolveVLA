@@ -1,0 +1,16 @@
+# The dataset image's Python packages (pip, on Ubuntu 26.04's Python 3.14). requirements.txt is generated from this
+# file and overrides.txt; regenerate it after any change here:
+#   uv pip compile components/dataset/requirements.in --override components/dataset/overrides.txt \
+#     --python-version 3.14 --python-platform x86_64-manylinux_2_28 --only-binary :all: \
+#     --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple \
+#     --index-strategy unsafe-best-match -o components/dataset/requirements.txt
+# lerobot < 0.6.2: 0.6.2 drops the async inference Rosetta's policy runner uses. CPU torch inside lerobot 0.6.1's
+# ranges (torch < 2.12, torchvision < 0.27, torchcodec < 0.12); torchcodec 0.11 is the build for torch 2.11.
+lerobot[dataset]==0.6.1
+torch==2.11.0
+torchvision==0.26.0
+torchcodec==0.11.1
+# revolve_common (job wrapper, spec loader): the host .venv's versions
+pydantic==2.14.3
+fastapi==0.162.2
+uvicorn==0.54.0

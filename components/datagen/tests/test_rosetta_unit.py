@@ -1,5 +1,6 @@
-"""plugins/rosetta with the dataset launcher stubbed (no docker): registered and importable without the heavy stack, params
-checked, the call of components/dataset (the run's manifest, output dir, turn), failures, and the pipeline's skip of the step."""
+"""plugins/rosetta with the dataset launcher stubbed (no docker): registered and importable without the heavy stack,
+params checked, the call of components/dataset (the run's manifest, output dir, turn), failures, and the pipeline's
+skip of the step."""
 import subprocess
 import sys
 
@@ -52,13 +53,25 @@ def test_params_are_checked():
             converter.RosettaConverter(spec, bad)
 
 
-def test_the_converter_calls_the_dataset_launcher(tmp_path):
+def test_the_converter_calls_the_dataset_launcher(tmp_path, monkeypatch):
+    # a relative spec.out is the run dir under the current directory; every split of its manifest (no split param)
+    monkeypatch.chdir(tmp_path)
     launch = FakeLaunch()
     eps = [tmp_path / "train" / "scene_0" / "episode_0_bag"]
-    res = converter.RosettaConverter(S.parse(RAW), {"format": "lerobot", "turn": 2}, launch).convert(eps, tmp_path / "dataset")
-    # every split of the run's manifest: the plugin interface has no split
-    assert launch.calls == [([str(converter.REPO / "unused" / "manifest.json")], str(tmp_path / "dataset"), 2, None)]
+    conv = converter.RosettaConverter(S.parse(RAW), {"format": "lerobot", "turn": 2}, launch)
+    res = conv.convert(eps, tmp_path / "dataset")
+    assert launch.calls == [([str(tmp_path / "unused" / "manifest.json")], str(tmp_path / "dataset"), 2, None)]
     assert res.ok and res.paths["dataset"] == str(tmp_path / "dataset") and res.realised == {"episodes": 1}
+
+
+def test_an_absolute_out_is_the_run_dir(tmp_path, monkeypatch):
+    # an absolute spec.out is used as it is, whatever the current directory
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    launch = FakeLaunch()
+    spec = S.parse({**RAW, "out": str(tmp_path / "run")})
+    converter.RosettaConverter(spec, {}, launch).convert([tmp_path / "e"], tmp_path / "dataset")
+    assert [c[0] for c in launch.calls] == [[str(tmp_path / "run" / "manifest.json")]]
 
 
 def test_the_converter_reports_a_failed_job_and_an_empty_list(tmp_path):

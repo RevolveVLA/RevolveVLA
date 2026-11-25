@@ -16,7 +16,6 @@ from datagen.core.interfaces import Converter, Result
 from datagen.core.registry import register
 
 LAUNCH = Path(__file__).resolve().parents[5] / "dataset" / "launch.py"
-REPO = LAUNCH.parents[2]
 FORMATS = ("lerobot",)
 
 
@@ -44,7 +43,7 @@ class RosettaConverter(Converter):
         """Result.realised: the episodes the dataset holds, from the job's result.json."""
         if not episodes:
             return Result.fail("no recorded episodes to convert")
-        run = Path(self.spec.out) if Path(self.spec.out).is_absolute() else REPO / self.spec.out
+        run = Path(self.spec.out) if Path(self.spec.out).is_absolute() else Path.cwd() / self.spec.out   # as cli.py
         res = (self.launch or load_launch()).convert([str(run / "manifest.json")], str(Path(out).resolve()), self.turn)
         paths = {"dataset": str(out), "job": str(res["dir"])}
         if res["exit"] != 0:

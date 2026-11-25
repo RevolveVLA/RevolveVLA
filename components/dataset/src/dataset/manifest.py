@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -126,7 +127,7 @@ def check_inputs(episodes, contract_topics, task, robot) -> list[str]:
                 if k in r and r[k] != want:
                     problems.append(f"inputs: {ep.where}: result {k} {r[k]!r} != {want!r}")
             d = r.get("duration_s")
-            if isinstance(d, bool) or not isinstance(d, (int, float)) or d < 0:
+            if isinstance(d, bool) or not isinstance(d, (int, float)) or not math.isfinite(d) or d < 0:
                 problems.append(f"inputs: {ep.where}: result {ep.result} has no duration_s ({d!r})")
             else:
                 ep.duration_s = float(d)

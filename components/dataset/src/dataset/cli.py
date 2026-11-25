@@ -114,15 +114,18 @@ def done(kind, out: Path, episodes, frames, problems, warnings=(), **extra) -> i
 
 
 def run(kind, out: Path, sources, body) -> int:
-    """The out check, then body(): a stage that raises Refused clears <out> and reports the problems."""
+    """The out check, then body(): a stage that raises Refused, or any other exception, clears <out> and reports."""
     problems = claim_out(out, sources)
     if problems:
         return done(kind, out, 0, 0, problems)
     try:
         return body()
     except Refused as r:
-        clear_out(out)
-        return done(kind, out, 0, 0, r.problems)
+        problems = r.problems
+    except Exception as e:      # a bug, or an input no check foresaw: still one result line, nothing at <out>
+        problems = [f"internal: {type(e).__name__}: {e}"]
+    clear_out(out)
+    return done(kind, out, 0, 0, problems)
 
 
 def resume(out: Path, kind, inputs) -> bool:
@@ -163,8 +166,13 @@ def load_summary(root, problems):
         return None
 
 
+def out_path(arg) -> Path:
+    """--out, absolute with symlinks resolved: the one path of every check and filesystem action on it."""
+    return Path(arg).absolute().resolve()
+
+
 def convert(a) -> int:
-    out = Path(a.out)
+    out = out_path(a.out)
     plan = M.read(a.manifest, a.split, a.turn)
     sources = [Path(m).parent for m in a.manifest] + [p for e in plan.episodes for p in (e.bag, e.result)]
 
@@ -214,7 +222,7 @@ def convert(a) -> int:
 
 
 def merge(a) -> int:
-    out, ins = Path(a.out), [Path(p) for p in a.datasets]
+    out, ins = out_path(a.out), [Path(p) for p in a.datasets]
 
     def body():
         recs, problems = G.inputs(ins)

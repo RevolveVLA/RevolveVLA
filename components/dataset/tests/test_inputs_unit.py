@@ -135,6 +135,16 @@ def test_bad_duration(producer, dur):
     one_problem(probs, eps[0])
 
 
+@pytest.mark.parametrize("dur", [float("nan"), float("inf")], ids=["nan", "infinity"])
+def test_non_finite_duration(producer, dur):
+    # check_inputs: a NaN or Infinity duration_s (valid to Python's json) is an inputs: problem naming duration_s
+    p = producer()
+    e = p.episode(result_extra={"duration_s": dur})
+    assert ("NaN" if dur != dur else "Infinity") in (p.root / e["result"]).read_text()
+    eps, probs = check(p, e)
+    one_problem(probs, eps[0], "duration_s")
+
+
 @pytest.mark.parametrize("key, value", [("task", "open_drawer"), ("robot", "mobile_so101"), ("task", "")])
 def test_result_task_robot_mismatch(producer, key, value):
     # check_inputs: the result's task / robot (when present) equal the given ones

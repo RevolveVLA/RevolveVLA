@@ -6,8 +6,9 @@ import json
 
 import pytest
 
-from conftest import DROP, cli_main, convert_argv, fake_dataset, last_json_line, refused
+from conftest import DROP, cli_main, convert_argv, fake_dataset, last_json_line, progress_lines, refused
 from dataset import cli
+from dataset import manifest as M
 from dataset.layout import partial
 
 
@@ -189,6 +190,22 @@ def test_relative_paths_as_given(capsys, producer, tmp_path, monkeypatch):
     res = last_json_line(text)
     assert any(x.startswith("inputs:") and "prod/manifest.json entry 0" in x for x in res["problems"]), res
     assert not (tmp_path / "ds").exists() and not (tmp_path / "ds.partial").exists()
+
+
+def test_unexpected_error_still_reports(capsys, producer, tmp_path, monkeypatch):
+    # an unexpected exception in a stage: exit 1, a `failed` PROGRESS line and an `internal:` problem in the result
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(M, "check_inputs", boom)
+    if hasattr(cli, "check_inputs"):
+        monkeypatch.setattr(cli, "check_inputs", boom)
+    p = producer()
+    p.episode()
+    m, out = p.manifest(), tmp_path / "ds"
+    rc, text = convert(capsys, [m], out)
+    assert rc == 1, text
+    assert any(x.startswith("internal: RuntimeError: boom") for x in last_json_line(text)["problems"]), text
+    assert any(pr.get("stage") == "failed" for pr in progress_lines(text)), text
 
 
 # ------------------------------------------------------------------ merge

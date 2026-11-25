@@ -252,6 +252,28 @@ def test_stale_dataset_removed_when_a_bag_lacks_a_topic(capsys, producer, tmp_pa
     assert not out.exists()
 
 
+# ------------------------------------------------------------------ convert: <out> through a symlink
+
+@pytest.mark.parametrize("target", ["real", "gone"], ids=["to-a-dir", "dangling"])
+def test_symlinked_out_leaves_the_partial_next_to_the_link(capsys, producer, tmp_path, target):
+    # --out is resolved once: a failing convert through a symlink reports and never touches <link>.partial
+    p = producer()
+    p.episode(result=False)
+    m = p.manifest()
+    w = tmp_path / "w"
+    w.mkdir()
+    if target == "real":
+        (w / target).mkdir()
+    link = w / "link"
+    link.symlink_to(w / target, target_is_directory=True)
+    (w / "link.partial").mkdir()
+    (w / "link.partial" / "precious.txt").write_text("not this component's\n")
+    before = snapshot(w / "link.partial")
+    refused(*cli_main(capsys, convert_argv([m], link)), "inputs:")
+    assert snapshot(w / "link.partial") == before
+    assert (w / "link.partial" / "precious.txt").read_text() == "not this component's\n"
+
+
 # ------------------------------------------------------------------ merge
 
 def test_merge_out_is_an_input(capsys, tmp_path):

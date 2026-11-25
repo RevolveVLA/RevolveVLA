@@ -33,7 +33,9 @@ else
     "$IMAGE" bash -c '
 set -eo pipefail
 mkdir /tmp/rosetta && tar -C /src/rosetta --exclude=./.git --exclude=./install -cf - . | tar -C /tmp/rosetta -xf -
-for p in /src/patches/*.patch; do [[ -f $p ]] && git -C /tmp/rosetta apply "$p" && echo "applied $p"; done
+for p in /src/patches/*.patch; do
+  if [[ -f $p ]]; then git -C /tmp/rosetta apply "$p"; echo "applied $p"; fi
+done
 source /opt/ros/$ROS_DISTRO/setup.bash
 cd /tmp
 colcon --log-base /tmp/log build --base-paths /tmp/rosetta/rosetta /tmp/rosetta/robots/ros /tmp/rosetta/policies/lerobot \

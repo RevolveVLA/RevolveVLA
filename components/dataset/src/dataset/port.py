@@ -1,70 +1,93 @@
-"""Episode dirs (each with its MCAP bag) -> one LeRobot v3.0 dataset through Rosetta's rosetta_port, unchanged
-(runs in revolve-dataset with /opt/rosetta/install sourced; entry.py convert):
+"""The passed episodes' bags -> one LeRobot v3.0 dataset through Rosetta's porter (rosetta_ros.offline.port), unchanged.
+In the dataset image, with Rosetta's install sourced.
 
-  port(episode_dirs, out, contract, turn)
+  built, frames, problems = port(bags, labels, contract_path, work, names)
 
-The bags are staged as <tmp>/raw/ep_<i>/ (symlinks to bag files; rosetta_port takes every bag under
---raw-dir in sorted path order = the given order) and rosetta_port's own CLI (main) runs on them with the
-legacy arguments (no --push-to-hub, default codec), writing
-<out>.partial/<repo id>/. Ported from the earlier pipeline's port_episode.py: LeRobotDatasetMetadata.save_episode
-is wrapped, here to add each episode's labels (labels.py) to its episode_metadata (they become
-meta/episodes columns) and to print PROGRESS {"episodes_converted", "episodes_total"}. rosetta_port skips a
-bag that fails and goes on: any skipped bag fails the port (labels would shift)."""
+The bags are staged as <work>/raw/ep_<i>/ (symlinks to each bag's files: the porter takes every bag under its raw dir
+in sorted path order, so the staging order is the manifest order). LeRobotDatasetMetadata.save_episode is wrapped to
+add each episode's labels to its meta/episodes row and to print PROGRESS after each saved episode. The porter only
+logs what it does to a bad stream and carries on, so its log is read for problems (LogProblems): a failed episode, an
+action topic missing from a bag (zero-filled), and a message it drops because it cannot decode it or it lacks the
+contract's timeline (that stream then reads zeros until a good message arrives)."""
 from __future__ import annotations
 
-import json
-import shutil
-import sys
+import logging
+import re
 from pathlib import Path
 
-import labels as L
+from . import labels as L
+from .layout import REPO_ID, progress
 
-REPO_ID = "revolve/dataset"   # LeRobot needs a repo id; never pushed (the dataset dir is the root)
 
-
-def stage(episode_dirs, raw: Path) -> None:
-    for i, ep in enumerate(episode_dirs):
-        bag = Path(ep) / "bag"
-        if not (bag / "metadata.yaml").is_file():
-            raise SystemExit(f"{ep}: no bag (bag/metadata.yaml)")
+def stage(bags, raw: Path) -> None:
+    for i, bag in enumerate(bags):
         d = raw / f"ep_{i:06d}"
         d.mkdir(parents=True)
-        for f in bag.iterdir():
+        for f in sorted(Path(bag).iterdir()):
             (d / f.name).symlink_to(f.resolve())
 
 
-def port(episode_dirs, out, contract, turn: int, repo=None) -> Path:
-    """-> the finished dataset dir <out>.partial/<repo id> (entry.py checks it, then moves it to out)."""
+class LogProblems(logging.Handler):
+    """Rosetta's porter log -> problem strings ("port: <episode name>: <log line>").
+
+    Its lines at the pinned commit (rosetta_ros/offline/port.py, offline/bag_frames.py, ingest.py): before each
+    episode `"<i> / <n> episodes processed"` (INFO, names the episode the next lines belong to); the problems below.
+    Not problems: the recovery notices (`Decode recovered ...`, `Timeline '...' recovered ...`), the warmup lines,
+    the contract-mismatch warning (the bags embed no contract), progress and frame counts."""
+
+    EPISODE = re.compile(r"^(\d+) / \d+ episodes processed$")
+    PATTERNS = (re.compile(r"^Decode failed for '.+' on .+; dropping message$", re.S),       # ingest.py
+                re.compile(r"^Message on '.+' \(.+\) is missing its '.+' timeline; dropping message$", re.S),
+                re.compile(r"^Topic .+ not in bag, .+ will be zero-filled$"),                  # bag_frames.py
+                re.compile(r"^\s*-> FAILED .+", re.S))                                         # port.py
+
+    def __init__(self, names):
+        super().__init__(logging.INFO)
+        self.names, self.out, self.current = list(names), [], None
+
+    def emit(self, record):
+        msg = record.getMessage()
+        if m := self.EPISODE.match(msg.strip()):
+            self.current = int(m.group(1))
+            return
+        if record.levelno >= logging.WARNING and any(p.match(msg) for p in self.PATTERNS):
+            i = self.current
+            name = self.names[i] if i is not None and 0 <= i < len(self.names) else "an episode"
+            self.out.append(f"port: {name}: {msg.strip()}")
+
+
+def port(bags, labels, contract_path, work: Path, names=None):
+    """-> (the dataset directory, frames per saved episode in order, problems)."""
     from lerobot.datasets.dataset_metadata import LeRobotDatasetMetadata
     from rosetta_ros.offline import port as rosetta_port
 
-    episode_dirs = [Path(e) for e in episode_dirs]
-    labels = [L.of_episode(e, turn, repo) for e in episode_dirs]
-    out = Path(out)
-    work = out.parent / f"{out.name}.partial"
-    shutil.rmtree(work, ignore_errors=True)        # a half-written port: LeRobot refuses an existing dataset
-    raw = work / "raw"
-    stage(episode_dirs, raw)
-    n = len(episode_dirs)
+    raw, root = work / "raw", work / "lerobot"
+    stage(bags, raw)
+    n, saved = len(bags), []
     orig = LeRobotDatasetMetadata.save_episode
-    seen = []
 
-    def save_episode(self, episode_index, episode_length, episode_tasks, episode_stats, episode_metadata):
+    def save_episode(self, episode_index, episode_length, episode_tasks, episode_stats, episode_metadata, *a, **k):
         meta = dict(episode_metadata, **L.columns(labels[episode_index]))
-        orig(self, episode_index, episode_length, episode_tasks, episode_stats, meta)
-        seen.append(episode_index)
-        print("PROGRESS " + json.dumps({"stage": "port", "episodes_converted": len(seen), "episodes_total": n}), flush=True)
+        orig(self, episode_index, episode_length, episode_tasks, episode_stats, meta, *a, **k)
+        saved.append(int(episode_length))
+        progress(stage="port", episodes_converted=len(saved), episodes_total=n)
 
+    logging.basicConfig(level=logging.INFO, format="%(message)s")     # the porter's log, as its own CLI prints it
+    log = logging.getLogger()
+    log.setLevel(min(log.level or logging.INFO, logging.INFO))
+    handler = LogProblems(names or [str(b) for b in bags])
+    log.addHandler(handler)
     LeRobotDatasetMetadata.save_episode = save_episode
-    argv = sys.argv
-    sys.argv = ["rosetta_port", "--raw-dir", str(raw), "--contract", str(contract), "--repo-id", REPO_ID,
-                "--root", str(work / "lerobot")]
+    problems = []
     try:
-        rosetta_port.main()
+        rosetta_port.port(raw_dir=raw, repo_id=REPO_ID, contract_path=Path(contract_path), root=root,
+                          writer_opts={"push_to_hub": False})
+    except Exception as e:      # every bag failed, or the writer did
+        problems.append(f"port: {type(e).__name__}: {e}")
     finally:
-        sys.argv = argv
         LeRobotDatasetMetadata.save_episode = orig
-    if seen != list(range(n)):
-        raise SystemExit(f"port: {len(seen)} of {n} episodes saved (rosetta_port skipped a failed bag; see its log)")
-    shutil.rmtree(raw)
-    return work / "lerobot" / REPO_ID
+        log.removeHandler(handler)
+    problems += handler.out
+    if len(saved) != n:
+        problems.append(f"port: {len(saved)} of {n} episodes saved (the porter skips a failed episode)")
+    return root / REPO_ID, saved, problems

@@ -1,50 +1,65 @@
-"""Episode labels: columns `labels/<name>` of the LeRobot dataset's meta/episodes parquet (one row per
-episode, beside LeRobot's own `stats/...`, `data/...`), so `LeRobotDataset(...).meta.episodes` carries them
-and the training side filters with `select()` -> episode indices for LeRobot's `--dataset.episodes`.
+"""Episode labels: columns `labels/<name>` of a dataset's meta/episodes parquet (one row per episode, beside LeRobot's
+own columns), so `LeRobotDataset(...).meta.episodes` carries them (DATASET-v2.md section 6). Training filters with
+`select(meta.episodes, source="recovery")` -> episode indices for LeRobot's `--dataset.episodes`.
 
-  source        demo | recovery
-  phase         recovery: the phase the suffix restarts from; demo: "" (full episode)
-  suffix        recovery: true (suffix-only, from the phase's saved start state); demo: false
-  seed          demo: the datagen seed; recovery: the failed rollout's seed (-1 when unknown)
-  turn          the experiment turn the episode was generated in
-  from_rollout  recovery: the rollout dir it was recovered from (repo-relative); demo: ""
-  episode_dir   the source episode dir (repo-relative)
+  source    demo (the manifest entry has a `datagen` block) | recovery (a `recovery` block)
+  seed      entry.seed
+  split     entry.split if the producer writes one, else <split> of a scene path <split>/<scene dir>/<file>
+  scene     entry.scene, as written in the manifest
+  episode   entry.episode (the simulator's episode number in its run dir)
+  expert    datagen.expert (recovery: its `expert`, else "")
+  attempt   datagen.attempt (recovery: its `attempt`, else -1)
+  turn      --turn K
+  manifest  the manifest's path as given on the command line
 
-Fixed types (str/bool/int, never null): LeRobot's metadata parquet writer keeps the first row's schema.
-Pure Python: no LeRobot import (unit-tested on the host)."""
+Fixed types, never null: LeRobot's metadata parquet writer keeps the first row's schema. Pure Python."""
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 PREFIX = "labels/"
-NAMES = ("source", "phase", "suffix", "seed", "turn", "from_rollout", "episode_dir")
-SOURCES = ("demo", "recovery")
+TYPES = {"source": str, "seed": int, "split": str, "scene": str, "episode": int, "expert": str, "attempt": int,
+         "turn": int, "manifest": str}
+NAMES = tuple(TYPES)
+SOURCES = {"datagen": "demo", "recovery": "recovery"}      # the entry's producer block -> source
 
 
-def rel(p, repo=None) -> str:
-    """Container (/repo/...) or host repo path -> repo-relative; anything else unchanged."""
-    s = str(p)
-    for root in filter(None, (repo and str(repo).rstrip("/"), "/repo")):
-        if s.startswith(root + "/"):
-            return s[len(root) + 1:]
-    return s
+class LabelError(ValueError):
+    pass
 
 
-def of_episode(ep_dir, turn: int, repo=None) -> dict:
-    """Labels of one episode dir from its episode.json: `recovery` block (components/recovery) or
-    `datagen` block (components/datagen)."""
-    e = json.loads((Path(ep_dir) / "episode.json").read_text())
-    if "recovery" in e:
-        r = e["recovery"]
-        seed = r.get("rollout_seed")
-        d = dict(source="recovery", phase=str(r["phase"]), suffix=bool(r.get("suffix", True)),
-                 seed=-1 if seed is None else int(seed), from_rollout=rel(r.get("from_rollout") or "", repo))
-    elif "datagen" in e:
-        d = dict(source="demo", phase="", suffix=False, seed=int(e["datagen"]["seed"]), from_rollout="")
+def _typed(name, v):
+    t = TYPES[name]
+    if isinstance(v, bool) or not isinstance(v, t):      # bool is an int to Python, never a label value
+        raise LabelError(f"{name}: {v!r} is not a {t.__name__}")
+    return v
+
+
+def split_of(entry: dict) -> str:
+    """The entry's split: its `split` field, else the first component of its relative `scene` path, which must be
+    `<split>/<scene dir>/<file>` (at least three components: `scene_7/scene.yaml` names no split)."""
+    if "split" in entry:
+        return _typed("split", entry["split"])
+    scene = entry.get("scene")
+    parts = scene.split("/") if isinstance(scene, str) and not scene.startswith("/") else []
+    if len(parts) < 3 or not all(parts):
+        raise LabelError(f"split: no `split` field and no split directory in scene {scene!r}")
+    return parts[0]
+
+
+def of_entry(entry: dict, turn: int, manifest: str) -> dict:
+    """One manifest entry -> its labels; LabelError when the entry cannot be labelled (fail closed)."""
+    blocks = [b for b in SOURCES if b in entry]
+    if len(blocks) != 1:
+        raise LabelError(f"source: the entry needs exactly one of the blocks {sorted(SOURCES)}, has {blocks}")
+    block = entry[blocks[0]]
+    if not isinstance(block, dict):
+        raise LabelError(f"source: the `{blocks[0]}` block is not a mapping")
+    if blocks[0] == "datagen":
+        expert, attempt = block.get("expert"), block.get("attempt")
     else:
-        raise ValueError(f"{ep_dir}/episode.json: neither a datagen nor a recovery episode")
-    return dict(d, turn=int(turn), episode_dir=rel(ep_dir, repo))
+        expert, attempt = block.get("expert", ""), block.get("attempt", -1)
+    d = dict(source=SOURCES[blocks[0]], seed=entry.get("seed"), split=split_of(entry), scene=entry.get("scene"),
+             episode=entry.get("episode"), expert=expert, attempt=attempt, turn=turn, manifest=manifest)
+    return {k: _typed(k, d[k]) for k in NAMES}
 
 
 def columns(labels: dict) -> dict:
@@ -57,7 +72,7 @@ def of_row(row) -> dict:
 
 
 def select(episodes, **want) -> list[int]:
-    """Episode indices whose labels equal every `want` (e.g. source="recovery", phase="open").
+    """Episode indices whose labels equal every `want` (e.g. source="recovery", split="train").
     episodes: LeRobotDatasetMetadata.episodes (a datasets.Dataset) or an iterable of row dicts."""
     bad = set(want) - set(NAMES)
     if bad:

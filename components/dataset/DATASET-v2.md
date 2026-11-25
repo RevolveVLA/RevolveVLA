@@ -41,7 +41,7 @@ Status of the pipeline on this branch:
 | Simulator (`components/simulator`) | Rewritten and tested. Records one bag per episode with every topic the contract needs, including `/task/prompt`. |
 | Robot contracts (`specs/robots/<r>/contract.yaml`) | **Written and checked**: `./revolve validate` (against the robot and the simulator's topic list) and the simulator suite (Rosetta's own loader and decoders on real bags). |
 | Datagen (`components/datagen`, `components/datagen/DATAGEN-v2.md`) | Datagen v2: demonstrations on the new simulator, writes `manifest.json`. Its arm/gripper commands must stream (section 5.4). |
-| Dataset (`components/dataset`) | **Old code, broken** (section 2). It is yours to replace with v2 (section 13). |
+| Dataset (`components/dataset`) | Dataset v2 (`components/dataset/README.md`); frame tolerance pending confirmation (section 8.3). |
 | Recovery, training, evaluation, manager | Not adapted yet. Recovery and evaluation will write the same manifest schema (section 6). |
 
 ## 2. What changed, and why the old component cannot convert the new bags
@@ -485,7 +485,8 @@ Measured (simulator contract test, 20 s episodes, `mobile_panda`, images): ~602 
   ```
 
   Such episodes fail the task (`passed: false`); for converter tests write a small test manifest that lists them as
-  passed (test fixture only, never in production).
+  passed, with a fixture copy of each result that says `passed: true` beside the evaluator's (the converter also
+  checks the result, section 6; test fixture only, never in production; `components/dataset/tests/bags.py`).
 * **Datagen v2** produces real passed demonstrations with a manifest:
   `./revolve datagen specs/datagen/smoke_v2.yaml` (one scene instance, one accepted episode; `components/datagen/
   README.md`). Use it once the datagen expert streams its arm/gripper commands (section 5.4); bags made with
@@ -585,7 +586,7 @@ interface you build on), then your own build and tests.
 | `components/simulator/ros/revolve_sim/test/check_rosetta.py`, `test_rosetta_contracts.py`, `test_contract.py` | Rosetta's loader on every contract; the contract checked on real bags (topics, stamps, decoders, prompt). |
 | `components/simulator/README.md` | The simulator: run, outputs, evaluator, reset, recording. |
 | `components/datagen/DATAGEN-v2.md`, `components/datagen/src/datagen/core/manifest.py` | The producer side: commanding (streaming), the manifest. |
-| `components/dataset/` | The old component (to replace). |
+| `components/dataset/` | The dataset component (v2). |
 | `ThirdParty/rosetta/docs/reference/{contract,message-types,rosetta-port}.md` | Rosetta's contract format, codecs and porter. |
 | `ThirdParty/patches/rosetta/` | Local Rosetta patches (none today). |
 | `common/revolve_common/wrapper.py`, `job.py` | The HTTP job wrapper and job files. |

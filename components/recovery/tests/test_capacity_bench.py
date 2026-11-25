@@ -78,7 +78,8 @@ def sim_s_of(log: Path) -> float | None:
 def verdicts(out: Path) -> dict[str, set]:
     found: dict[str, set] = defaultdict(set)
     for _, key, _, rec, _ in all_tries(out):
-        found[key.rsplit("_r", 1)[0]].add((bool(rec["passed"]), rec.get("failed_phase")))
+        if key.endswith("_r0"):                    # the first rollout of each config: present at every N
+            found[key[:-3]].add((bool(rec["passed"]), rec.get("failed_phase")))
     return dict(found)
 
 
@@ -134,7 +135,9 @@ def test_capacity_at_n_slots(trained, n):
            "sim_s_per_episode": round(mean(r["sim_s"] for r in rtfs), 1) if rtfs else None,
            "phase_jobs": {"runs": len(jobs), "wall_s_mean": round(mean(r["wall_s"] for r in jobs), 1) if jobs else None},
            "recovery": numbers, "manifest_entries": len(manifest["episodes"]), "eval_resets": dict(resets_of(out)),
-           "verdicts_vs_first": stability(BASE, seen), "sampler": summarise(samples, PREFIXES, host["gpu_used_mib"])}
+           "verdicts_vs_first": stability(BASE, seen),
+           "pass_rate": round(sum(bool(r["passed"]) for *_, r, _ in rows) / len(rows), 2), "sampler": summarise(samples, PREFIXES, host["gpu_used_mib"])}
+    shutil.rmtree(out, ignore_errors=True)                               # images: about 1 GB per N
     NUMBERS[name] = got
     print(f"BENCH {name} " + json.dumps(got, default=str))
     reasons = [f"N={n}: RTF mean {got['rtf']['mean']} < {MIN_RTF}" if got["rtf"]["mean"] is not None and got["rtf"]["mean"] < MIN_RTF else "",

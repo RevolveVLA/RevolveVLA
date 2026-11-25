@@ -116,10 +116,14 @@ def summarise(samples: list[dict], prefixes: tuple[str, ...], baseline_mib: floa
     ours = [{n: m for n, m in s["containers"].items() if n.startswith(prefixes)} for s in samples]
     slots = max(len(o) for o in ours)
     peak_ours = max(sum(o.values()) for o in ours)
+    per_container: dict[str, float] = defaultdict(float)
+    for o in ours:
+        for name, mib in o.items():
+            per_container[name] = max(per_container[name], mib)
     return {"samples": len(samples), "slots_seen": slots, "gpu_util_mean": round(mean(s["gpu_util"] for s in samples), 1),
             "gpu_util_max": max(s["gpu_util"] for s in samples), "gpu_mib_peak": max(s["gpu_mib"] for s in samples),
             "gpu_mib_over_baseline_peak": round(max(s["gpu_mib"] for s in samples) - baseline_mib),
-            "gpu_mib_ours_peak": round(peak_ours), "gpu_mib_per_slot": round(peak_ours / slots) if slots else None,
+            "gpu_mib_ours_peak": round(peak_ours), "gpu_mib_by_container_peak": {k: round(v) for k, v in sorted(per_container.items())}, "gpu_mib_per_slot": round(peak_ours / slots) if slots else None,
             "cpu_mean": round(mean(s["cpu"] for s in samples), 1), "cpu_max": round(max(s["cpu"] for s in samples), 1),
             "ram_gb_peak": round(max(s["ram_gb"] for s in samples), 1), "load1_max": round(max(s["load1"] for s in samples), 1),
             "containers_peak": max(len(s["running"]) for s in samples)}

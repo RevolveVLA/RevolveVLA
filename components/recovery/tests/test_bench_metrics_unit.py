@@ -55,6 +55,7 @@ def test_the_summary_counts_our_containers_as_slots():
                {"gpu_util": 60, "gpu_mib": 15000, "cpu": 40, "ram_gb": 32, "load1": 6,
                 "containers": {"ev-a-sim": 900, "ev-b-sim": 1100, "host": 7000}, "running": ["a", "b", "c"]}]
     s = summarise(samples, ("ev-",), baseline_mib=13000)
+    assert s["gpu_mib_by_container_peak"] == {"ev-a-sim": 900, "ev-b-sim": 1100}
     assert s["slots_seen"] == 2 and s["gpu_mib_ours_peak"] == 2000 and s["gpu_mib_per_slot"] == 1000
     assert s["gpu_mib_over_baseline_peak"] == 2000 and s["gpu_util_max"] == 60 and s["cpu_mean"] == 30 and s["containers_peak"] == 3
     assert summarise([], ("ev-",), 0) == {}

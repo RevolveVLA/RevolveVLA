@@ -1,0 +1,5 @@
+# Overrides of requirements.in's dependency ranges (uv pip compile --override).
+# lerobot 0.6.1 pins numpy < 2.3, and no numpy below 2.3 has a cp314 wheel. 2.3.5 is Ubuntu 26.04's python3-numpy,
+# which rclpy, rosbag2_py and Rosetta's decoders use from apt; LeRobot's dataset load, write and aggregate are
+# checked with it by `./revolve test dataset`.
+numpy==2.3.5

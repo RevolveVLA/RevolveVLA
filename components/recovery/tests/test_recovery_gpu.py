@@ -67,14 +67,14 @@ class Run:
         path.write_text(yaml.safe_dump(data, sort_keys=False))
         return rel(path)
 
-    def train(self, scenes: int) -> str:
+    def train(self, scenes: int, spare: int = 6) -> str:
         return self.write("train", {**TASK, "out": rel(self.dir / "train"), "seed": 0,
                                     "generator": {"plugin": "moveit", "attempts": 3, "episodes_per_scene": 1, "record": "no-images"},
                                     "randomisers": {"robot_start": {"x_m": [-1.85, -1.65], "y_m": [1.0, 1.2], "yaw_rad": [1.47, 1.67],
                                                                     "arm": {"choices": ["folded"]}}},
                                     "validators": [{"plugin": "collision_free"}],
                                     "splits": {"train": {"target": scenes, "pool": {"initial": [0, scenes + 2],
-                                                                                    "replacement": [scenes + 3, scenes + 8]}}}})
+                                                                                    "replacement": [scenes + 3, scenes + 2 + spare]}}}})
 
     def evaluation(self, name: str, policy: dict, configs: int, rollouts: int, workers: int, **extra) -> str:
         return self.write(name, {"train": rel(self.dir / "train.yaml"), "policy": policy, "out": rel(self.dir / name),

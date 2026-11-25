@@ -1,9 +1,9 @@
 """Capacity bench (GPU + docker; skipped unless RECOVERY_BENCH=1): how many slots (= warm sims) one host runs before the sim's real-time
-factor or the verdicts degrade. For each N in RECOVERY_BENCH_N (default 1,2,3,4,6) one coupled evaluation on N slots: `noisy_expert`
+factor or the verdicts degrade. For each N in RECOVERY_BENCH_N (default 1,2,3,4,6) one coupled evaluation on N slots (N configs x 2 rollouts): `noisy_expert`
 rollouts with the DAgger recorder (takeover by the moveit expert) and automoma phase recovery of the failures, warm resets, on the
 slots' own sims. Measured: RTF per recorded episode (bag: sim seconds / wall seconds of the recording) and of the rollout clients (episode / client container), wall per episode,
-GPU memory per slot, GPU util, CPU, RAM, load, verdicts against N=1, infrastructure faults. N stops growing at the first RTF < 0.5, fault
-or error. Numbers: RECOVERY_BENCH_NUMBERS=<file> (JSON). RECOVERY_BENCH_RUN=<dir> reuses a training run, RECOVERY_BENCH_KEEP=1 keeps the
+GPU memory per slot, GPU util, CPU, RAM, load, verdicts of the first rollouts against the earlier N, infrastructure faults. N stops growing at the first RTF < 0.5, rollout error or second
+client fault (a relaunched sim). Configs run in parallel, a config's rollouts one after the other: N slots need N configs. Numbers: RECOVERY_BENCH_NUMBERS=<file> (JSON). RECOVERY_BENCH_RUN=<dir> reuses a training run, RECOVERY_BENCH_KEEP=1 keeps the
 outputs. Needs the GPU gate: >= 6 GB free and the other processes <= 20 % util."""
 import json
 import math
@@ -28,7 +28,9 @@ pytestmark = [pytest.mark.bench,
 
 SLOTS = [int(n) for n in os.environ.get("RECOVERY_BENCH_N", "1,2,3,4,6").split(",")]
 MIN_RTF, FREE_GPU_MIB, OTHERS_UTIL = 0.5, 6144, 20
-CONFIGS, ROLLOUTS_PER_SLOT = 3, 2
+ROLLOUTS = 2                                   # per config; a config runs on one slot, so N slots need N configs
+MAX_CONFIGS = max(SLOTS)
+FAULTS_ALLOWED = 1                             # a relaunched sim is counted, not fatal; more than this stops the bench
 NUMBERS: dict = {}
 BASE: dict[str, set] = {}                      # verdicts of N=1 per config
 STOPPED: list[str] = []                        # why the bench stopped growing
@@ -56,9 +58,9 @@ def trained():
     d.mkdir(parents=True, exist_ok=True)
     run = Run(d)
     if not (d / "train" / "manifest.json").is_file():
-        assert datagen_cli.main([run.train(CONFIGS), "all", "--workers", "2", "--headless"], root=REPO) == 0
+        assert datagen_cli.main([run.train(MAX_CONFIGS, spare=3 * MAX_CONFIGS), "all", "--workers", "6", "--headless"], root=REPO) == 0
     manifest = json.loads((d / "train" / "manifest.json").read_text())
-    assert manifest["counts"]["passed"] >= CONFIGS and all(e["bag"] for e in manifest["episodes"] if e["passed"]), manifest["counts"]
+    assert manifest["counts"]["passed"] >= MAX_CONFIGS and all(e["bag"] for e in manifest["episodes"] if e["passed"]), manifest["counts"]
     yield run
     if path := os.environ.get("RECOVERY_BENCH_NUMBERS"):
         Path(path).write_text(json.dumps(NUMBERS, indent=1, default=str))
@@ -102,10 +104,9 @@ def test_capacity_at_n_slots(trained, n):
                    "generator": {"plugin": "automoma", "attempts": 3, "record": "images"}, "per_failure": 2,
                    "quota": {"approach": quota, "grasp": quota}},
         "live": {"plugin": "dagger", "triggers": [{"plugin": "phase_time", "fraction": 0.2}], "expert": {"plugin": "moveit_takeover"},
-                 "record": "full", "quota": {"approach": quota, "grasp": quota, "open": quota}},
+                 "record": "full", "quota": {"approach": n, "grasp": n, "open": n}},      # half of the rollouts: the rest fail for the phase recovery
         "keep": "successes", "seed": 0, "out": rel(run.dir / name / "recovery")})
-    rollouts = math.ceil(ROLLOUTS_PER_SLOT * n / CONFIGS)
-    spec = run.evaluation(name, {"plugin": "noisy_expert", "sigma": 0.03}, configs=CONFIGS, rollouts=rollouts, workers=n,
+    spec = run.evaluation(name, {"plugin": "noisy_expert", "sigma": 0.03}, configs=n, rollouts=ROLLOUTS, workers=n,
                           record="images", run={"reset": "warm"}, recovery={"spec": recovery, "enabled": True})
     sampler, times = Sampler(), ClientTimes()
     sampler.start()
@@ -123,8 +124,6 @@ def test_capacity_at_n_slots(trained, n):
     numbers = recovery_numbers(out / "recovery")
     manifest = manifest_of(out / "recovery")
     seen = verdicts(out)
-    if n == SLOTS[0]:
-        BASE.update(seen)
     bags = bag_rtfs(out)
     got = {"slots": n, "host_before": host, "rollouts": len(rows), "wall_s": wall, "rollout_errors": errors,
            "client_faults": times.faults, "rtf": {"bags": len(bags), "mean": round(mean(r["rtf"] for r in bags), 3) if bags else None,
@@ -135,13 +134,15 @@ def test_capacity_at_n_slots(trained, n):
            "sim_s_per_episode": round(mean(r["sim_s"] for r in rtfs), 1) if rtfs else None,
            "phase_jobs": {"runs": len(jobs), "wall_s_mean": round(mean(r["wall_s"] for r in jobs), 1) if jobs else None},
            "recovery": numbers, "manifest_entries": len(manifest["episodes"]), "eval_resets": dict(resets_of(out)),
-           "verdicts_vs_first": stability(BASE, seen),
+           "verdicts_vs_earlier": stability(BASE, seen),
            "pass_rate": round(sum(bool(r["passed"]) for *_, r, _ in rows) / len(rows), 2), "sampler": summarise(samples, PREFIXES, host["gpu_used_mib"])}
     shutil.rmtree(out, ignore_errors=True)                               # images: about 1 GB per N
+    for config, verdict in seen.items():
+        BASE.setdefault(config, verdict)
     NUMBERS[name] = got
     print(f"BENCH {name} " + json.dumps(got, default=str))
     reasons = [f"N={n}: RTF mean {got['rtf']['mean']} < {MIN_RTF}" if got["rtf"]["mean"] is not None and got["rtf"]["mean"] < MIN_RTF else "",
-               f"N={n}: {len(times.faults)} client fault(s)" if times.faults else "",
+               f"N={n}: {len(times.faults)} client fault(s)" if len(times.faults) > FAULTS_ALLOWED else "",
                f"N={n}: {len(errors)} rollout error(s)" if errors else "",
                f"N={n}: a phase job failed" if "error" in numbers["jobs"] else ""]
     if reason := next((r for r in reasons if r), None):

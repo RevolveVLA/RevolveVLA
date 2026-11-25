@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO, no_env_image
+from dataset import cli
 
 
 @pytest.fixture(autouse=True)
@@ -39,8 +40,9 @@ def real(p):
     return os.path.realpath(str(p))
 
 
-def mounts(cmd):
-    """[(source, target, read_only)] from -v / --volume / --mount arguments."""
+def mounts(cmd, resolve=True):
+    """[(source, target, read_only)] from -v / --volume / --mount arguments; resolve=False keeps the paths as written
+    (only normalised, symlinks not followed)."""
     out, i = [], 0
     while i < len(cmd):
         a = cmd[i]
@@ -63,7 +65,8 @@ def mounts(cmd):
             parts = spec.split(":")
             src, dst = parts[0], parts[1]
             ro = len(parts) > 2 and "ro" in parts[2].split(",")
-        out.append((real(src), real(dst), ro))
+        norm = real if resolve else os.path.normpath
+        out.append((norm(src), norm(dst), ro))
     return out
 
 
@@ -211,6 +214,32 @@ def test_relative_paths_against_cwd(L, tmp_path):
     cmd = full_cmd(L, rel, cwd=tmp_path)
     assert mount_at(cmd, real(m.parent))[2] is True
     assert mount_at(cmd, real(out.parent))[2] is False
+
+
+def test_symlinked_paths_mounted_as_written(L, tmp_path):
+    # a manifest dir and an out parent written through symlinks are mounted at the written path too
+    _, m, _ = convert_argv(tmp_path, manifest_dir=tmp_path / "real_prod")
+    (tmp_path / "real_outs").mkdir()
+    mlink, olink = tmp_path / "prod_link", tmp_path / "outs_link"
+    mlink.symlink_to(tmp_path / "real_prod", target_is_directory=True)
+    olink.symlink_to(tmp_path / "real_outs", target_is_directory=True)
+    written_m = str(mlink / "manifest.json")
+    opts, entry = L.docker_cmd(["convert", "--manifest", written_m, "--turn", "0", "--out", str(olink / "ds")])
+    raw = mounts(opts, resolve=False)
+    at_out = [(real(s), ro) for s, d, ro in raw if d == os.path.abspath(olink)]
+    assert set(at_out) == {(real(tmp_path / "real_outs"), False)}, raw
+    at_manifest = [(real(s), ro) for s, d, ro in raw if d == os.path.abspath(mlink)]
+    assert set(at_manifest) == {(real(m.parent), True)}, raw
+    got = cli.parser().parse_args(entry[3:]).manifest
+    assert written_m in (got if isinstance(got, list) else [got])
+
+
+def test_option_value_starting_with_a_dash_survives(L, tmp_path):
+    # a value starting with '-' is re-emitted so the entrypoint's parser reads it back unchanged
+    argv, _, _ = convert_argv(tmp_path)
+    _, entry = L.docker_cmd([*argv[:-2], "--split=-held", *argv[-2:]])
+    assert entry[1:3] == ["-m", "dataset.cli"]
+    assert cli.parser().parse_args(entry[3:]).split == "-held"
 
 
 # ------------------------------------------------------------------ docker_cmd: LaunchError
@@ -400,7 +429,7 @@ def test_start_default_job_dir_from_out(L, fake_docker, tmp_path):
     assert any(not ro and src == dst and Path(real(jd)).is_relative_to(src) for src, dst, ro in mounts(run)), run
     doc = json.loads((jd / "job.json").read_text())
     assert doc["component"] == "dataset" and doc["id"] == job.container
-    assert "revolve_common.wrapper" in doc["command"] and str(out) in doc["command"]
+    assert "revolve_common.wrapper" in doc["command"] and f"--out={out}" in doc["command"]   # --opt=value form
 
 
 def test_start_job_dir_inside_the_repo_only_under_runs(L, fake_docker, tmp_path):

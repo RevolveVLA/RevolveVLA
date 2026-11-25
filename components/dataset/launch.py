@@ -13,7 +13,8 @@ Mounts: the repo read-only at /repo, with runs/ writable; Rosetta's install (Thi
 /opt/rosetta/install, where it was built. The repo is also mounted at its own host path (runs/ writable there too),
 because manifests and the simulator's results carry host paths; so do paths outside the repo: each manifest's
 directory, each absolute bag or result path of a passed entry and each input dataset read-only, the output's parent
-directory and the job directory writable, all at their own paths. The container runs as the calling user, in the
+directory and the job directory writable, all at their own paths (the real directory, and also where the argument
+names it when that path goes through a symlink). The container runs as the calling user, in the
 caller's directory when that is inside the repo. res: {exit, wall_s, result (result.json), dir (the job dir)}."""
 from __future__ import annotations
 
@@ -76,19 +77,21 @@ def _parse(argv):
 
 
 def _paths(argv, cwd: Path):
-    """-> (the canonical argv, with relative paths made absolute when cwd is outside the repo, read-only dirs,
-    writable dirs). Parsed with the entrypoint's parser, so launch mounts exactly the paths the entrypoint opens."""
+    """-> (the canonical argv, with relative paths made absolute when cwd is outside the repo and values in --opt=value
+    form, read-only dirs, writable dirs; the dirs absolute as written). Parsed with the entrypoint's parser, so launch
+    mounts exactly the paths the entrypoint opens."""
     if not argv:
         return [], [], []
     a = _parse(argv)
     in_repo = _under(cwd, REPO)
 
     def fix(x):
+        """-> (the argument as the entrypoint gets it, the absolute path as written: symlinks not resolved)."""
         p = Path(x)
-        return (str(p) if p.is_absolute() or in_repo else str(cwd / p)), (cwd / p).resolve()
+        return (str(p) if p.is_absolute() or in_repo else str(cwd / p)), Path(os.path.abspath(cwd / p))
 
     out, out_p = fix(a.out)
-    if _under(out_p, REPO) and not _under(out_p, REPO / "runs"):
+    if _under(out_p.resolve(), REPO) and not _under(out_p.resolve(), REPO / "runs"):
         raise LaunchError(f"--out {out_p}: inside the repo only under runs/ (the repo is mounted read-only)")
     ro, rw = [], [out_p.parent]
     if a.cmd == "convert":
@@ -96,13 +99,13 @@ def _paths(argv, cwd: Path):
         args = ["convert"]
         for m in a.manifest:
             arg, p = fix(m)
-            args += ["--manifest", arg]
+            args.append(f"--manifest={arg}")
             ro.append(p.parent)
             plan = M.read([str(p)])
             ro += [q.parent for e in plan.episodes for q in (e.bag, e.result)]
-        args += (["--split", a.split] if a.split is not None else []) + ["--turn", str(a.turn), "--out", out]
+        args += ([f"--split={a.split}"] if a.split is not None else []) + [f"--turn={a.turn}", f"--out={out}"]
     else:
-        args = ["merge", "--out", out, "--"]
+        args = ["merge", f"--out={out}", "--"]
         for d in a.datasets:
             arg, p = fix(d)
             args.append(arg)
@@ -128,7 +131,7 @@ def docker_cmd(argv, cwd=None, job_dir=None) -> tuple[list[str], list[str]]:
     cwd = Path(cwd or os.getcwd()).resolve()
     args, ro, rw = _paths(argv, cwd)
     if job_dir is not None:
-        rw.append(Path(job_dir).resolve())
+        rw.append(Path(os.path.abspath(job_dir)))
     (REPO / "runs").mkdir(exist_ok=True)
     cmd = ["docker", "run", "--init", "-u", f"{os.getuid()}:{os.getgid()}", "--label", LABEL, "--shm-size", "1g",
            "-w", str(cwd if _under(cwd, REPO) else REPO), "--network", "bridge" if job_dir else "none"]
@@ -138,12 +141,16 @@ def docker_cmd(argv, cwd=None, job_dir=None) -> tuple[list[str], list[str]]:
               (REPO / "runs", str(REPO / "runs"), "rw"), (INSTALL, "/opt/rosetta/install", "ro")]
     done = [REPO]
     for d in rw:
-        if not _under(d, REPO):     # mounted at its own path: docker would create a missing one as root
+        if not _under(d.resolve(), REPO):     # mounted at its own path: docker would create a missing one as root
             d.mkdir(parents=True, exist_ok=True)
     for d, mode in [(d, "rw") for d in rw] + [(d, "ro") for d in ro]:
-        if not any(_under(d, x) for x in done) and d.exists():
-            mounts.append((d, str(d), mode))
-            done.append(d)
+        real = d.resolve()
+        if not real.exists():
+            continue
+        for target in dict.fromkeys((real, d)):     # the real directory at its own path and where argv names it
+            if not any(_under(target, x) for x in done):
+                mounts.append((real, str(target), mode))
+                done.append(target)
     for src, dst, mode in mounts:
         cmd += ["-v", f"{src}:{dst}:{mode}"]
     return cmd, [*ENTRY, *args]

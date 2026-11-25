@@ -18,6 +18,10 @@
   ./revolve datagen <spec.yaml> [sample|generate|convert|check|all] [--split S] [--dry-run] [--workers N] [--gui]
                                      datagen pipeline (spec: specs/datagen/); `sample` needs no docker
   ./revolve datagen --list-randomisers --task T --robot R   what a task + robot can vary (dims, ranges)
+  ./revolve dataset convert --manifest M [--manifest M2 ...] [--split S] --turn K --out D
+  ./revolve dataset merge --out D DATASET [DATASET ...]
+                                     dataset jobs in the dataset image (components/dataset/README.md): the passed
+                                     episodes of producer manifests -> one LeRobot dataset, or datasets merged
   ./revolve evaluate <spec.yaml> [sample|check|rollout|report|all] [--set S] [--dry-run] [--workers N] [--gui]
                                      evaluation pipeline (spec: specs/eval/, points at a training datagen spec)
   ./revolve validate [spec.yaml ...] [--robot R] [--no-assets]   load and validate specs (default: every scene,
@@ -245,6 +249,14 @@ def cmd_datagen(args):
     return cli.main(args, root=REPO)
 
 
+def cmd_dataset(args):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("dataset_launch", REPO / "components" / "dataset" / "launch.py")
+    sys.modules["dataset_launch"] = launch = importlib.util.module_from_spec(spec)    # registered: its dataclasses
+    spec.loader.exec_module(launch)
+    return launch.run(args)
+
+
 def cmd_evaluate(args):
     sys.path[:0] = [str(REPO / "components" / "datagen" / "src"), str(REPO / "components" / "evaluation" / "src")]
     from evaluation import cli
@@ -257,6 +269,8 @@ def main():
         return cmd_datagen(sys.argv[2:])
     if sys.argv[1:2] == ["evaluate"]:            # same
         return cmd_evaluate(sys.argv[2:])
+    if sys.argv[1:2] == ["dataset"]:             # same: its parser is the entrypoint's, in the image
+        return cmd_dataset(sys.argv[2:])
     ap = argparse.ArgumentParser(prog="revolve", description=__doc__.split("\n\n")[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter, epilog=__doc__)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -284,6 +298,8 @@ def main():
                    "(default: from the container name, 1..101, skipping the other running containers' domains)")
     sub.add_parser("datagen").add_argument("datagen_args", nargs=argparse.REMAINDER,
                                            help="<spec.yaml> [step] [--split S] [--dry-run] [--workers N] [--gui] | --list-randomisers --task T --robot R")
+    sub.add_parser("dataset").add_argument("dataset_args", nargs=argparse.REMAINDER,
+                                           help="convert --manifest M ... --turn K --out D | merge --out D DATASET...")
     sub.add_parser("evaluate").add_argument("evaluate_args", nargs=argparse.REMAINDER,
                                             help="<spec.yaml> [stage] [--set S] [--dry-run] [--workers N] [--gui]")
     v = sub.add_parser("validate")
